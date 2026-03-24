@@ -1,0 +1,56 @@
+# OpenClaw workspace - DEUS Agent
+
+## Git Ignore Rules
+
+# OpenClaw runtime files
+.openclaw/
+.openclaw-flush
+
+# Temporary staging/imports
+.tmp/
+logs/bootstrap-validation.json
+logs/openclaw-integration-test.json
+
+# Backup files
+*.bak
+*~
+
+# OS files / archive junk
+.DS_Store
+Thumbs.db
+__MACOSX/
+*.AppleDouble
+
+# Node/npm (if applicable)
+node_modules/
+npm-debug.log*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Secrets
+.secrets/
+*.env
+.env.local
+.env.production
+
+# agentplane: local-only post-install overlay
+.env
+.agentplane/
+AGENTPLANE.md
+AGENTS.md.bak-*
+CLAUDE.md.bak-*
+
+# tech-news-digest disposable runtime artifacts
+projects/tech-news-digest/data/editorial-memory.json
+projects/tech-news-digest/data/fetched.json
+projects/tech-news-digest/data/used-sources.json
+projects/tech-news-digest/logs/alerts.ndjson

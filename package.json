@@ -1,0 +1,59 @@
+{
+  "name": "workspace",
+  "version": "1.0.0",
+  "description": "",
+  "main": "test-cloudflare.js",
+  "scripts": {
+    "cleanliness:workspace": "node scripts/workspace-cleanliness.js",
+    "workspace:authority": "node scripts/workspace-authority.js",
+    "deus:action:evaluate": "node scripts/deus-scenarios.js action:evaluate",
+    "deus:beliefs:contradictions": "node scripts/deus-scenarios.js beliefs:contradictions",
+    "deus:beliefs:cycle": "node scripts/deus-scenarios.js beliefs:cycle",
+    "deus:beliefs:decay": "node scripts/deus-scenarios.js beliefs:decay",
+    "deus:beliefs:extract": "node scripts/deus-scenarios.js beliefs:extract",
+    "deus:beliefs:review": "node scripts/deus-scenarios.js beliefs:review",
+    "deus:bootstrap": "node scripts/deus-scenarios.js bootstrap",
+    "deus:bootstrap:repair": "node scripts/deus-scenarios.js bootstrap:repair",
+    "deus:focus": "node scripts/deus-scenarios.js focus",
+    "doctor:workspace": "node scripts/doctor-workspace.js",
+    "setup:workspace": "node scripts/setup-workspace.js",
+    "test": "node scripts/run-root-tests.js",
+    "test:root:live": "node scripts/run-root-tests.js --live-workspace",
+    "verify:workspace": "node scripts/verify-workspace.js",
+    "deus:decay:tune": "node scripts/deus-scenarios.js decay:tune",
+    "deus:decay:tune:dry": "node scripts/deus-scenarios.js decay:tune:dry",
+    "deus:health": "node scripts/deus-scenarios.js health",
+    "deus:introspect": "node scripts/deus-scenarios.js introspect",
+    "deus:introspect:dry": "node scripts/deus-scenarios.js introspect:dry",
+    "deus:introspection:followup": "node scripts/deus-scenarios.js introspection:followup",
+    "deus:log": "node scripts/deus-scenarios.js log",
+    "deus:memory:aggregate": "node scripts/deus-scenarios.js memory:aggregate",
+    "deus:nightly": "node scripts/deus-scenarios.js nightly",
+    "deus:openclaw:check": "node scripts/deus-scenarios.js openclaw:check",
+    "deus:policy:record": "node scripts/deus-scenarios.js policy:record",
+    "deus:scenarios": "node scripts/deus-scenarios.js list",
+    "deus:sleep": "node scripts/deus-scenarios.js sleep",
+    "deus:sleep:dry": "node scripts/deus-scenarios.js sleep:dry",
+    "deus:world-model": "node scripts/deus-scenarios.js world-model"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/basilisk-labs/openclaw-deus.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "bugs": {
+    "url": "https://github.com/basilisk-labs/openclaw-deus/issues"
+  },
+  "homepage": "https://github.com/basilisk-labs/openclaw-deus#readme",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.98.0",
+    "cloudflare": "^5.2.0",
+    "pg": "^8.19.0"
+  }
+}
