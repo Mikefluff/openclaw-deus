@@ -14,14 +14,15 @@ Install a fresh public-safe DEUS workspace on top of a clean OpenClaw base, ensu
 - `git` is available.
 - `node >=20` and `npm` are available.
 - the operator wants a normal checked-out workspace, not a bare mirror.
+- the commands below are executed from the target workspace root.
+- the target workspace root is clean enough for a repository checkout into `.`.
 
 ## Deterministic Install Steps
 
-### 1. Clone the repository
+### 1. Materialize the repository in the workspace root
 
 ```bash
-git clone https://github.com/basilisk-labs/openclaw-deus.git
-cd openclaw-deus
+git clone https://github.com/basilisk-labs/openclaw-deus.git .
 ```
 
 ### 2. Install workspace dependencies
@@ -99,7 +100,7 @@ npm run deus:health
 
 After the steps above:
 
-- the repository is checked out locally;
+- the repository is checked out directly in the workspace root;
 - a system `agentplane` CLI exists, installing `agentplane@latest` only when it was missing;
 - the repository still owns `AGENTS.md`;
 - local `.agentplane/` and local `AGENTPLANE.md` exist only after explicit post-install initialization;

@@ -29,8 +29,8 @@ Repository mutation rules are generated locally during AgentPlane initialization
 Use this when you want a working local DEUS workspace on top of a clean OpenClaw base.
 
 ```bash
-git clone https://github.com/basilisk-labs/openclaw-deus.git
-cd openclaw-deus
+# run from the target workspace root
+git clone https://github.com/basilisk-labs/openclaw-deus.git .
 npm install
 
 if ! command -v agentplane >/dev/null 2>&1; then
@@ -63,6 +63,7 @@ npm run deus:health
 ```
 
 Expected result:
+- repository files are materialized directly in the workspace root
 - `AGENTS.md` remains the repository-owned DEUS bootstrap entrypoint
 - local `.agentplane/` and local `AGENTPLANE.md` exist as post-install workflow overlay
 - tracked repository files stay clean after installation
