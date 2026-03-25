@@ -3,6 +3,9 @@ import { BeliefExtractionService } from './belief-extraction.service';
 import { BeliefsService } from '../beliefs.service';
 import { BeliefPromotionService } from './belief-promotion.service';
 import { SurrealService } from '../../database/surreal.service';
+import { CognitiveConfigService } from '../../cognitive/cognitive-config.service';
+import { SimilarityProvider } from '../../cognitive/similarity.provider';
+import { mockCognitiveConfig } from '../../__mocks__/cognitive-config.mock';
 
 describe('BeliefExtractionService', () => {
   let service: BeliefExtractionService;
@@ -14,6 +17,8 @@ describe('BeliefExtractionService', () => {
         { provide: BeliefsService, useValue: { findAll: jest.fn(), create: jest.fn() } },
         { provide: BeliefPromotionService, useValue: { addToReviewQueue: jest.fn() } },
         { provide: SurrealService, useValue: { query: jest.fn() } },
+        { provide: CognitiveConfigService, useValue: mockCognitiveConfig },
+        { provide: SimilarityProvider, useValue: new SimilarityProvider(mockCognitiveConfig as CognitiveConfigService) },
       ],
     }).compile();
 

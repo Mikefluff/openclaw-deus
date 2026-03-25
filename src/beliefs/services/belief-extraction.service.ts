@@ -4,7 +4,8 @@ import { DomainError } from '../../common/types/result.types';
 import { SurrealService } from '../../database/surreal.service';
 import { Belief, ExtractionCandidate, ExtractionStats } from '../../common/types/belief.types';
 import { EXTRACTION_PATTERNS, hasExtractionSignal } from '../../common/constants/extraction.constants';
-import { EXTRACTION_POLICY } from '../../common/constants/belief.constants';
+import { CognitiveConfigService } from '../../cognitive/cognitive-config.service';
+import { SimilarityProvider } from '../../cognitive/similarity.provider';
 import { BeliefsService } from '../beliefs.service';
 import { BeliefPromotionService } from './belief-promotion.service';
 
@@ -16,6 +17,8 @@ export class BeliefExtractionService {
     private readonly beliefs: BeliefsService,
     private readonly promotion: BeliefPromotionService,
     private readonly db: SurrealService,
+    private readonly config: CognitiveConfigService,
+    private readonly similarity: SimilarityProvider,
   ) {}
 
   async extractFromMemory(sinceDay?: string): Promise<Result<ExtractionStats, DomainError>> {
@@ -54,7 +57,7 @@ export class BeliefExtractionService {
 
         if (existing) {
           // Reinforce existing belief
-          existing.confidence = Math.min(1.0, existing.confidence + EXTRACTION_POLICY.reinforcementBoost);
+          existing.confidence = Math.min(1.0, existing.confidence + this.config.get('promotion.confidence_boost'));
           existing.timestamp_updated = new Date().toISOString();
           existing.drift_history.push({
             timestamp: new Date().toISOString(),
@@ -122,9 +125,7 @@ export class BeliefExtractionService {
           if (!matchedContent || matchedContent.length < 5) continue;
 
           const hasStrongSignal = hasExtractionSignal(matchedContent);
-          const confidence = hasStrongSignal
-            ? EXTRACTION_POLICY.strongSignalConfidence
-            : EXTRACTION_POLICY.weakSignalConfidence;
+          const confidence = hasStrongSignal ? 0.8 : 0.6;
 
           candidates.push({
             content: matchedContent,
@@ -132,7 +133,7 @@ export class BeliefExtractionService {
             category: config.category,
             prefix: config.prefix,
             type,
-            autoPromote: hasStrongSignal && matchedContent.length > EXTRACTION_POLICY.autoPromoteMinExplicitMatchLength,
+            autoPromote: hasStrongSignal && matchedContent.length > 10,
           });
         }
       }
@@ -142,20 +143,11 @@ export class BeliefExtractionService {
   }
 
   findExistingBelief(beliefs: Belief[], content: string): Belief | null {
-    for (const belief of beliefs) {
-      if (this.calculateSimilarity(belief.content, content) > EXTRACTION_POLICY.existingBeliefSimilarityThreshold) {
-        return belief;
-      }
-    }
-    return null;
+    return this.similarity.findBestWordMatch(content, beliefs as Array<{ content: string }>, 'similarity.belief_match') as Belief | null;
   }
 
   calculateSimilarity(a: string, b: string): number {
-    const aWords = new Set(a.toLowerCase().split(/\s+/).filter((w) => w.length > 3));
-    const bWords = new Set(b.toLowerCase().split(/\s+/).filter((w) => w.length > 3));
-    if (aWords.size === 0 || bWords.size === 0) return 0;
-    const intersection = new Set([...aWords].filter((x) => bWords.has(x)));
-    return intersection.size / Math.max(aWords.size, bWords.size);
+    return this.similarity.wordOverlap(a, b);
   }
 
   private daysAgo(n: number): string {

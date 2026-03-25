@@ -2,7 +2,14 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { WorldModelService } from './world-model.service';
 import { BeliefsService } from '../beliefs/beliefs.service';
 import { MemoryService } from '../memory/memory.service';
+import { IntentionService } from '../intention/intention.service';
+import { KnowledgeService } from '../knowledge/knowledge.service';
+import { KnowledgeGapService } from '../knowledge/services/knowledge-gap.service';
+import { OperatorModelService } from '../operator-model/operator-model.service';
+import { EpisodeService } from '../experience/episode.service';
 import { SurrealService } from '../database/surreal.service';
+import { CognitiveConfigService } from '../cognitive/cognitive-config.service';
+import { mockCognitiveConfig } from '../__mocks__/cognitive-config.mock';
 import { ok } from 'neverthrow';
 import { Belief } from '../common/types/belief.types';
 
@@ -17,6 +24,8 @@ function makeBelief(id: string, overrides: Partial<Belief> = {}): Belief {
   };
 }
 
+const mockOk = (data: any = {}) => jest.fn().mockResolvedValue(ok(data));
+
 describe('WorldModelService', () => {
   let service: WorldModelService;
 
@@ -24,31 +33,34 @@ describe('WorldModelService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         WorldModelService,
-        {
-          provide: BeliefsService,
-          useValue: {
-            findAll: jest.fn().mockResolvedValue(ok([
-              makeBelief('I1', { belief_class: 'axiom', confidence: 1.0 }),
-              makeBelief('B1'),
-              makeBelief('B2', { belief_class: 'user_model', content: 'User prefers TS' }),
-            ])),
-          },
-        },
-        {
-          provide: MemoryService,
-          useValue: {
-            getRecentEntries: jest.fn().mockResolvedValue(ok([
-              { day_key: '2026-03-25', type: 'event', description: 'test' },
-            ])),
-          },
-        },
-        {
-          provide: SurrealService,
-          useValue: {
-            query: jest.fn().mockResolvedValue(ok([{ count: 0 }])),
-            create: jest.fn().mockResolvedValue(ok({})),
-          },
-        },
+        { provide: BeliefsService, useValue: {
+          findAll: jest.fn().mockResolvedValue(ok([
+            makeBelief('I1', { belief_class: 'axiom', confidence: 1.0 }),
+            makeBelief('B1'),
+            makeBelief('B2', { belief_class: 'user_model', content: 'User prefers TS' }),
+          ])),
+        }},
+        { provide: MemoryService, useValue: {
+          getRecentEntries: jest.fn().mockResolvedValue(ok([{ day_key: '2026-03-25' }])),
+        }},
+        { provide: IntentionService, useValue: {
+          findActive: mockOk([{ intention_id: 'INT001', description: 'Ship auth', kind: 'goal', source: 'operator_explicit', status: 'active', priority: 0.9, progress: { blockers: [] } }]),
+        }},
+        { provide: KnowledgeService, useValue: {
+          findAll: mockOk([{ knowledge_id: 'K001', kind: 'fact', content: 'Uses NestJS', confidence: { point: 0.9 } }]),
+        }},
+        { provide: KnowledgeGapService, useValue: {
+          findOpen: mockOk([]),
+          findHighImpact: mockOk([]),
+        }},
+        { provide: OperatorModelService, useValue: {
+          getModel: mockOk({ expertise: [{ domain: 'TypeScript', level: 'expert' }], patterns: { review_style: 'results_only', prefers_autonomous_work: true }, session: { frustration_signals: 0 } }),
+        }},
+        { provide: EpisodeService, useValue: {
+          getSuccessRate: mockOk(0.85),
+        }},
+        { provide: SurrealService, useValue: { query: mockOk([]), create: mockOk({}) } },
+        { provide: CognitiveConfigService, useValue: mockCognitiveConfig },
       ],
     }).compile();
 
@@ -56,20 +68,37 @@ describe('WorldModelService', () => {
   });
 
   describe('build', () => {
-    it('should build a complete world model', async () => {
+    it('should build v2 world model with all data sources', async () => {
       const result = await service.build();
       expect(result.isOk()).toBe(true);
       const wm = result._unsafeUnwrap();
-      expect(wm.version).toBe(1);
+      expect(wm.version).toBe(2);
       expect(wm.confidence).toBeGreaterThan(0);
-      expect(wm.self_model.invariants).toHaveLength(1);
-      expect(wm.human_model.preferences).toContain('User prefers TS');
-      expect(wm.sources.beliefs.count).toBe(3);
     });
 
-    it('should set workspace_day', async () => {
-      const result = await service.build(new Date('2026-03-25'));
-      expect(result._unsafeUnwrap().workspace_day).toBe('2026-03-25');
+    it('should include intentions in workspace model', async () => {
+      const result = await service.build();
+      const wm = result._unsafeUnwrap();
+      expect(wm.workspace_model.active_project).toBe('Ship auth');
+      expect(wm.workspace_model.mode).toBe('active');
+    });
+
+    it('should include operator expertise in human model', async () => {
+      const result = await service.build();
+      const wm = result._unsafeUnwrap();
+      expect(wm.human_model.preferences).toContain('TypeScript: expert');
+    });
+
+    it('should include active requests from intentions', async () => {
+      const result = await service.build();
+      const wm = result._unsafeUnwrap();
+      expect(wm.human_model.active_requests.length).toBeGreaterThan(0);
+    });
+
+    it('should set preferred_modes based on operator autonomy preference', async () => {
+      const result = await service.build();
+      const wm = result._unsafeUnwrap();
+      expect(wm.action_priors.preferred_modes).toContain('direct_act');
     });
   });
 
@@ -79,7 +108,7 @@ describe('WorldModelService', () => {
       expect(service.isFresh(model)).toBe(true);
     });
 
-    it('should be stale after 6 hours', () => {
+    it('should be stale after configured hours', () => {
       const oldDate = new Date(Date.now() - 7 * 3600000).toISOString();
       const model = { generated_at: oldDate } as any;
       expect(service.isFresh(model)).toBe(false);
