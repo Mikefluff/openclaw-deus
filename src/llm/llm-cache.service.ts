@@ -15,6 +15,14 @@ const CACHE_TTL: Record<LlmOperationType, number> = {
   [LlmOperationType.INTROSPECTION]: 2 * 3600_000,          // 2h
   [LlmOperationType.POLICY_REASONING]: 0,                   // never cache
   [LlmOperationType.MEMORY_CONSOLIDATION]: 24 * 3600_000,  // 24h
+  // v4 BDI operations
+  [LlmOperationType.INTENTION_RECOGNITION]: 0,              // never cache — context-dependent
+  [LlmOperationType.KNOWLEDGE_EXTRACTION]: 4 * 3600_000,    // 4h
+  [LlmOperationType.DELIBERATION]: 0,                        // never cache
+  [LlmOperationType.EPISODE_CREATION]: 24 * 3600_000,       // 24h
+  [LlmOperationType.OPERATOR_MODEL_UPDATE]: 2 * 3600_000,   // 2h
+  [LlmOperationType.SELF_ASSESSMENT]: 24 * 3600_000,        // 24h
+  [LlmOperationType.PROCEDURE_EXTRACTION]: 24 * 3600_000,   // 24h
 };
 
 @Injectable()

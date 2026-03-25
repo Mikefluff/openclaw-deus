@@ -19,6 +19,11 @@ import { EventsModule } from './events/events.module';
 import { EmbeddingsModule } from './embeddings/embeddings.module';
 import { LlmModule } from './llm/llm.module';
 import { CognitiveModule } from './cognitive/cognitive.module';
+import { IntentionModule } from './intention/intention.module';
+import { KnowledgeModule } from './knowledge/knowledge.module';
+import { OperatorModelModule } from './operator-model/operator-model.module';
+import { DeliberationModule } from './deliberation/deliberation.module';
+import { ExperienceModule } from './experience/experience.module';
 
 @Module({
   imports: [
@@ -45,6 +50,11 @@ import { CognitiveModule } from './cognitive/cognitive.module';
     EmbeddingsModule,
     LlmModule,
     CognitiveModule,
+    IntentionModule,
+    KnowledgeModule,
+    OperatorModelModule,
+    DeliberationModule,
+    ExperienceModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

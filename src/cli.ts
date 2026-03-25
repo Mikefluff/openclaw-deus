@@ -14,6 +14,17 @@ import { PolicyService } from './policy/policy.service';
 import { WorldModelService } from './world-model/world-model.service';
 import { IntrospectionService } from './introspection/introspection.service';
 import { NightlyService } from './nightly/nightly.service';
+import { IntentionService } from './intention/intention.service';
+import { IntentionRecognitionService } from './intention/services/intention-recognition.service';
+import { IntentionStackService } from './intention/services/intention-stack.service';
+import { KnowledgeService } from './knowledge/knowledge.service';
+import { KnowledgeExtractionService } from './knowledge/services/knowledge-extraction.service';
+import { KnowledgeGapService } from './knowledge/services/knowledge-gap.service';
+import { DeliberationService } from './deliberation/deliberation.service';
+import { EpisodeService } from './experience/episode.service';
+import { ProcedureService } from './experience/procedure.service';
+import { SelfAssessmentService } from './experience/self-assessment.service';
+import { OperatorModelService } from './operator-model/operator-model.service';
 
 async function main() {
   const app = await NestFactory.createApplicationContext(AppModule, { logger: ['error', 'warn'] });
@@ -164,6 +175,91 @@ async function runCommand(app: any, command: string, args: string[]): Promise<an
       return r.value;
     }
 
+    // === v4 BDI commands ===
+
+    case 'intention:recognize': {
+      const svc = app.get(IntentionRecognitionService);
+      const msg = args.join(' ');
+      const r = await svc.recognizeFromMessage(msg);
+      if (r.isErr()) throw new Error(r.error.message);
+      return r.value;
+    }
+
+    case 'intention:list': {
+      const svc = app.get(IntentionService);
+      const r = await svc.findActive();
+      if (r.isErr()) throw new Error(r.error.message);
+      return r.value;
+    }
+
+    case 'intention:stack': {
+      const svc = app.get(IntentionStackService);
+      const r = await svc.getStack();
+      if (r.isErr()) throw new Error(r.error.message);
+      return r.value;
+    }
+
+    case 'knowledge:list': {
+      const svc = app.get(KnowledgeService);
+      const r = await svc.findAll();
+      if (r.isErr()) throw new Error(r.error.message);
+      return r.value;
+    }
+
+    case 'knowledge:extract': {
+      const svc = app.get(KnowledgeExtractionService);
+      const content = args.join(' ');
+      const r = await svc.extractFromInteraction(content);
+      if (r.isErr()) throw new Error(r.error.message);
+      return r.value;
+    }
+
+    case 'knowledge:gaps': {
+      const svc = app.get(KnowledgeGapService);
+      const r = await svc.findOpen();
+      if (r.isErr()) throw new Error(r.error.message);
+      return r.value;
+    }
+
+    case 'deliberate': {
+      const intentionSvc = app.get(IntentionService);
+      const delibSvc = app.get(DeliberationService);
+      const intentionId = args[0];
+      const intention = await intentionSvc.findById(intentionId);
+      if (intention.isErr()) throw new Error(intention.error.message);
+      const r = await delibSvc.deliberate(intention.value);
+      if (r.isErr()) throw new Error(r.error.message);
+      return r.value;
+    }
+
+    case 'episodes': {
+      const svc = app.get(EpisodeService);
+      const r = await svc.findRecent(parseInt(args[0] || '10'));
+      if (r.isErr()) throw new Error(r.error.message);
+      return r.value;
+    }
+
+    case 'procedures': {
+      const svc = app.get(ProcedureService);
+      const r = await svc.findAll();
+      if (r.isErr()) throw new Error(r.error.message);
+      return r.value;
+    }
+
+    case 'self-assessment': {
+      const svc = app.get(SelfAssessmentService);
+      const r = await svc.findAll();
+      if (r.isErr()) throw new Error(r.error.message);
+      return r.value;
+    }
+
+    case 'operator-model': {
+      const svc = app.get(OperatorModelService);
+      const r = await svc.getModel();
+      if (r.isErr()) throw new Error(r.error.message);
+      return r.value;
+    }
+
     default:
       console.log(`DEUS CLI — Available commands:
   bootstrap          Validate identity + init DB + seed
@@ -181,7 +277,20 @@ async function runCommand(app: any, command: string, args: string[]): Promise<an
   policy:evaluate <json>  Evaluate action
   world-model        Build world model
   introspect [full|sleep]  Run introspection
-  nightly            Full nightly run`);
+  nightly            Full nightly run
+
+  --- BDI Cognitive Architecture ---
+  intention:recognize <msg>  Recognize intentions from message
+  intention:list       Active intentions
+  intention:stack      Intention hierarchy
+  knowledge:list       All knowledge
+  knowledge:extract <text>  Extract knowledge from text
+  knowledge:gaps       Open knowledge gaps
+  deliberate <intentionId>  Deliberate on intention
+  episodes [limit]     Recent episodes
+  procedures           Extracted procedures
+  self-assessment      Agent skill assessment
+  operator-model       Operator mental model`);
       return undefined;
   }
 }

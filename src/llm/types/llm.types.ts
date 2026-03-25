@@ -5,6 +5,14 @@ export enum LlmOperationType {
   INTROSPECTION = 'introspection',
   POLICY_REASONING = 'policy_reasoning',
   MEMORY_CONSOLIDATION = 'memory_consolidation',
+  // v4 BDI operations
+  INTENTION_RECOGNITION = 'intention_recognition',
+  KNOWLEDGE_EXTRACTION = 'knowledge_extraction',
+  DELIBERATION = 'deliberation',
+  EPISODE_CREATION = 'episode_creation',
+  OPERATOR_MODEL_UPDATE = 'operator_model_update',
+  SELF_ASSESSMENT = 'self_assessment',
+  PROCEDURE_EXTRACTION = 'procedure_extraction',
 }
 
 export enum LlmPriority {
