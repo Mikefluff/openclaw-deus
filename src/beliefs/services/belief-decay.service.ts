@@ -5,18 +5,19 @@ import { Belief, DecayProfile, DecayResult, DecayStats } from '../../common/type
 import { CLASS_DEFAULTS, DECAY_RATES, MS_PER_DAY } from '../../common/constants/belief.constants';
 import { SurrealService } from '../../database/surreal.service';
 import { EventsService } from '../../events/events.service';
+import { CognitiveConfigService } from '../../cognitive/cognitive-config.service';
 import { BeliefsService } from '../beliefs.service';
 
-// SurrealQL native decay — one query replaces the entire JS loop
+// SurrealQL native decay — parameterized rates from CognitiveConfig
 const DECAY_QUERY = `
   UPDATE belief SET
     confidence = math::max(
       confidence_floor,
       confidence * math::exp(
         -(
-          IF decay_mode = 'slow' THEN 0.001
-          ELSE IF decay_mode = 'normal' THEN 0.01
-          ELSE IF decay_mode = 'fast' THEN 0.02
+          IF decay_mode = 'slow' THEN $rate_slow
+          ELSE IF decay_mode = 'normal' THEN $rate_normal
+          ELSE IF decay_mode = 'fast' THEN $rate_fast
           ELSE 0
           END
         ) * ((time::millis(time::now()) - time::millis(timestamp_updated)) / 86400000)
@@ -52,6 +53,7 @@ export class BeliefDecayService {
     private readonly beliefs: BeliefsService,
     private readonly db: SurrealService,
     private readonly events: EventsService,
+    private readonly config: CognitiveConfigService,
   ) {}
 
   async runDecayCycle(now?: Date): Promise<Result<DecayStats, DomainError>> {
@@ -61,8 +63,12 @@ export class BeliefDecayService {
     const repairResult = await this.db.batchUpdate(REPAIR_EXEMPT_QUERY);
     const restoredExempt = repairResult.isOk() ? repairResult.value : 0;
 
-    // Step 2: Apply exponential decay — SINGLE SurrealQL QUERY
-    const decayResult = await this.db.batchUpdate(DECAY_QUERY);
+    // Step 2: Apply exponential decay — SINGLE SurrealQL QUERY with config rates
+    const decayResult = await this.db.batchUpdate(DECAY_QUERY, {
+      rate_slow: this.config.get('decay.rate_slow'),
+      rate_normal: this.config.get('decay.rate_normal'),
+      rate_fast: this.config.get('decay.rate_fast'),
+    });
     const decayed = decayResult.isOk() ? decayResult.value : 0;
 
     // Step 3: Flag beliefs below review threshold
@@ -117,10 +123,15 @@ export class BeliefDecayService {
 
   getDecayProfile(belief: Belief): DecayProfile {
     const defaults = CLASS_DEFAULTS[belief.belief_class] || CLASS_DEFAULTS.operational;
+    const configRates: Record<string, string> = {
+      slow: 'decay.rate_slow', normal: 'decay.rate_normal', fast: 'decay.rate_fast',
+    };
+    const rateKey = configRates[belief.decay_mode];
+    const decay_rate = rateKey ? this.config.get(rateKey) : (defaults.decay_rate ?? 0);
     return {
       belief_class: belief.belief_class,
       decay_mode: belief.decay_mode || defaults.decay_mode,
-      decay_rate: DECAY_RATES[belief.decay_mode] ?? defaults.decay_rate,
+      decay_rate,
       confidence_floor: belief.confidence_floor ?? defaults.confidence_floor,
       review_threshold: belief.review_threshold ?? defaults.review_threshold,
       archivable: belief.archivable ?? defaults.archivable,

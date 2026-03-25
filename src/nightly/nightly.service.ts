@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Result, ok, err } from 'neverthrow';
+import { Result, ok } from 'neverthrow';
 import { DomainError } from '../common/types/result.types';
 import { SurrealService } from '../database/surreal.service';
 import { NightlyRunResult, NightlyStageResult } from '../common/types/introspection.types';
@@ -7,6 +7,15 @@ import { MemoryAggregationService } from '../memory/services/memory-aggregation.
 import { IntrospectionService } from '../introspection/introspection.service';
 import { BeliefDecayService } from '../beliefs/services/belief-decay.service';
 import { BeliefPromotionService } from '../beliefs/services/belief-promotion.service';
+import { KnowledgeExtractionService } from '../knowledge/services/knowledge-extraction.service';
+import { KnowledgeGapService } from '../knowledge/services/knowledge-gap.service';
+import { ProcedureService } from '../experience/procedure.service';
+import { SelfAssessmentService } from '../experience/self-assessment.service';
+import { IntentionStackService } from '../intention/services/intention-stack.service';
+import { CalibrationService } from '../cognitive/calibration.service';
+import { CognitiveConfigService } from '../cognitive/cognitive-config.service';
+import { WorldModelService } from '../world-model/world-model.service';
+import { EventsService } from '../events/events.service';
 
 @Injectable()
 export class NightlyService {
@@ -17,6 +26,15 @@ export class NightlyService {
     private readonly introspection: IntrospectionService,
     private readonly decay: BeliefDecayService,
     private readonly promotion: BeliefPromotionService,
+    private readonly knowledgeExtraction: KnowledgeExtractionService,
+    private readonly gaps: KnowledgeGapService,
+    private readonly procedures: ProcedureService,
+    private readonly selfAssessment: SelfAssessmentService,
+    private readonly intentionStack: IntentionStackService,
+    private readonly calibration: CalibrationService,
+    private readonly config: CognitiveConfigService,
+    private readonly worldModel: WorldModelService,
+    private readonly events: EventsService,
     private readonly db: SurrealService,
   ) {}
 
@@ -24,50 +42,84 @@ export class NightlyService {
     const startedAt = (now || new Date()).toISOString();
     const stages: NightlyStageResult[] = [];
 
-    // Stage 1: Memory aggregation
-    this.logger.log('Nightly: memory aggregate');
-    const aggResult = await this.aggregation.aggregateDay();
-    stages.push({
-      name: 'memory_aggregate',
-      status: aggResult.isOk() ? 'ok' : 'error',
-      result: aggResult.isOk() ? (aggResult.value as any) : { error: aggResult.error.message },
+    const runStage = async (name: string, fn: () => Promise<any>): Promise<void> => {
+      this.logger.log(`Nightly: ${name}`);
+      try {
+        const result = await fn();
+        const data = result?.isOk ? (result.isOk() ? result.value : { error: result.error?.message }) : result;
+        stages.push({ name, status: 'ok', result: data || {} });
+      } catch (error: any) {
+        this.logger.error(`Nightly ${name} failed: ${error.message}`);
+        stages.push({ name, status: 'error', result: { error: error.message } });
+      }
+      await this.events.emit('nightly.stage_completed' as any, { stage: name, status: stages[stages.length - 1].status });
+    };
+
+    // === Phase 1: Data collection ===
+    await runStage('memory_aggregate', () => this.aggregation.aggregateDay());
+
+    // === Phase 2: Knowledge processing ===
+    await runStage('knowledge_consolidation', async () => {
+      // Extract knowledge from today's aggregated memory
+      const today = new Date().toISOString().slice(0, 10);
+      const memory = await this.aggregation.getDailyMemory(today);
+      if (memory.isOk() && memory.value) {
+        const content = Object.values(memory.value.sections || {}).flat().join('\n');
+        if (content.length > 50) {
+          return this.knowledgeExtraction.extractFromInteraction(content);
+        }
+      }
+      return { extracted: 0 };
     });
 
-    // Stage 2: Sleep cycle (lightweight introspection)
-    this.logger.log('Nightly: sleep cycle');
-    const sleepResult = await this.introspection.run('sleep');
-    stages.push({
-      name: 'sleep',
-      status: sleepResult.isOk() ? 'ok' : 'error',
-      result: sleepResult.isOk() ? { posture: sleepResult.value.posture, coherence: sleepResult.value.coherence_score } : { error: sleepResult.error.message },
+    await runStage('sleep', () => this.introspection.run('sleep'));
+
+    // === Phase 3: Full analysis ===
+    await runStage('introspect', () => this.introspection.run('full'));
+
+    await runStage('decay_tune', () => this.decay.runDecayCycle());
+
+    await runStage('belief_review', () => this.promotion.runPromotionReview());
+
+    // === Phase 4: Experience processing ===
+    await runStage('procedure_extraction', () => this.procedures.extractFromEpisodes());
+
+    await runStage('self_assessment', () => this.selfAssessment.updateFromEpisodes());
+
+    // === Phase 5: Maintenance ===
+    await runStage('intention_review', async () => {
+      const stale = await this.intentionStack.findStaleIntentions(3);
+      const adopted = await this.intentionStack.autoAdopt();
+      return {
+        stale_intentions: stale.isOk() ? stale.value.length : 0,
+        auto_adopted: adopted.isOk() ? adopted.value : 0,
+      };
     });
 
-    // Stage 3: Full introspection
-    this.logger.log('Nightly: full introspection');
-    const introResult = await this.introspection.run('full');
-    stages.push({
-      name: 'introspect',
-      status: introResult.isOk() ? 'ok' : 'error',
-      result: introResult.isOk() ? { posture: introResult.value.posture, coherence: introResult.value.coherence_score } : { error: introResult.error.message },
+    await runStage('knowledge_gap_review', async () => {
+      const openGaps = await this.gaps.findOpen();
+      const highImpact = await this.gaps.findHighImpact(0.7);
+      return {
+        open_gaps: openGaps.isOk() ? openGaps.value.length : 0,
+        high_impact: highImpact.isOk() ? highImpact.value.length : 0,
+      };
     });
 
-    // Stage 4: Decay tuning
-    this.logger.log('Nightly: decay cycle');
-    const decayResult = await this.decay.runDecayCycle();
-    stages.push({
-      name: 'decay_tune',
-      status: decayResult.isOk() ? 'ok' : 'error',
-      result: decayResult.isOk() ? (decayResult.value as any) : { error: decayResult.error.message },
+    // === Phase 6: Self-tuning ===
+    await runStage('cognitive_config_tuning', async () => {
+      const cal = await this.calibration.computeCalibration();
+      if (cal.isOk()) {
+        await this.config.adjustFromFeedback({
+          overconfident: cal.value.overconfident,
+          underconfident: cal.value.underconfident,
+        });
+        return { ece: cal.value.ece, adjusted: true };
+      }
+      return { ece: 0, adjusted: false };
     });
 
-    // Stage 5: Belief promotion review
-    this.logger.log('Nightly: belief review');
-    const reviewResult = await this.promotion.runPromotionReview();
-    stages.push({
-      name: 'belief_review',
-      status: reviewResult.isOk() ? 'ok' : 'error',
-      result: reviewResult.isOk() ? (reviewResult.value as any) : { error: reviewResult.error.message },
-    });
+    // === Phase 7: Rebuild world model ===
+    await runStage('world_model_rebuild', () => this.worldModel.build());
 
     const finishedAt = new Date().toISOString();
     const nightlyResult: NightlyRunResult = {
@@ -82,10 +134,10 @@ export class NightlyService {
       finished_at: finishedAt,
     };
 
-    // Persist
     await this.db.create('nightly_run', nightlyResult as any);
+    await this.events.emit('nightly.completed' as any, nightlyResult.summary);
 
-    this.logger.log(`Nightly complete: ${stages.filter((s) => s.status === 'ok').length}/${stages.length} stages passed`);
+    this.logger.log(`Nightly complete: ${nightlyResult.summary.passed}/${nightlyResult.summary.total_stages} stages passed`);
     return ok(nightlyResult);
   }
 }

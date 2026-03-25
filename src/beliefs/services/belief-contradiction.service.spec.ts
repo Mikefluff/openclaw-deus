@@ -3,7 +3,10 @@ import { BeliefContradictionService } from './belief-contradiction.service';
 import { BeliefsService } from '../beliefs.service';
 import { SurrealService } from '../../database/surreal.service';
 import { EventsService } from '../../events/events.service';
+import { CognitiveConfigService } from '../../cognitive/cognitive-config.service';
+import { SimilarityProvider } from '../../cognitive/similarity.provider';
 import { mockEventsService } from '../../__mocks__/events.mock';
+import { mockCognitiveConfig } from '../../__mocks__/cognitive-config.mock';
 import { Belief } from '../../common/types/belief.types';
 import { ok } from 'neverthrow';
 
@@ -44,6 +47,8 @@ describe('BeliefContradictionService', () => {
         },
         { provide: SurrealService, useValue: { relate: jest.fn().mockResolvedValue(ok({})), batchUpdate: jest.fn().mockResolvedValue(ok(0)) } },
         { provide: EventsService, useValue: mockEventsService },
+        { provide: CognitiveConfigService, useValue: mockCognitiveConfig },
+        { provide: SimilarityProvider, useValue: new SimilarityProvider(mockCognitiveConfig as CognitiveConfigService) },
       ],
     }).compile();
 
@@ -66,13 +71,13 @@ describe('BeliefContradictionService', () => {
     });
   });
 
-  describe('calculateSimilarity', () => {
-    it('should return high similarity for same text', () => {
-      expect(service.calculateSimilarity('тестовый контент здесь', 'тестовый контент здесь')).toBe(1);
+  describe('isSimilarContent (uses SimilarityProvider)', () => {
+    it('should detect similar content', () => {
+      expect(service.isSimilarContent('тестовый контент здесь пример', 'тестовый контент здесь пример')).toBe(true);
     });
 
-    it('should return 0 for completely different text', () => {
-      expect(service.calculateSimilarity('альфа бета гамма', 'дельта эпсилон зета')).toBe(0);
+    it('should not match completely different text', () => {
+      expect(service.isSimilarContent('альфа бета гамма', 'дельта эпсилон зета')).toBe(false);
     });
   });
 

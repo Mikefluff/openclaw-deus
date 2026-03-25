@@ -5,6 +5,8 @@ import { Belief, Contradiction, ContradictionStats } from '../../common/types/be
 import { SurrealService } from '../../database/surreal.service';
 import { EventsService } from '../../events/events.service';
 import { BeliefsService } from '../beliefs.service';
+import { CognitiveConfigService } from '../../cognitive/cognitive-config.service';
+import { SimilarityProvider } from '../../cognitive/similarity.provider';
 
 @Injectable()
 export class BeliefContradictionService {
@@ -14,6 +16,8 @@ export class BeliefContradictionService {
     private readonly beliefs: BeliefsService,
     private readonly db: SurrealService,
     private readonly events: EventsService,
+    private readonly config: CognitiveConfigService,
+    private readonly similarity: SimilarityProvider,
   ) {}
 
   async scanForContradictions(): Promise<Result<ContradictionStats, DomainError>> {
@@ -114,7 +118,7 @@ export class BeliefContradictionService {
               content_1: b1.content, content_2: b2.content, severity: 'high', scope });
           }
 
-          if (this.isSimilarContent(b1.content, b2.content) && Math.abs(b1.confidence - b2.confidence) > 0.5) {
+          if (this.isSimilarContent(b1.content, b2.content) && Math.abs(b1.confidence - b2.confidence) > this.config.get('contradiction.divergence_threshold')) {
             contradictions.push({ belief_1: b1.belief_id, belief_2: b2.belief_id,
               content_1: b1.content, content_2: b2.content, severity: 'medium', scope, reason: 'confidence_divergence' });
           }
@@ -132,7 +136,8 @@ export class BeliefContradictionService {
       const b2 = beliefs.find((b) => b.belief_id === contr.belief_2);
       if (!b1 || !b2) continue;
 
-      b1.confidence *= 0.8; b2.confidence *= 0.8;
+      const penalty = this.config.get('contradiction.confidence_penalty');
+      b1.confidence *= penalty; b2.confidence *= penalty;
       b1.status = 'review_needed'; b2.status = 'review_needed';
       b1.drift_history.push({ timestamp: now, confidence: b1.confidence, reason: 'contradiction_detected', with: contr.belief_2 });
       b2.drift_history.push({ timestamp: now, confidence: b2.confidence, reason: 'contradiction_detected', with: contr.belief_1 });
@@ -140,28 +145,21 @@ export class BeliefContradictionService {
   }
 
   isNegation(content1: string, content2: string): boolean {
-    const negations = ['не ', 'нет', 'никогда', 'всегда'];
+    const negations = ['не ', 'нет', 'никогда', 'всегда', 'not ', 'never', 'no '];
     const c1 = content1.toLowerCase();
     const c2 = content2.toLowerCase();
+    const threshold = this.config.get('similarity.contradiction_negation');
     for (const neg of negations) {
       if ((c1.includes(neg) && !c2.includes(neg)) || (!c1.includes(neg) && c2.includes(neg))) {
         const base1 = c1.replace(new RegExp(neg, 'g'), '').trim();
         const base2 = c2.replace(new RegExp(neg, 'g'), '').trim();
-        if (this.calculateSimilarity(base1, base2) > 0.6) return true;
+        if (this.similarity.wordOverlap(base1, base2) > threshold) return true;
       }
     }
     return false;
   }
 
   isSimilarContent(c1: string, c2: string): boolean {
-    return this.calculateSimilarity(c1.toLowerCase(), c2.toLowerCase()) > 0.5;
-  }
-
-  calculateSimilarity(a: string, b: string): number {
-    const aWords = new Set(a.split(/\s+/).filter((w) => w.length > 3));
-    const bWords = new Set(b.split(/\s+/).filter((w) => w.length > 3));
-    if (aWords.size === 0 || bWords.size === 0) return 0;
-    const intersection = new Set([...aWords].filter((x) => bWords.has(x)));
-    return intersection.size / Math.max(aWords.size, bWords.size);
+    return this.similarity.wordOverlap(c1, c2) > this.config.get('similarity.contradiction_content');
   }
 }

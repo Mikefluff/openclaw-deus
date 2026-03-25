@@ -3,7 +3,9 @@ import { BeliefDecayService } from './belief-decay.service';
 import { BeliefsService } from '../beliefs.service';
 import { SurrealService } from '../../database/surreal.service';
 import { EventsService } from '../../events/events.service';
+import { CognitiveConfigService } from '../../cognitive/cognitive-config.service';
 import { mockEventsService } from '../../__mocks__/events.mock';
+import { mockCognitiveConfig } from '../../__mocks__/cognitive-config.mock';
 import { Belief } from '../../common/types/belief.types';
 import { ok } from 'neverthrow';
 
@@ -45,6 +47,7 @@ describe('BeliefDecayService', () => {
         },
         { provide: SurrealService, useValue: { batchUpdate: jest.fn().mockResolvedValue(ok(0)), query: jest.fn().mockResolvedValue(ok([])) } },
         { provide: EventsService, useValue: mockEventsService },
+        { provide: CognitiveConfigService, useValue: mockCognitiveConfig },
       ],
     }).compile();
 

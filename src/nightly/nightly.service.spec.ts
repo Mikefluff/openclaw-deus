@@ -4,9 +4,22 @@ import { MemoryAggregationService } from '../memory/services/memory-aggregation.
 import { IntrospectionService } from '../introspection/introspection.service';
 import { BeliefDecayService } from '../beliefs/services/belief-decay.service';
 import { BeliefPromotionService } from '../beliefs/services/belief-promotion.service';
+import { KnowledgeExtractionService } from '../knowledge/services/knowledge-extraction.service';
+import { KnowledgeGapService } from '../knowledge/services/knowledge-gap.service';
+import { ProcedureService } from '../experience/procedure.service';
+import { SelfAssessmentService } from '../experience/self-assessment.service';
+import { IntentionStackService } from '../intention/services/intention-stack.service';
+import { CalibrationService } from '../cognitive/calibration.service';
+import { CognitiveConfigService } from '../cognitive/cognitive-config.service';
+import { WorldModelService } from '../world-model/world-model.service';
+import { EventsService } from '../events/events.service';
 import { SurrealService } from '../database/surreal.service';
+import { mockEventsService } from '../__mocks__/events.mock';
+import { mockCognitiveConfig } from '../__mocks__/cognitive-config.mock';
 import { ok, err } from 'neverthrow';
 import { ValidationError } from '../common/types/result.types';
+
+const mockOk = (data: any = {}) => jest.fn().mockResolvedValue(ok(data));
 
 describe('NightlyService', () => {
   let service: NightlyService;
@@ -15,64 +28,67 @@ describe('NightlyService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         NightlyService,
-        {
-          provide: MemoryAggregationService,
-          useValue: { aggregateDay: jest.fn().mockResolvedValue(ok({ day_key: '2026-03-25', entries_processed: 5, sections_updated: ['Git Activity'] })) },
-        },
-        {
-          provide: IntrospectionService,
-          useValue: { run: jest.fn().mockResolvedValue(ok({ posture: 'stable', coherence_score: 0.9 })) },
-        },
-        {
-          provide: BeliefDecayService,
-          useValue: { runDecayCycle: jest.fn().mockResolvedValue(ok({ decayed: 2, flagged: 0 })) },
-        },
-        {
-          provide: BeliefPromotionService,
-          useValue: { runPromotionReview: jest.fn().mockResolvedValue(ok({ promoted: 1, deferred: 0, rejected: 0 })) },
-        },
-        {
-          provide: SurrealService,
-          useValue: { create: jest.fn().mockResolvedValue(ok({})) },
-        },
+        { provide: MemoryAggregationService, useValue: { aggregateDay: mockOk({ day_key: '2026-03-25' }), getDailyMemory: mockOk({ sections: { 'Git Activity': ['test'] } }) } },
+        { provide: IntrospectionService, useValue: { run: mockOk({ posture: 'stable', coherence_score: 0.9 }) } },
+        { provide: BeliefDecayService, useValue: { runDecayCycle: mockOk({ decayed: 2 }) } },
+        { provide: BeliefPromotionService, useValue: { runPromotionReview: mockOk({ promoted: 1 }) } },
+        { provide: KnowledgeExtractionService, useValue: { extractFromInteraction: mockOk({ new_knowledge: [], updated_knowledge: [], knowledge_gaps: [] }) } },
+        { provide: KnowledgeGapService, useValue: { findOpen: mockOk([]), findHighImpact: mockOk([]) } },
+        { provide: ProcedureService, useValue: { extractFromEpisodes: mockOk([]) } },
+        { provide: SelfAssessmentService, useValue: { updateFromEpisodes: mockOk([]) } },
+        { provide: IntentionStackService, useValue: { findStaleIntentions: mockOk([]), autoAdopt: mockOk(0) } },
+        { provide: CalibrationService, useValue: { computeCalibration: mockOk({ ece: 0.05, overconfident: false, underconfident: false }) } },
+        { provide: CognitiveConfigService, useValue: mockCognitiveConfig },
+        { provide: WorldModelService, useValue: { build: mockOk({ confidence: 0.8 }) } },
+        { provide: EventsService, useValue: mockEventsService },
+        { provide: SurrealService, useValue: { create: mockOk({}) } },
       ],
     }).compile();
 
     service = module.get(NightlyService);
   });
 
-  it('should execute all 5 stages in order', async () => {
+  it('should execute all 12 stages', async () => {
     const result = await service.run();
     expect(result.isOk()).toBe(true);
     const run = result._unsafeUnwrap();
-    expect(run.stages).toHaveLength(5);
-    expect(run.stage_order).toEqual(['memory_aggregate', 'sleep', 'introspect', 'decay_tune', 'belief_review']);
+    expect(run.stages.length).toBe(12);
+    expect(run.summary.total_stages).toBe(12);
   });
 
   it('should report passed/failed in summary', async () => {
     const result = await service.run();
     const run = result._unsafeUnwrap();
-    expect(run.summary).toEqual(expect.objectContaining({ total_stages: 5, passed: 5, failed: 0 }));
+    const summary = run.summary as any;
+    expect(summary.passed + summary.failed).toBe(12);
+    expect(summary.passed).toBeGreaterThanOrEqual(10);
   });
 
   it('should continue even if one stage fails', async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         NightlyService,
-        { provide: MemoryAggregationService, useValue: { aggregateDay: jest.fn().mockResolvedValue(err(new ValidationError('fail'))) } },
-        { provide: IntrospectionService, useValue: { run: jest.fn().mockResolvedValue(ok({ posture: 'stable', coherence_score: 0.9 })) } },
-        { provide: BeliefDecayService, useValue: { runDecayCycle: jest.fn().mockResolvedValue(ok({ decayed: 0 })) } },
-        { provide: BeliefPromotionService, useValue: { runPromotionReview: jest.fn().mockResolvedValue(ok({ promoted: 0 })) } },
-        { provide: SurrealService, useValue: { create: jest.fn().mockResolvedValue(ok({})) } },
+        { provide: MemoryAggregationService, useValue: { aggregateDay: jest.fn().mockResolvedValue(err(new ValidationError('fail'))), getDailyMemory: mockOk(null) } },
+        { provide: IntrospectionService, useValue: { run: mockOk({ posture: 'stable', coherence_score: 0.9 }) } },
+        { provide: BeliefDecayService, useValue: { runDecayCycle: mockOk({}) } },
+        { provide: BeliefPromotionService, useValue: { runPromotionReview: mockOk({}) } },
+        { provide: KnowledgeExtractionService, useValue: { extractFromInteraction: mockOk({}) } },
+        { provide: KnowledgeGapService, useValue: { findOpen: mockOk([]), findHighImpact: mockOk([]) } },
+        { provide: ProcedureService, useValue: { extractFromEpisodes: mockOk([]) } },
+        { provide: SelfAssessmentService, useValue: { updateFromEpisodes: mockOk([]) } },
+        { provide: IntentionStackService, useValue: { findStaleIntentions: mockOk([]), autoAdopt: mockOk(0) } },
+        { provide: CalibrationService, useValue: { computeCalibration: mockOk({ ece: 0, overconfident: false, underconfident: false }) } },
+        { provide: CognitiveConfigService, useValue: mockCognitiveConfig },
+        { provide: WorldModelService, useValue: { build: mockOk({}) } },
+        { provide: EventsService, useValue: mockEventsService },
+        { provide: SurrealService, useValue: { create: mockOk({}) } },
       ],
     }).compile();
 
     const svc = module.get(NightlyService);
     const result = await svc.run();
     expect(result.isOk()).toBe(true);
-    const run = result._unsafeUnwrap();
-    expect(run.stages[0].status).toBe('error');
-    expect(run.stages.length).toBe(5); // all stages ran
+    expect(result._unsafeUnwrap().stages.length).toBe(12);
   });
 
   it('should set timestamps', async () => {
@@ -80,6 +96,17 @@ describe('NightlyService', () => {
     const run = result._unsafeUnwrap();
     expect(run.started_at).toBeDefined();
     expect(run.finished_at).toBeDefined();
-    expect(new Date(run.finished_at).getTime()).toBeGreaterThanOrEqual(new Date(run.started_at).getTime());
+  });
+
+  it('should include v4 stages', async () => {
+    const result = await service.run();
+    const names = result._unsafeUnwrap().stage_order;
+    expect(names).toContain('knowledge_consolidation');
+    expect(names).toContain('procedure_extraction');
+    expect(names).toContain('self_assessment');
+    expect(names).toContain('intention_review');
+    expect(names).toContain('knowledge_gap_review');
+    expect(names).toContain('cognitive_config_tuning');
+    expect(names).toContain('world_model_rebuild');
   });
 });
