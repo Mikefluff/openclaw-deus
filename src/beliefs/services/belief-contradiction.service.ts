@@ -1,0 +1,167 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { Result, ok, err } from 'neverthrow';
+import { DomainError } from '../../common/types/result.types';
+import { Belief, Contradiction, ContradictionStats } from '../../common/types/belief.types';
+import { SurrealService } from '../../database/surreal.service';
+import { EventsService } from '../../events/events.service';
+import { BeliefsService } from '../beliefs.service';
+
+@Injectable()
+export class BeliefContradictionService {
+  private readonly logger = new Logger(BeliefContradictionService.name);
+
+  constructor(
+    private readonly beliefs: BeliefsService,
+    private readonly db: SurrealService,
+    private readonly events: EventsService,
+  ) {}
+
+  async scanForContradictions(): Promise<Result<ContradictionStats, DomainError>> {
+    const allBeliefs = await this.beliefs.findAll();
+    if (allBeliefs.isErr()) return err(allBeliefs.error);
+
+    const beliefs = allBeliefs.value;
+    const contradictions = this.findContradictions(beliefs);
+
+    if (contradictions.length > 0) {
+      const highSeverity = contradictions.filter((c) => c.severity === 'high');
+
+      // Create graph relations in SurrealDB for all contradictions
+      for (const contr of contradictions) {
+        const b1 = beliefs.find((b) => b.belief_id === contr.belief_1);
+        const b2 = beliefs.find((b) => b.belief_id === contr.belief_2);
+        if (b1?.id && b2?.id) {
+          await this.db.relate(b1.id, 'contradicts', b2.id, {
+            severity: contr.severity,
+            scope: contr.scope,
+            detected_at: new Date().toISOString(),
+          });
+        }
+      }
+
+      if (highSeverity.length > 0) {
+        this.resolveContradictions(contradictions, beliefs);
+        // Batch update resolved beliefs
+        for (const belief of beliefs) {
+          if (belief.status === 'review_needed' && belief.id) {
+            await this.db.batchUpdate(
+              'UPDATE belief SET confidence = $conf, status = $status WHERE belief_id = $bid',
+              { conf: belief.confidence, status: belief.status, bid: belief.belief_id },
+            );
+          }
+        }
+      }
+
+      await this.events.emit('contradiction.detected', {
+        total: contradictions.length,
+        high_severity: highSeverity.length,
+        pairs: contradictions.map((c) => ({ b1: c.belief_1, b2: c.belief_2, severity: c.severity })),
+      });
+    }
+
+    return ok({
+      timestamp: new Date().toISOString(),
+      total_checked: beliefs.length,
+      contradictions_found: contradictions.length,
+      high_severity: contradictions.filter((c) => c.severity === 'high').length,
+      medium_severity: contradictions.filter((c) => c.severity === 'medium').length,
+    });
+  }
+
+  /** Query existing contradictions from graph */
+  async getContradictionsFor(beliefId: string): Promise<Result<Contradiction[], DomainError>> {
+    const result = await this.db.query<{
+      in: { belief_id: string; content: string };
+      out: { belief_id: string; content: string };
+      severity: string;
+      scope: string;
+    }>(
+      `SELECT in.belief_id, in.content, out.belief_id, out.content, severity, scope
+       FROM contradicts
+       WHERE in.belief_id = $id OR out.belief_id = $id`,
+      { id: beliefId },
+    );
+    if (result.isErr()) return err(result.error);
+
+    return ok(result.value.map((r) => ({
+      belief_1: r.in.belief_id,
+      belief_2: r.out.belief_id,
+      content_1: r.in.content,
+      content_2: r.out.content,
+      severity: r.severity as 'high' | 'medium',
+      scope: r.scope,
+    })));
+  }
+
+  findContradictions(beliefs: Belief[]): Contradiction[] {
+    const contradictions: Contradiction[] = [];
+    const byScope: Record<string, Belief[]> = {};
+    for (const b of beliefs) {
+      const scope = b.context_scope || 'unknown';
+      byScope[scope] = byScope[scope] || [];
+      byScope[scope].push(b);
+    }
+
+    for (const [scope, scopeBeliefs] of Object.entries(byScope)) {
+      for (let i = 0; i < scopeBeliefs.length; i++) {
+        for (let j = i + 1; j < scopeBeliefs.length; j++) {
+          const b1 = scopeBeliefs[i];
+          const b2 = scopeBeliefs[j];
+          if (b1.status === 'archived' || b2.status === 'archived') continue;
+
+          if (this.isNegation(b1.content, b2.content)) {
+            contradictions.push({ belief_1: b1.belief_id, belief_2: b2.belief_id,
+              content_1: b1.content, content_2: b2.content, severity: 'high', scope });
+          }
+
+          if (this.isSimilarContent(b1.content, b2.content) && Math.abs(b1.confidence - b2.confidence) > 0.5) {
+            contradictions.push({ belief_1: b1.belief_id, belief_2: b2.belief_id,
+              content_1: b1.content, content_2: b2.content, severity: 'medium', scope, reason: 'confidence_divergence' });
+          }
+        }
+      }
+    }
+    return contradictions;
+  }
+
+  resolveContradictions(contradictions: Contradiction[], beliefs: Belief[]): void {
+    const now = new Date().toISOString();
+    for (const contr of contradictions) {
+      if (contr.severity !== 'high') continue;
+      const b1 = beliefs.find((b) => b.belief_id === contr.belief_1);
+      const b2 = beliefs.find((b) => b.belief_id === contr.belief_2);
+      if (!b1 || !b2) continue;
+
+      b1.confidence *= 0.8; b2.confidence *= 0.8;
+      b1.status = 'review_needed'; b2.status = 'review_needed';
+      b1.drift_history.push({ timestamp: now, confidence: b1.confidence, reason: 'contradiction_detected', with: contr.belief_2 });
+      b2.drift_history.push({ timestamp: now, confidence: b2.confidence, reason: 'contradiction_detected', with: contr.belief_1 });
+    }
+  }
+
+  isNegation(content1: string, content2: string): boolean {
+    const negations = ['не ', 'нет', 'никогда', 'всегда'];
+    const c1 = content1.toLowerCase();
+    const c2 = content2.toLowerCase();
+    for (const neg of negations) {
+      if ((c1.includes(neg) && !c2.includes(neg)) || (!c1.includes(neg) && c2.includes(neg))) {
+        const base1 = c1.replace(new RegExp(neg, 'g'), '').trim();
+        const base2 = c2.replace(new RegExp(neg, 'g'), '').trim();
+        if (this.calculateSimilarity(base1, base2) > 0.6) return true;
+      }
+    }
+    return false;
+  }
+
+  isSimilarContent(c1: string, c2: string): boolean {
+    return this.calculateSimilarity(c1.toLowerCase(), c2.toLowerCase()) > 0.5;
+  }
+
+  calculateSimilarity(a: string, b: string): number {
+    const aWords = new Set(a.split(/\s+/).filter((w) => w.length > 3));
+    const bWords = new Set(b.split(/\s+/).filter((w) => w.length > 3));
+    if (aWords.size === 0 || bWords.size === 0) return 0;
+    const intersection = new Set([...aWords].filter((x) => bWords.has(x)));
+    return intersection.size / Math.max(aWords.size, bWords.size);
+  }
+}
