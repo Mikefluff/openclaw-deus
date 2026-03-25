@@ -1,6 +1,8 @@
 import { RipenessService } from './ripeness.service';
 import { NormalizedIntent } from '../../common/types/policy.types';
 import { WorldModel } from '../../common/types/world-model.types';
+import { CognitiveConfigService } from '../../cognitive/cognitive-config.service';
+import { mockCognitiveConfig } from '../../__mocks__/cognitive-config.mock';
 
 function makeIntent(overrides: Partial<NormalizedIntent> = {}): NormalizedIntent {
   return {
@@ -30,7 +32,7 @@ describe('RipenessService', () => {
   let service: RipenessService;
 
   beforeEach(() => {
-    service = new RipenessService();
+    service = new RipenessService(mockCognitiveConfig as CognitiveConfigService);
   });
 
   describe('score', () => {

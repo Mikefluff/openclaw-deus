@@ -16,7 +16,7 @@ import { BeliefDecayService } from '../beliefs/services/belief-decay.service';
 import { BeliefExtractionService } from '../beliefs/services/belief-extraction.service';
 import { MemoryService } from '../memory/memory.service';
 import { WorldModelService } from '../world-model/world-model.service';
-import { INTROSPECTION_THRESHOLDS } from '../common/constants/belief.constants';
+import { CognitiveConfigService } from '../cognitive/cognitive-config.service';
 
 const FULL_STAGES = ['beliefs_snapshot', 'extraction', 'contradiction_scan', 'decay', 'memory_freshness', 'world_model_refresh', 'coherence', 'report'];
 const SLEEP_STAGES = ['beliefs_snapshot', 'memory_freshness', 'coherence', 'report'];
@@ -33,6 +33,7 @@ export class IntrospectionService {
     private readonly memory: MemoryService,
     private readonly worldModel: WorldModelService,
     private readonly db: SurrealService,
+    private readonly config: CognitiveConfigService,
   ) {}
 
   async run(profile: IntrospectionProfile = 'full'): Promise<Result<IntrospectionReport, DomainError>> {
@@ -45,7 +46,7 @@ export class IntrospectionService {
     if (allBeliefs.isErr()) return err(allBeliefs.error);
     const beliefs = allBeliefs.value;
     const activeBeliefs = beliefs.filter((b) => b.status === 'active');
-    const lowConfidence = activeBeliefs.filter((b) => b.confidence < INTROSPECTION_THRESHOLDS.lowConfidenceThreshold);
+    const lowConfidence = activeBeliefs.filter((b) => b.confidence < this.config.get('introspection.low_confidence_threshold'));
     const avgConfidence = activeBeliefs.length > 0
       ? activeBeliefs.reduce((s, b) => s + b.confidence, 0) / activeBeliefs.length
       : 0;
@@ -137,17 +138,22 @@ export class IntrospectionService {
   calculateCoherence(beliefs: Belief[], contradictionsFound: number): number {
     if (beliefs.length === 0) return 0.5;
     const avgConf = beliefs.reduce((s, b) => s + b.confidence, 0) / beliefs.length;
-    const lowCount = beliefs.filter((b) => b.confidence < 0.7).length;
+    const lowThreshold = this.config.get('introspection.low_confidence_threshold');
+    const lowCount = beliefs.filter((b) => b.confidence < lowThreshold).length;
     const lowRatio = lowCount / beliefs.length;
 
-    let score = avgConf * 0.6 + (1 - lowRatio) * 0.3;
-    score -= contradictionsFound * 0.05;
+    const wAvg = this.config.get('introspection.coherence_w_avgconf');
+    const wLow = this.config.get('introspection.coherence_w_lowratio');
+    const cPenalty = this.config.get('introspection.coherence_penalty_per_contradiction');
+
+    let score = avgConf * wAvg + (1 - lowRatio) * wLow;
+    score -= contradictionsFound * cPenalty;
     return Math.max(0, Math.min(1, Math.round(score * 1000) / 1000));
   }
 
   classifyPosture(coherence: number, lowConfidenceCount: number): IntrospectionPosture {
-    if (coherence > INTROSPECTION_THRESHOLDS.stableReflectionThreshold && lowConfidenceCount === 0) return 'stable';
-    if (coherence > INTROSPECTION_THRESHOLDS.reviewThreshold) return 'review';
+    if (coherence > this.config.get('introspection.threshold_stable') && lowConfidenceCount === 0) return 'stable';
+    if (coherence > this.config.get('introspection.threshold_review')) return 'review';
     return 'repair';
   }
 }

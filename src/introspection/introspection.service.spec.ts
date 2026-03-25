@@ -1,5 +1,7 @@
 import { IntrospectionService } from './introspection.service';
 import { Belief } from '../common/types/belief.types';
+import { CognitiveConfigService } from '../cognitive/cognitive-config.service';
+import { mockCognitiveConfig } from '../__mocks__/cognitive-config.mock';
 
 function makeBelief(confidence: number): Belief {
   return {
@@ -15,8 +17,9 @@ describe('IntrospectionService (pure methods)', () => {
   let service: IntrospectionService;
 
   beforeEach(() => {
-    // Access pure methods without full DI
+    // Access pure methods with config injected
     service = Object.create(IntrospectionService.prototype);
+    (service as any).config = mockCognitiveConfig;
   });
 
   describe('calculateCoherence', () => {

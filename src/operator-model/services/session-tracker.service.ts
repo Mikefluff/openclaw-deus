@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { OperatorModelService } from '../operator-model.service';
+import { CognitiveConfigService } from '../../cognitive/cognitive-config.service';
 import { SessionState } from '../../common/types/operator-model.types';
 
 const FRUSTRATION_SIGNALS = [
@@ -14,7 +15,10 @@ export class SessionTrackerService {
   private messageCount = 0;
   private recentMessageLengths: number[] = [];
 
-  constructor(private readonly operatorModel: OperatorModelService) {}
+  constructor(
+    private readonly operatorModel: OperatorModelService,
+    private readonly config: CognitiveConfigService,
+  ) {}
 
   /**
    * Call on every operator message. Pure TypeScript — no LLM.
@@ -33,9 +37,9 @@ export class SessionTrackerService {
       interaction_count: this.messageCount,
     };
 
-    // Engagement: based on message frequency
-    if (timeSinceLast < 60000) updates.engagement = 'active';           // < 1 min
-    else if (timeSinceLast < 300000) updates.engagement = 'sporadic';   // < 5 min
+    // Engagement: based on message frequency (thresholds from CognitiveConfig)
+    if (timeSinceLast < this.config.get('session.active_threshold_ms')) updates.engagement = 'active';
+    else if (timeSinceLast < this.config.get('session.sporadic_threshold_ms')) updates.engagement = 'sporadic';
     else updates.engagement = 'idle';
 
     // Frustration: check for signals
@@ -49,8 +53,8 @@ export class SessionTrackerService {
 
     // Cognitive load: based on message length pattern + topic diversity
     const avgLength = this.recentMessageLengths.reduce((s, l) => s + l, 0) / this.recentMessageLengths.length;
-    if (avgLength > 500) updates.cognitive_load = 'high';
-    else if (avgLength > 100) updates.cognitive_load = 'medium';
+    if (avgLength > this.config.get('session.high_load_length')) updates.cognitive_load = 'high';
+    else if (avgLength > this.config.get('session.medium_load_length')) updates.cognitive_load = 'medium';
     else updates.cognitive_load = 'low';
 
     await this.operatorModel.updateSession(updates);

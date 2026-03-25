@@ -1,10 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { NormalizedIntent, RipenessScore } from '../../common/types/policy.types';
 import { WorldModel } from '../../common/types/world-model.types';
-import { RIPENESS_WEIGHTS } from '../../common/constants/policy.constants';
+import { CognitiveConfigService } from '../../cognitive/cognitive-config.service';
 
 @Injectable()
 export class RipenessService {
+  constructor(private readonly config: CognitiveConfigService) {}
+
   score(intent: NormalizedIntent, worldModel: WorldModel | null): RipenessScore {
     const factors: Record<string, number> = {
       goal_clarity: this.getGoalClarityScore(intent),
@@ -15,8 +17,17 @@ export class RipenessService {
       context_freshness: this.getContextFreshnessScore(worldModel),
     };
 
+    const weights: Record<string, number> = {
+      goal_clarity: this.config.get('ripeness.w_goal_clarity'),
+      world_model_quality: this.config.get('ripeness.w_world_quality'),
+      dependency_readiness: this.config.get('ripeness.w_dependency'),
+      authorization: this.config.get('ripeness.w_authorization'),
+      environment_readiness: this.config.get('ripeness.w_environment'),
+      context_freshness: this.config.get('ripeness.w_freshness'),
+    };
+
     let total = 0;
-    for (const [key, weight] of Object.entries(RIPENESS_WEIGHTS)) {
+    for (const [key, weight] of Object.entries(weights)) {
       total += (factors[key] ?? 0) * weight;
     }
 
@@ -89,8 +100,8 @@ export class RipenessService {
 
   private classifyRipeness(score: number, blockers: string[], missing: string[]): string {
     if (blockers.length > 0) return 'blocked';
-    if (score >= 0.8) return 'ready';
-    if (score >= 0.6) return 'soon';
+    if (score >= this.config.get('ripeness.threshold_ready')) return 'ready';
+    if (score >= this.config.get('ripeness.threshold_soon')) return 'soon';
     if (score >= 0.4) return 'preparing';
     return 'not_ready';
   }
