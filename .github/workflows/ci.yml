@@ -10,16 +10,12 @@ jobs:
   lint-and-test:
     runs-on: ubuntu-latest
 
-    services:
-      surrealdb:
-        image: surrealdb/surrealdb:latest
-        ports:
-          - 8000:8000
-        options: >-
-          --health-cmd "surreal is-ready --conn http://localhost:8000"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
+    env:
+      SURREAL_URL: http://localhost:8000/rpc
+      SURREAL_NS: deus_test
+      SURREAL_DB: test
+      SURREAL_USER: root
+      SURREAL_PASS: root
 
     steps:
       - uses: actions/checkout@v4
@@ -28,6 +24,20 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
+
+      - name: Start SurrealDB
+        run: |
+          docker run -d --name surrealdb -p 8000:8000 \
+            surrealdb/surrealdb:latest \
+            start --user root --pass root --bind 0.0.0.0:8000
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+              echo "SurrealDB is ready"
+              break
+            fi
+            echo "Waiting for SurrealDB... ($i)"
+            sleep 1
+          done
 
       - run: npm ci
 
@@ -39,12 +49,6 @@ jobs:
 
       - name: Integration tests
         run: npm run test:integration -- --ci
-        env:
-          SURREAL_URL: http://localhost:8000/rpc
-          SURREAL_NS: deus_test
-          SURREAL_DB: test
-          SURREAL_USER: root
-          SURREAL_PASS: root
 
       - name: Upload coverage
         uses: actions/upload-artifact@v4
