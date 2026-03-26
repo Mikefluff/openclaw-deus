@@ -8,6 +8,7 @@ import {
 import { TraceGraphService } from './memory/trace-graph.service';
 import { CommitKernelService } from './commit/commit-kernel.service';
 import { CognitiveConfigService } from '../cognitive/cognitive-config.service';
+import { AffectiveStateService, AffectiveSnapshot } from './affect/affective-state.service';
 
 /**
  * KernelLoop: Self-recursive inner dialogue.
@@ -54,6 +55,7 @@ export class KernelLoopService {
     private readonly traceGraph: TraceGraphService,
     private readonly commitKernel: CommitKernelService,
     private readonly config: CognitiveConfigService,
+    private readonly affect: AffectiveStateService,
   ) {}
 
   registerAgent(agent: CognitiveAgent): void {
@@ -138,6 +140,10 @@ export class KernelLoopService {
 
       allCommits.push(...filteredCommits);
 
+      // --- Affect: hormones process commits, modulate config ---
+      const currentTimeSense = await this.commitKernel.computeTimeSense();
+      this.affect.processCommits(filteredCommits, currentTimeSense);
+
       // --- Compute stabilization energy ---
       const stabilization = this.computeStabilization(filteredCommits, allCommits, prevEnergy);
       prevEnergy = stabilization.energy;
@@ -159,7 +165,7 @@ export class KernelLoopService {
       // Apply trace forgetting
       await this.traceGraph.forget();
 
-      // Capture phenomenal state
+      // Capture phenomenal state (includes affective snapshot)
       phenomenalState = await this.capturePhenomenalState(cycle, allCommits);
 
       this.logger.log(
@@ -305,23 +311,29 @@ export class KernelLoopService {
       ? recentCommits.reduce((s, c) => s + c.urgency, 0) / recentCommits.length
       : 0;
 
-    // Felt valence: reward vs threat from emotional charges of dominant traces
-    const feltValence = activeTraces.isOk() && activeTraces.value.length > 0
-      ? activeTraces.value.reduce((s, t) => s + t.emotional_charge * t.weight, 0) / activeTraces.value.length
-      : 0;
+    // Affective state: real hormonal snapshot, not keyword matching
+    const affectSnapshot = this.affect.getSnapshot();
 
     const timeSense = await this.commitKernel.computeTimeSense();
+
+    // Self-world tension: cortisol + pain as proxy for model disagreement
+    const selfWorldTension = (affectSnapshot.hormones.cortisol + affectSnapshot.pain.intensity) / 2;
+
+    // Prediction error hotspots from recent commits
+    const predErrorHotspots = recentCommits
+      .filter(c => c.prediction_error > 0.2)
+      .map(c => ({ domain: c.source_agents.join('+'), error: c.prediction_error }));
 
     return {
       cycle,
       dominant_traces: dominant,
-      top_conflicts: [], // TODO: detect from inhibits edges
+      top_conflicts: [], // TODO: detect from inhibits edges in trace graph
       active_priorities: recentCommits.filter(c => c.type === 'priority').map(c => c.changes.actions_queued?.[0] || 'unknown'),
-      self_world_tension: 0, // TODO: compute from self_model vs world_model deltas
-      prediction_error_hotspots: [],
+      self_world_tension: Math.round(selfWorldTension * 100) / 100,
+      prediction_error_hotspots: predErrorHotspots,
       temporal_dilation: timeSense.dilation,
-      felt_valence: Math.round(feltValence * 100) / 100,
-      felt_urgency: Math.round(avgUrgency * 100) / 100,
+      felt_valence: affectSnapshot.valence,
+      felt_urgency: affectSnapshot.arousal,
     };
   }
 
@@ -342,11 +354,29 @@ export class KernelLoopService {
     }
 
     if (phenomenalState) {
-      if (phenomenalState.felt_valence < -0.3) parts.push('[Tension detected — something feels wrong]');
-      if (phenomenalState.felt_urgency > 0.7) parts.push('[High urgency — action pressure building]');
+      const affect = this.affect.getSnapshot();
+
+      // Affective coloring of self-reflection
+      if (affect.pain.intensity > 0.3) {
+        parts.push(`[PAIN: ${affect.pain.source} (intensity=${affect.pain.intensity.toFixed(2)}, ${affect.pain.chronic ? 'CHRONIC' : 'acute'})]`);
+      }
+      if (affect.hormones.cortisol > 0.5) {
+        parts.push(`[STRESS: cortisol=${affect.hormones.cortisol.toFixed(2)} — being defensive, narrowing focus]`);
+      }
+      if (affect.hormones.dopamine > 0.5) {
+        parts.push(`[REWARD: dopamine=${affect.hormones.dopamine.toFixed(2)} — exploring, learning faster]`);
+      }
+      if (affect.hormones.norepinephrine > 0.5) {
+        parts.push(`[ALERT: norepinephrine=${affect.hormones.norepinephrine.toFixed(2)} — heightened sensitivity]`);
+      }
+      parts.push(`[Mode: ${affect.mode}, valence=${affect.valence.toFixed(2)}, arousal=${affect.arousal.toFixed(2)}]`);
+
       if (phenomenalState.temporal_dilation > 1.5) parts.push('[Time stretching — deep processing, high novelty]');
       if (phenomenalState.dominant_traces.length > 0) {
         parts.push(`[Dominant in awareness: ${phenomenalState.dominant_traces.slice(0, 3).map(t => t.content.slice(0, 40)).join('; ')}]`);
+      }
+      if (phenomenalState.prediction_error_hotspots.length > 0) {
+        parts.push(`[Prediction errors: ${phenomenalState.prediction_error_hotspots.map(h => `${h.domain}(${h.error.toFixed(2)})`).join(', ')}]`);
       }
     }
 
@@ -399,6 +429,7 @@ export class KernelLoopService {
 
       time_sense: timeSense,
       phenomenal_state: phenomenalState,
+      affect: this.affect.getSnapshot(),
       commits,
     };
   }

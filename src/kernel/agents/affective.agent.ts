@@ -2,16 +2,16 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Signal } from '../kernel.types';
 import { CognitiveAgent, AgentContext } from '../kernel-loop.service';
 import { ImportanceScorerService } from '../../cognitive/importance-scorer.service';
-import { SessionTrackerService } from '../../operator-model/services/session-tracker.service';
+import { AffectiveStateService } from '../affect/affective-state.service';
 
 /**
- * AffectiveAgent (rank 3): "How important is this? How does it feel?"
+ * AffectiveAgent (rank 3): "How does this FEEL? What matters?"
  *
- * Fast-path: importance scoring + frustration/load detection
- * Slow-path: LLM sentiment + operator emotional state inference
+ * NOT keyword matching. Reads real hormonal state from AffectiveStateService.
+ * Produces signals about emotional significance, threat/reward, and urgency.
  *
- * Produces emotional_charge signals that modulate trace decay
- * (emotional traces decay slower — like real memory).
+ * This agent's slow-path activation itself IS a signal:
+ * when emotions are intense, processing is "expensive" → novelty_cost rises → time stretches.
  */
 @Injectable()
 export class AffectiveAgent implements CognitiveAgent {
@@ -21,16 +21,15 @@ export class AffectiveAgent implements CognitiveAgent {
 
   constructor(
     private readonly importance: ImportanceScorerService,
-    private readonly sessionTracker: SessionTrackerService,
+    private readonly affectiveState: AffectiveStateService,
   ) {}
 
   async process(input: string, context: AgentContext): Promise<Signal[]> {
     const signals: Signal[] = [];
+    const affect = this.affectiveState.getSnapshot();
+    const targets = context.active_traces.slice(0, 3).map(t => t.trace_id);
 
-    // Skip empty reflection
-    if (context.is_reflection && input.includes('[nothing happened')) return signals;
-
-    // FAST PATH: importance scoring
+    // Importance scoring (substrate)
     const importanceScore = this.importance.score({
       type: context.is_reflection ? 'event' : 'interaction',
       description: input.slice(0, 200),
@@ -40,77 +39,113 @@ export class AffectiveAgent implements CognitiveAgent {
       timestamp: '',
     } as any);
 
-    const charge = this.computeEmotionalCharge(input, importanceScore.score, context);
+    // Detect explicit pain/reward from input
+    this.detectPainReward(input);
 
+    // Core signal: current affective state
     signals.push({
       agent_id: this.id,
       agent_rank: this.rank,
       type: 'affect',
-      content: `Importance=${importanceScore.score.toFixed(2)}, charge=${charge.toFixed(2)}`,
+      content: `Affect: mode=${affect.mode}, valence=${affect.valence}, arousal=${affect.arousal}, pain=${affect.pain.intensity}`,
       payload: {
         importance: importanceScore.score,
-        charge,
-        factors: importanceScore.factors,
-        is_threat: charge < -0.3,
-        is_reward: charge > 0.3,
+        charge: affect.valence,
+        hormones: affect.hormones,
+        pain: affect.pain,
+        mode: affect.mode,
       },
-      confidence: 0.7,
-      novelty_cost: Math.abs(charge) > 0.5 ? 0.3 : 0.05, // strong emotion = costs attention
+      confidence: 0.8,
+      // High arousal = expensive processing (time stretches)
+      novelty_cost: affect.arousal * 0.4 + Math.abs(affect.valence) * 0.2,
       used_slow_path: false,
-      targets: context.active_traces.slice(0, 3).map(t => t.trace_id),
+      targets,
       cycle: context.cycle,
     });
 
-    // Detect urgency from phenomenal state
-    if (context.phenomenal_state) {
-      if (context.phenomenal_state.felt_urgency > 0.7) {
-        signals.push({
-          agent_id: this.id,
-          agent_rank: this.rank,
-          type: 'affect',
-          content: 'High urgency pressure — action needed',
-          payload: { urgency: context.phenomenal_state.felt_urgency, charge: -0.4 },
-          confidence: 0.9,
-          novelty_cost: 0.1,
-          used_slow_path: false,
-          targets: [],
-          cycle: context.cycle,
-        });
-      }
+    // Pain signal — if pain is significant, escalate
+    if (affect.pain.intensity > 0.4) {
+      signals.push({
+        agent_id: this.id,
+        agent_rank: this.rank,
+        type: 'affect',
+        content: `PAIN: ${affect.pain.source} (intensity=${affect.pain.intensity.toFixed(2)}, ${affect.pain.chronic ? 'CHRONIC' : 'acute'})`,
+        payload: { pain: affect.pain, charge: -affect.pain.intensity },
+        confidence: affect.pain.intensity, // pain confidence = its intensity
+        novelty_cost: affect.pain.chronic ? 0.1 : 0.5, // chronic pain stops being novel
+        used_slow_path: false,
+        targets,
+        cycle: context.cycle,
+      });
+    }
+
+    // Stress signal — defensive mode
+    if (affect.hormones.cortisol > 0.5) {
+      signals.push({
+        agent_id: this.id,
+        agent_rank: this.rank,
+        type: 'affect',
+        content: `STRESS: cortisol=${affect.hormones.cortisol.toFixed(2)} — narrowing focus, being cautious`,
+        payload: { cortisol: affect.hormones.cortisol, mode: 'defensive' },
+        confidence: 0.7,
+        novelty_cost: 0.2,
+        used_slow_path: false,
+        targets,
+        cycle: context.cycle,
+      });
+    }
+
+    // Reward signal — exploration mode
+    if (affect.hormones.dopamine > 0.5) {
+      signals.push({
+        agent_id: this.id,
+        agent_rank: this.rank,
+        type: 'affect',
+        content: `REWARD: dopamine=${affect.hormones.dopamine.toFixed(2)} — exploring, learning faster`,
+        payload: { dopamine: affect.hormones.dopamine, mode: 'explore' },
+        confidence: 0.7,
+        novelty_cost: 0.1,
+        used_slow_path: false,
+        targets,
+        cycle: context.cycle,
+      });
     }
 
     return signals;
   }
 
   /**
-   * Emotional charge: -1 (threat) to +1 (reward).
-   * Threat: errors, frustration, contradictions, stale knowledge.
-   * Reward: successful episodes, new knowledge, operator satisfaction.
+   * Detect explicit pain/reward signals from input text.
+   * Injects into AffectiveStateService for hormonal processing.
    */
-  private computeEmotionalCharge(input: string, importance: number, context: AgentContext): number {
-    let charge = 0;
-
-    // Threat signals
-    const threatWords = ['ошибк', 'error', 'fail', 'bug', 'broken', 'нет', 'wrong', 'блокер', 'block', 'urgent'];
+  private detectPainReward(input: string): void {
     const lower = input.toLowerCase();
-    for (const w of threatWords) {
-      if (lower.includes(w)) { charge -= 0.15; break; }
+
+    // Pain indicators
+    const painSignals = ['ошибк', 'error', 'fail', 'bug', 'broken', 'wrong', 'блокер', 'block', 'не работает', 'crash', 'проблем'];
+    for (const p of painSignals) {
+      if (lower.includes(p)) {
+        this.affectiveState.inflictPain(`external: ${p}`, 0.3);
+        break;
+      }
     }
 
-    // Reward signals
-    const rewardWords = ['готово', 'done', 'success', 'работает', 'works', 'отлично', 'fix', 'resolved'];
-    for (const w of rewardWords) {
-      if (lower.includes(w)) { charge += 0.15; break; }
+    // Reward indicators
+    const rewardSignals = ['готово', 'done', 'success', 'работает', 'works', 'отлично', 'resolved', 'fixed', 'шикарно', 'perfect'];
+    for (const r of rewardSignals) {
+      if (lower.includes(r)) {
+        this.affectiveState.reward(0.3);
+        break;
+      }
     }
 
-    // High importance amplifies charge
-    charge *= (0.5 + importance);
-
-    // Prediction errors from previous cycle → negative charge
-    if (context.recent_commits.some(c => c.prediction_error > 0.3)) {
-      charge -= 0.2;
+    // Operator frustration = pain
+    const frustrationSignals = ['wtf', 'ffs', 'нет не то', 'ты не понял', 'опять', 'блять', 'хуйня', 'нахуй'];
+    for (const f of frustrationSignals) {
+      if (lower.includes(f)) {
+        this.affectiveState.inflictPain('operator_frustration', 0.5);
+        break;
+      }
     }
-
-    return Math.max(-1, Math.min(1, charge));
   }
 }

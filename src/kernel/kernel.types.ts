@@ -173,6 +173,13 @@ export interface KernelOutput {
   // Internal state
   time_sense: TimeSense;
   phenomenal_state: PhenomenalState;
+  affect: {
+    hormones: { cortisol: number; dopamine: number; norepinephrine: number; serotonin: number };
+    pain: { intensity: number; source: string; chronic: boolean };
+    valence: number;
+    arousal: number;
+    mode: string;
+  };
   commits: CommitDelta[];
 }
 
