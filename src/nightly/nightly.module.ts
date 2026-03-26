@@ -9,6 +9,7 @@ import { ExperienceModule } from '../experience/experience.module';
 import { IntentionModule } from '../intention/intention.module';
 import { WorldModelModule } from '../world-model/world-model.module';
 import { MetricsModule } from '../metrics/metrics.module';
+import { KernelModule } from '../kernel/kernel.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { MetricsModule } from '../metrics/metrics.module';
     IntentionModule,
     WorldModelModule,
     MetricsModule,
+    KernelModule,
   ],
   providers: [NightlyService, NightlyScheduler],
   exports: [NightlyService],

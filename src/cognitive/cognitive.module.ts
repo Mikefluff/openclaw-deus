@@ -18,6 +18,7 @@ import { ExperienceModule } from '../experience/experience.module';
 import { OperatorModelModule } from '../operator-model/operator-model.module';
 import { MemoryModule } from '../memory/memory.module';
 import { WorldModelModule } from '../world-model/world-model.module';
+import { BeliefsModule } from '../beliefs/beliefs.module';
 import { KernelModule } from '../kernel/kernel.module';
 
 @Global()
@@ -31,6 +32,7 @@ import { KernelModule } from '../kernel/kernel.module';
     MemoryModule,
     WorldModelModule,
     KernelModule,
+    BeliefsModule,
   ],
   controllers: [CognitiveConfigController, CognitivePipelineController],
   providers: [
