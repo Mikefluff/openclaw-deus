@@ -3,7 +3,8 @@ import { Result, ok, err } from 'neverthrow';
 import { DomainError } from '../../common/types/result.types';
 import { SurrealService } from '../../database/surreal.service';
 import { Belief, PromotionStats, ReviewCandidate } from '../../common/types/belief.types';
-import { PROMOTION_POLICY } from '../../common/constants/belief.constants';
+import { CognitiveConfigService } from '../../cognitive/cognitive-config.service';
+import { SimilarityProvider } from '../../cognitive/similarity.provider';
 import { BeliefsService } from '../beliefs.service';
 
 @Injectable()
@@ -13,6 +14,8 @@ export class BeliefPromotionService {
   constructor(
     private readonly beliefs: BeliefsService,
     private readonly db: SurrealService,
+    private readonly config: CognitiveConfigService,
+    private readonly similarity: SimilarityProvider,
   ) {}
 
   async runPromotionReview(): Promise<Result<PromotionStats, DomainError>> {
@@ -30,13 +33,11 @@ export class BeliefPromotionService {
       const decision = this.decidePromotion(candidate);
 
       if (decision === 'promote') {
-        const existing = allBeliefs.find((b) =>
-          this.calculateSimilarity(b.content, candidate.content) > 0.7,
-        );
+        const existing = this.similarity.findBestWordMatch(candidate.content, allBeliefs as any[], 'similarity.belief_match');
 
         if (existing) {
           // Refresh existing belief
-          existing.confidence = Math.min(1.0, existing.confidence + 0.03);
+          (existing as any).confidence = Math.min(1.0, (existing as any).confidence + this.config.get('promotion.confidence_boost'));
           await this.beliefs.update(existing.belief_id, {
             confidence: existing.confidence,
           });
@@ -78,20 +79,20 @@ export class BeliefPromotionService {
   }
 
   decidePromotion(candidate: ReviewCandidate): 'promote' | 'defer' | 'reject' {
-    if (candidate.human_review_needed === PROMOTION_POLICY.humanReviewValue) {
+    if (candidate.human_review_needed === 'yes') {
       return 'defer';
     }
 
     if (
-      candidate.recurrence >= PROMOTION_POLICY.promote.minRecurrence &&
-      candidate.confidence_proposal >= PROMOTION_POLICY.promote.minConfidenceProposal
+      candidate.recurrence >= this.config.get('promotion.min_recurrence') &&
+      candidate.confidence_proposal >= this.config.get('promotion.min_confidence')
     ) {
       return 'promote';
     }
 
     if (
-      candidate.recurrence === PROMOTION_POLICY.defer.exactRecurrence &&
-      candidate.confidence_proposal >= PROMOTION_POLICY.defer.minConfidenceProposal
+      candidate.recurrence === this.config.get('promotion.defer_recurrence') &&
+      candidate.confidence_proposal >= 0.65
     ) {
       return 'defer';
     }
@@ -148,11 +149,5 @@ export class BeliefPromotionService {
     }
   }
 
-  private calculateSimilarity(a: string, b: string): number {
-    const aWords = new Set(a.toLowerCase().split(/\s+/).filter((w) => w.length > 3));
-    const bWords = new Set(b.toLowerCase().split(/\s+/).filter((w) => w.length > 3));
-    if (aWords.size === 0 || bWords.size === 0) return 0;
-    const intersection = new Set([...aWords].filter((x) => bWords.has(x)));
-    return intersection.size / Math.max(aWords.size, bWords.size);
-  }
+  // calculateSimilarity removed — use SimilarityProvider.wordOverlap() instead
 }

@@ -3,7 +3,10 @@ import { KnowledgeService } from './knowledge.service';
 import { SurrealService } from '../database/surreal.service';
 import { EventsService } from '../events/events.service';
 import { EmbeddingsService } from '../embeddings/embeddings.service';
+import { SimilarityProvider } from '../cognitive/similarity.provider';
+import { CognitiveConfigService } from '../cognitive/cognitive-config.service';
 import { mockEventsService } from '../__mocks__/events.mock';
+import { mockCognitiveConfig } from '../__mocks__/cognitive-config.mock';
 import { ok } from 'neverthrow';
 
 describe('KnowledgeService', () => {
@@ -23,6 +26,7 @@ describe('KnowledgeService', () => {
         { provide: EmbeddingsService, useValue: {
           embed: jest.fn().mockResolvedValue(ok(new Array(1536).fill(0))),
         }},
+        { provide: SimilarityProvider, useValue: new SimilarityProvider(mockCognitiveConfig as CognitiveConfigService) },
       ],
     }).compile();
 

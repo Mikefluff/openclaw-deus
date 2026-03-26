@@ -2,6 +2,9 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { BeliefPromotionService } from './belief-promotion.service';
 import { BeliefsService } from '../beliefs.service';
 import { SurrealService } from '../../database/surreal.service';
+import { CognitiveConfigService } from '../../cognitive/cognitive-config.service';
+import { SimilarityProvider } from '../../cognitive/similarity.provider';
+import { mockCognitiveConfig } from '../../__mocks__/cognitive-config.mock';
 import { ReviewCandidate } from '../../common/types/belief.types';
 
 function makeCandidate(overrides: Partial<ReviewCandidate> = {}): ReviewCandidate {
@@ -30,6 +33,8 @@ describe('BeliefPromotionService', () => {
         BeliefPromotionService,
         { provide: BeliefsService, useValue: { findAll: jest.fn(), create: jest.fn(), update: jest.fn() } },
         { provide: SurrealService, useValue: { query: jest.fn(), create: jest.fn(), update: jest.fn() } },
+        { provide: CognitiveConfigService, useValue: mockCognitiveConfig },
+        { provide: SimilarityProvider, useValue: new SimilarityProvider(mockCognitiveConfig as CognitiveConfigService) },
       ],
     }).compile();
 

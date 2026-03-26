@@ -4,6 +4,7 @@ import { DomainError, NotFoundError } from '../common/types/result.types';
 import { SurrealService } from '../database/surreal.service';
 import { EventsService } from '../events/events.service';
 import { EmbeddingsService } from '../embeddings/embeddings.service';
+import { SimilarityProvider } from '../cognitive/similarity.provider';
 import { Knowledge, KnowledgeKind, KnowledgeStatus, Evidence } from '../common/types/knowledge.types';
 import { calibrated } from '../common/types/cognitive.types';
 
@@ -16,6 +17,7 @@ export class KnowledgeService {
     private readonly db: SurrealService,
     private readonly events: EventsService,
     private readonly embeddings: EmbeddingsService,
+    private readonly similarityProvider: SimilarityProvider,
   ) {}
 
   async create(data: {
@@ -113,7 +115,7 @@ export class KnowledgeService {
     const queryEmb = embResult.value;
     return ok(all.value.filter((k) => {
       if (!k.embedding) return false;
-      const sim = this.cosine(queryEmb, k.embedding);
+      const sim = this.similarityProvider.cosine(queryEmb, k.embedding);
       return sim >= threshold;
     }));
   }
@@ -122,13 +124,5 @@ export class KnowledgeService {
     const result = await this.db.query<{ count: number }>('SELECT count() AS count FROM knowledge GROUP ALL');
     if (result.isErr()) return err(result.error);
     return ok(result.value[0]?.count ?? 0);
-  }
-
-  private cosine(a: number[], b: number[]): number {
-    if (a.length !== b.length) return 0;
-    let dot = 0, na = 0, nb = 0;
-    for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] ** 2; nb += b[i] ** 2; }
-    const d = Math.sqrt(na) * Math.sqrt(nb);
-    return d === 0 ? 0 : dot / d;
   }
 }
