@@ -12,6 +12,7 @@ import { AffectiveStateService } from './affect/affective-state.service';
 import { SubstrateBridgeService } from './substrate-bridge.service';
 import { ActiveCognitionService } from './cognition/active-cognition.service';
 import { NarrativeService } from './narrative/narrative.service';
+import { RawStreamService } from './sensory/raw-stream.service';
 
 /**
  * KernelLoop: Continuous event loop with external interrupts.
@@ -89,6 +90,7 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
     private readonly substrateBridge: SubstrateBridgeService,
     private readonly activeCognition: ActiveCognitionService,
     private readonly narrative: NarrativeService,
+    private readonly rawStream: RawStreamService,
   ) {}
 
   onModuleInit(): void {
@@ -279,8 +281,16 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
         ? this.buildReflectionInput(cycleCommitsAll.slice(-3), context.time_sense, this.phenomenalState)
         : event.content;
 
+      // Raw stream: modality discovery on external input (iter 0 only)
+      let rawStreamSignals: Signal[] = [];
+      if (!isReflection) {
+        const rawEvent = RawStreamService.stringToEvent(event.content, event.type);
+        rawStreamSignals = await this.rawStream.ingest(rawEvent, cycle);
+      }
+
       // Run agents
-      const signals = await this.runAgents(input, context, cycle);
+      const agentSignals = await this.runAgents(input, context, cycle);
+      const signals = [...rawStreamSignals, ...agentSignals];
 
       // Guardrail: hallucination check
       if (isReflection) {

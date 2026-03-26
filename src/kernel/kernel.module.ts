@@ -12,6 +12,9 @@ import { NarrativeService } from './narrative/narrative.service';
 import { SubstrateBridgeService } from './substrate-bridge.service';
 import { ActiveCognitionService } from './cognition/active-cognition.service';
 import { ConceptSpaceService } from './space/concept-space.service';
+import { FingerprinterService } from './sensory/fingerprinter.service';
+import { ModalityDiscoveryService } from './sensory/modality-discovery.service';
+import { RawStreamService } from './sensory/raw-stream.service';
 import { WorldModelModule } from '../world-model/world-model.module';
 import { IntentionModule } from '../intention/intention.module';
 import { KnowledgeModule } from '../knowledge/knowledge.module';
@@ -39,6 +42,9 @@ import { PolicyModule } from '../policy/policy.module';
     SubstrateBridgeService,
     ActiveCognitionService,
     ConceptSpaceService,
+    FingerprinterService,
+    ModalityDiscoveryService,
+    RawStreamService,
     SensoryAgent,
     PredictiveAgent,
     AffectiveAgent,
@@ -54,12 +60,15 @@ import { PolicyModule } from '../policy/policy.module';
     SubstrateBridgeService,
     ActiveCognitionService,
     ConceptSpaceService,
+    RawStreamService,
+    ModalityDiscoveryService,
   ],
 })
 export class KernelModule implements OnModuleInit {
   constructor(
     private readonly kernelLoop: KernelLoopService,
     private readonly conceptSpace: ConceptSpaceService,
+    private readonly modalityDiscovery: ModalityDiscoveryService,
     private readonly sensory: SensoryAgent,
     private readonly predictive: PredictiveAgent,
     private readonly affective: AffectiveAgent,
@@ -69,6 +78,7 @@ export class KernelModule implements OnModuleInit {
 
   async onModuleInit() {
     await this.conceptSpace.loadDimensions();
+    await this.modalityDiscovery.load();
 
     // Register agents into the kernel swarm
     this.kernelLoop.registerAgent(this.sensory);
