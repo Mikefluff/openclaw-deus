@@ -20,6 +20,8 @@ import { WorldModelService } from '../world-model/world-model.service';
 import { BeliefsService } from '../beliefs/beliefs.service';
 import { SimilarityProvider } from './similarity.provider';
 import { TemporalCognitionService } from './temporal-cognition.service';
+import { KernelLoopService } from '../kernel/kernel-loop.service';
+import { KernelOutput } from '../kernel/kernel.types';
 
 /**
  * CognitivePipelineService: THE BRAIN's MAIN LOOP.
@@ -53,67 +55,68 @@ export class CognitivePipelineService {
     private readonly worldModel: WorldModelService,
     private readonly beliefsService: BeliefsService,
     private readonly temporalCognition: TemporalCognitionService,
+    private readonly kernelLoop: KernelLoopService,
   ) {}
 
   /**
-   * Process an operator message through the full cognitive pipeline.
+   * Process an operator message through the cognitive kernel.
+   *
+   * The kernel is a self-recursive loop: agents → traces → convergence → commit → reflect → loop.
+   * This method delegates to the kernel and translates output to pipeline result format.
    */
   async processMessage(message: string): Promise<Result<CognitivePipelineResult, DomainError>> {
     const startTime = Date.now();
-    const result: CognitivePipelineResult = {
-      intentions_recognized: 0,
-      intentions_completed: 0,
-      knowledge_extracted: 0,
-      knowledge_gaps_found: 0,
-      deliberations_made: 0,
-      duration_ms: 0,
-    };
 
-    // Step 0: Session tracking + temporal perception (sync, fast, no LLM)
+    // Substrate: session tracking + memory logging (reptilian brain)
     await this.sessionTracker.trackMessage(message);
     await this.memory.logInteraction(message);
-    this.temporalCognition.tick(message);
 
-    // Step 0.5: Active recall — proactively retrieve relevant context before processing
-    const priorContext = await this.activeRecall(message);
+    // === KERNEL: self-recursive inner dialogue ===
+    const kernelResult = await this.kernelLoop.think(message);
 
-    // Step 1: Parallel — intention recognition + knowledge extraction (with prior context)
-    const [intentionResult, knowledgeResult] = await Promise.all([
-      this.recognizeIntentions(message),
-      this.extractKnowledge(priorContext ? `${message}\n\n[Prior knowledge context: ${priorContext}]` : message),
-    ]);
-
-    // Step 2: Process intention results → deliberate
-    if (intentionResult) {
-      result.intentions_recognized = intentionResult.new_intentions.length;
-      result.deliberations_made = await this.deliberateOnIntentions(intentionResult.new_intentions);
-
-      for (const completed of intentionResult.completed_intentions) {
-        result.intentions_completed++;
-        await this.onIntentionCompleted(completed.intention_id, completed.outcome as any, completed.reasoning);
-      }
+    if (kernelResult.isErr()) {
+      this.logger.error(`Kernel failed: ${kernelResult.error.message}`);
+      return ok({
+        intentions_recognized: 0, intentions_completed: 0,
+        knowledge_extracted: 0, knowledge_gaps_found: 0,
+        deliberations_made: 0, duration_ms: Date.now() - startTime,
+      });
     }
 
-    // Step 3: Process knowledge results → link gaps
-    if (knowledgeResult) {
-      result.knowledge_extracted = knowledgeResult.new_knowledge.length;
-      result.knowledge_gaps_found = knowledgeResult.knowledge_gaps.length;
-      await this.linkGapsToIntentions(knowledgeResult.knowledge_gaps);
-    }
+    const output = kernelResult.value;
 
-    // Step 4: Auto-adopt recognized intentions
-    await this.intentionStack.autoAdopt();
+    // Translate kernel output → pipeline result (backward compat for metrics/nightly)
+    const result = this.translateKernelOutput(output, startTime);
 
-    // Step 5: Rebuild world model if stale (proposed by DiagnosisService)
-    this.refreshWorldModelIfStale();
-
-    result.duration_ms = Date.now() - startTime;
     this.logger.log(
-      `Pipeline: ${result.intentions_recognized} intents, ${result.knowledge_extracted} knowledge, ` +
-      `${result.deliberations_made} deliberations, ${result.duration_ms}ms`,
+      `Kernel: ${output.total_cycles} cycles, ${output.total_commits} commits, ` +
+      `${output.converged ? 'CONVERGED' : 'MAX_ITER'} (${output.convergence_reason}), ` +
+      `dilation=${output.time_sense.dilation}, ${result.duration_ms}ms`,
     );
 
     return ok(result);
+  }
+
+  /**
+   * Translate kernel output to CognitivePipelineResult for backward compatibility.
+   */
+  private translateKernelOutput(output: KernelOutput, startTime: number): CognitivePipelineResult {
+    // Count perceptual commits that contain intentions
+    const perceptual = output.commits.filter(c => c.type === 'perceptual');
+    const strategic = output.commits.filter(c => c.type === 'action' || c.type === 'interpretive');
+
+    return {
+      intentions_recognized: perceptual.filter(c =>
+        c.changes.traces_created.length > 0 || c.source_agents.includes('sensory'),
+      ).length,
+      intentions_completed: perceptual.filter(c =>
+        (c.changes as any).completed,
+      ).length,
+      knowledge_extracted: perceptual.length,
+      knowledge_gaps_found: 0,
+      deliberations_made: strategic.length,
+      duration_ms: Date.now() - startTime,
+    };
   }
 
   /**
