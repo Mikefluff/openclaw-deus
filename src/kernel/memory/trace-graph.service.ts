@@ -126,17 +126,24 @@ export class TraceGraphService {
     const history = await this.getReactivationHistory(traceId);
     const newHistory = [...history, this.cycle].slice(-50);
 
+    // CRITICAL: clamp weight to [0, 1.0] — was accumulating above 1.0
     await this.db.execute(
       `UPDATE trace SET
         weight = math::min([1.0, weight + $boost * (1.0 - weight)]),
         freshness = 1.0,
-        confidence = math::max([$conf, confidence]),
+        confidence = math::min([1.0, math::max([$conf, confidence])]),
         reactivation_count = reactivation_count + 1,
         last_reactivated_cycle = $cycle,
         reactivation_history = $history,
         suppressed = false
-      WHERE trace_id = $tid`,
-      { boost, conf: confidence, cycle: this.cycle, history: newHistory, tid: traceId },
+      WHERE trace_id = $tid AND weight <= 1.0`,
+      { boost, conf: Math.min(1, confidence), cycle: this.cycle, history: newHistory, tid: traceId },
+    );
+
+    // Force-clamp any traces that escaped above 1.0
+    await this.db.execute(
+      `UPDATE trace SET weight = 1.0 WHERE trace_id = $tid AND weight > 1.0`,
+      { tid: traceId },
     );
   }
 

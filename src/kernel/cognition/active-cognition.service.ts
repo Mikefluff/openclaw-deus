@@ -226,13 +226,23 @@ export class ActiveCognitionService {
   }
 
   /**
-   * SCHEMA DETECTION: find recurring patterns across traces.
-   * If multiple traces with similar content have similar edge patterns → schema.
+   * SCHEMA DETECTION + ABSTRACTION EMERGENCE.
+   *
+   * How children learn: see ball (round), plate (round), wheel (round)
+   * → notice "round" co-occurs → abstract "roundness" as its own concept.
+   *
+   * When traces co-activate frequently:
+   * 1. Detect the pattern (schema signal)
+   * 2. If frequency > threshold: CREATE an abstract trace that represents the pattern
+   * 3. Link all instances to the abstract trace → it becomes a HUB
+   * 4. The abstract trace is now a concept that can be retrieved independently
+   *
+   * Abstractions are NOT taught — they EMERGE from experience.
    */
   async detectSchemas(cycle: number): Promise<Signal[]> {
     const signals: Signal[] = [];
 
-    // Find traces that are frequently co-activated (high co_activation_count)
+    // Find clusters of traces that frequently co-activate
     const hotEdges = await this.db.query<any>(
       `SELECT
         in.content AS a_content,
@@ -242,19 +252,20 @@ export class ActiveCognitionService {
         in.trace_id AS a_id,
         out.trace_id AS b_id
        FROM activates
-       WHERE co_activation_count > 3
-       ORDER BY co_activation_count DESC LIMIT 5`,
+       WHERE co_activation_count > 2
+       ORDER BY co_activation_count DESC LIMIT 10`,
     );
 
     if (hotEdges.isErr() || hotEdges.value.length === 0) return signals;
 
     for (const edge of hotEdges.value) {
-      if (edge.co_activation_count > 5) {
+      // Schema signal for any pattern
+      if (edge.co_activation_count > 3) {
         signals.push({
           agent_id: 'schema',
           agent_rank: 0,
           type: 'strategy',
-          content: `Pattern: "${edge.a_content?.slice(0, 40)}" → "${edge.b_content?.slice(0, 40)}" (${edge.co_activation_count} co-activations)`,
+          content: `Pattern: "${(edge.a_content || '').slice(0, 40)}" → "${(edge.b_content || '').slice(0, 40)}" (${edge.co_activation_count}x)`,
           payload: {
             schema: true,
             a_trace: edge.a_id,
@@ -269,8 +280,126 @@ export class ActiveCognitionService {
           cycle,
         });
       }
+
+      // ABSTRACTION EMERGENCE: high-frequency pattern → create abstract hub trace
+      if (edge.co_activation_count > 5) {
+        await this.materializeAbstraction(edge, cycle);
+      }
     }
 
+    // Also check for multi-trace convergence (3+ traces with shared words)
+    await this.detectPropertyAbstractions(cycle, signals);
+
     return signals;
+  }
+
+  /**
+   * Materialize an abstraction: create a HUB trace from a strong pattern.
+   * The hub connects all instances, becoming a retrievable concept.
+   */
+  private async materializeAbstraction(edge: any, cycle: number): Promise<void> {
+    // Extract common words between the two traces (the "shared concept")
+    const wordsA = new Set((edge.a_content || '').toLowerCase().split(/\s+/).filter((w: string) => w.length > 3));
+    const wordsB = new Set((edge.b_content || '').toLowerCase().split(/\s+/).filter((w: string) => w.length > 3));
+    const shared: string[] = [];
+    for (const w of wordsA) { if (wordsB.has(w)) shared.push(w as string); }
+
+    if (shared.length === 0) return;
+
+    const abstractionName = shared.join(' + ');
+
+    // Check if this abstraction already exists
+    const existing = await this.db.query<any>(
+      `SELECT trace_id FROM trace WHERE source_type = 'signal' AND content CONTAINS $name AND archived = false LIMIT 1`,
+      { name: `[ABSTRACT] ${abstractionName}` },
+    );
+    if (existing.isOk() && existing.value.length > 0) return; // already materialized
+
+    // CREATE the abstract trace — it IS the concept
+    const result = await this.traceGraph.createTrace({
+      source_type: 'signal', // abstract concepts are signal-born
+      content: `[ABSTRACT] ${abstractionName} (emerged from ${edge.co_activation_count} co-activations)`,
+      initial_weight: 0.7,
+      confidence: Math.min(0.9, edge.co_activation_count * 0.08),
+      emotional_charge: 0.1, // abstractions have mild positive charge (understanding feels good)
+    });
+
+    if (result.isOk()) {
+      const abstractId = result.value.trace_id;
+      // Link instances to the abstract hub
+      await this.traceGraph.link(edge.a_id, abstractId, 'activates', 0.5);
+      await this.traceGraph.link(edge.b_id, abstractId, 'activates', 0.5);
+      await this.traceGraph.link(abstractId, edge.a_id, 'activates', 0.3); // bidirectional
+      await this.traceGraph.link(abstractId, edge.b_id, 'activates', 0.3);
+
+      this.logger.log(`ABSTRACTION EMERGED: "${abstractionName}" from ${edge.co_activation_count} co-activations`);
+    }
+  }
+
+  /**
+   * Detect property abstractions: when 3+ traces share common words,
+   * the shared words might represent an emergent property/category.
+   *
+   * Like a child seeing ball+plate+wheel and abstracting "круглое".
+   */
+  private async detectPropertyAbstractions(cycle: number, signals: Signal[]): Promise<void> {
+    // Get recent active traces
+    const active = await this.db.query<any>(
+      `SELECT trace_id, content, weight FROM trace WHERE archived = false AND suppressed = false AND weight > 0.3 ORDER BY weight DESC LIMIT 20`,
+    );
+    if (active.isErr() || active.value.length < 3) return;
+
+    // Find words that appear in 3+ traces
+    const wordTraceMap = new Map<string, string[]>();
+    for (const trace of active.value) {
+      const words = (trace.content || '').toLowerCase().split(/\s+/).filter((w: string) => w.length > 3);
+      for (const word of words) {
+        if (!wordTraceMap.has(word)) wordTraceMap.set(word, []);
+        wordTraceMap.get(word)!.push(trace.trace_id);
+      }
+    }
+
+    // Words appearing in 3+ traces = candidate abstractions
+    for (const [word, traceIds] of wordTraceMap) {
+      if (traceIds.length >= 3) {
+        // Check if abstract trace already exists for this word
+        const existing = await this.db.query<any>(
+          `SELECT trace_id FROM trace WHERE content CONTAINS $pattern AND archived = false LIMIT 1`,
+          { pattern: `[PROPERTY] ${word}` },
+        );
+        if (existing.isOk() && existing.value.length > 0) continue;
+
+        // Create property abstraction
+        const result = await this.traceGraph.createTrace({
+          source_type: 'signal',
+          content: `[PROPERTY] ${word} (shared by ${traceIds.length} traces)`,
+          initial_weight: 0.5,
+          confidence: Math.min(0.8, traceIds.length * 0.15),
+          emotional_charge: 0.05,
+        });
+
+        if (result.isOk()) {
+          // Link all instances to the property
+          for (const tid of traceIds.slice(0, 5)) {
+            await this.traceGraph.link(tid, result.value.trace_id, 'activates', 0.4);
+            await this.traceGraph.link(result.value.trace_id, tid, 'activates', 0.2);
+          }
+          this.logger.log(`PROPERTY EMERGED: "${word}" (shared by ${traceIds.length} instances)`);
+
+          signals.push({
+            agent_id: 'schema',
+            agent_rank: 0,
+            type: 'strategy',
+            content: `Property "${word}" emerged across ${traceIds.length} traces`,
+            payload: { property: word, instances: traceIds.length, abstraction: true },
+            confidence: 0.6,
+            novelty_cost: 0.2,
+            used_slow_path: false,
+            targets: [result.value.trace_id],
+            cycle,
+          });
+        }
+      }
+    }
   }
 }

@@ -32,25 +32,28 @@ export class PredictiveAgent implements CognitiveAgent {
   async process(input: string, context: AgentContext): Promise<Signal[]> {
     const signals: Signal[] = [];
 
-    // PredictiveAgent targets: traces IT predicted (not mechanical top-3)
-    // Check prediction errors from previous cycle's predictions
+    // Check prediction errors — only report ONCE per trace (not every cycle)
     for (const trace of context.active_traces) {
+      // Clamp trace weight to valid range for prediction comparison
+      const traceWeight = Math.min(1.0, Math.max(0, trace.weight));
       const predicted = this.lastPredictions.get(trace.trace_id);
       if (predicted !== undefined) {
-        const error = Math.abs(trace.weight - predicted);
+        const error = Math.abs(traceWeight - predicted);
         if (error > 0.15) {
           signals.push({
             agent_id: this.id,
             agent_rank: this.rank,
             type: 'prediction',
-            content: `Prediction error: expected weight ${predicted.toFixed(2)} for "${trace.content.slice(0, 50)}", got ${trace.weight.toFixed(2)}`,
-            payload: { prediction_error: error, trace_id: trace.trace_id, predicted, actual: trace.weight },
-            confidence: 0.8,
-            novelty_cost: error, // prediction error IS novelty cost
+            content: `Prediction error: expected ${predicted.toFixed(2)}, got ${traceWeight.toFixed(2)} for "${trace.content.slice(0, 40)}"`,
+            payload: { prediction_error: error, trace_id: trace.trace_id, predicted, actual: traceWeight },
+            confidence: Math.min(0.8, 0.3 + error), // confidence proportional to error
+            novelty_cost: error * 0.5, // diminished novelty for repeated errors
             used_slow_path: false,
-            targets: [trace.trace_id], // targets only traces with prediction errors
+            targets: [trace.trace_id],
             cycle: context.cycle,
           });
+          // UPDATE prediction to actual — don't repeat same error next cycle
+          this.lastPredictions.set(trace.trace_id, traceWeight);
         }
       }
     }
@@ -79,11 +82,10 @@ export class PredictiveAgent implements CognitiveAgent {
       }
     } catch { /* causal graph may not have data yet */ }
 
-    // Update predictions for next cycle
-    this.lastPredictions.clear();
+    // Update predictions for next cycle — clamped weights
     for (const trace of context.active_traces) {
-      // Predict: trace weight will decay slightly (bayesian expectation)
-      this.lastPredictions.set(trace.trace_id, trace.weight * 0.95);
+      const w = Math.min(1.0, Math.max(0, trace.weight));
+      this.lastPredictions.set(trace.trace_id, w * 0.95);
     }
 
     return signals;
