@@ -66,8 +66,11 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
   private phenomenalState: PhenomenalState | null = null;
   private guard: RecursionGuard = { consecutive_self_model_commits: 0, uncertainty_trend: [], orthogonal_signal_deficit: 0 };
 
-  // LLM consultation tracking
+  // LLM consultation + anti-rumination tracking
   private idleCyclesSinceLastLlm = 0;
+  private idleCyclesWithoutProgress = 0;
+  private lastIdleTraceCount = 0;
+  private lastIdleErrorSum = 0;
 
   // Learning mode: proactive domain study during idle
   private learningDomain: string | null = null;
@@ -387,13 +390,26 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
     // 2. Expert consultation: LLM when high arousal + chronic pain
     // 3. Pure internal: no LLM, autonomous processing
 
+    // ANTI-RUMINATION: if idle reflection isn't productive, kill it
+    if (this.idleCyclesWithoutProgress > 5) {
+      this.idleCyclesWithoutProgress = 0;
+      return; // switch to resting — don't ruminate
+    }
+
+    // PSYCHOLOGIST: multi-signal compound trigger, not just pain
     const needsExpert = !this.learningDomain
-      && affect.arousal > 0.7
-      && (affect.pain.chronic || affect.hormones.cortisol > 0.6)
+      && affect.pain.intensity > 0.3                     // unresolved prediction error
+      && affect.arousal > 0.5                             // elevated arousal
+      && this.idleCyclesWithoutProgress > 3               // stalled convergence
+      && this.allCommits.filter(c => c.type === 'self_model').length > 2  // repeated self-perturbation
       && this.idleCyclesSinceLastLlm > 10;
 
+    // ADAPTIVE TEACHER: not fixed interval — triggered by accumulated error mass
+    const domainErrors = this.learningDomain
+      ? this.allCommits.filter(c => c.prediction_error > 0.2).length
+      : 0;
     const isLearning = this.learningDomain !== null
-      && this.idleCyclesSinceLastLlm > 3; // don't spam LLM, study every ~3 cycles
+      && (domainErrors > 3 || this.idleCyclesSinceLastLlm > 5); // error mass OR consolidation gap
 
     const context = await this.buildContext(cycle, this.allCommits.slice(-5), this.phenomenalState, true);
 
@@ -443,6 +459,17 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
         }
       }
     }
+
+    // Track idle progress: are we reducing errors or increasing compression?
+    const currentTraceCount = await this.traceGraph.getTraceCount();
+    const currentErrorSum = this.allCommits.slice(-10).reduce((s, c) => s + (c.prediction_error || 0), 0);
+    if (currentTraceCount <= this.lastIdleTraceCount && currentErrorSum >= this.lastIdleErrorSum) {
+      this.idleCyclesWithoutProgress++;
+    } else {
+      this.idleCyclesWithoutProgress = 0;
+    }
+    this.lastIdleTraceCount = currentTraceCount;
+    this.lastIdleErrorSum = currentErrorSum;
 
     // Substrate sync during idle too
     await this.substrateBridge.syncSubstrateToTraces(cycle);

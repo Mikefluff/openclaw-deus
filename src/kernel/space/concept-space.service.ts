@@ -639,16 +639,45 @@ export class ConceptSpaceService {
       }
     }
 
-    // High-VOI regions → mild attractors (curiosity)
-    // Knowledge gaps → attractors (wanting to fill them)
-    const gaps = await this.db.query<any>(
+    // DRIVE 2: NOVELTY HUNGER (curiosity) — high-VOI regions
+    const gaps = await this.db.query<Record<string, unknown>>(
       `SELECT description FROM knowledge_gap WHERE status = 'open' AND impact > 0.5 LIMIT 5`,
     );
     if (gaps.isOk()) {
       for (const g of gaps.value) {
-        const pos = await this.projectNewTrace(g.description || '');
+        const pos = await this.projectNewTrace((g.description as string) || '');
         if (pos.length > 0) {
           attractors.push({ position: pos, strength: 0.3, source: 'curiosity' });
+        }
+      }
+    }
+
+    // DRIVE 3: UNCERTAINTY AVERSION — pull toward tight clusters (well-understood)
+    const tightClusters = (await this.findClusters(3, 1.0)).filter(c => c.radius < 1.0);
+    for (const cluster of tightClusters.slice(0, 3)) {
+      attractors.push({ position: cluster.centroid, strength: 0.2, source: 'uncertainty_aversion' });
+    }
+
+    // DRIVE 4: MASTERY — pull toward domains with high success
+    const masteryTraces = await this.db.query<Trace>(
+      `SELECT position, weight, confidence FROM trace WHERE source_type = 'self' AND confidence > 0.7 AND archived = false LIMIT 5`,
+    );
+    if (masteryTraces.isOk()) {
+      for (const t of masteryTraces.value) {
+        if (t.position && t.position.length > 0) {
+          attractors.push({ position: t.position, strength: 0.15, source: 'mastery_drive' });
+        }
+      }
+    }
+
+    // DRIVE 5: PREDICTION ACCURACY — push away from error-prone regions
+    const errorTraces = await this.db.query<Trace>(
+      `SELECT position, weight FROM trace WHERE source_type = 'signal' AND confidence < 0.3 AND archived = false LIMIT 5`,
+    );
+    if (errorTraces.isOk()) {
+      for (const t of errorTraces.value) {
+        if (t.position && t.position.length > 0) {
+          repellers.push({ position: t.position, strength: 0.2, source: 'prediction_accuracy' });
         }
       }
     }
@@ -657,7 +686,8 @@ export class ConceptSpaceService {
   }
 
   /**
-   * Compute desire vector at a position: sum of attract/repel forces.
+   * Compute desire vector at a position: sum of 5 drives.
+   * Pain avoidance, novelty hunger, uncertainty aversion, mastery, prediction accuracy.
    */
   desireVector(position: number[], field: GradientField): number[] {
     const len = position.length;
@@ -687,33 +717,62 @@ export class ConceptSpaceService {
   }
 
   // ═══════════════════════════════════════════
-  // SPATIAL MEMORY DRIFT (forgetting = drift toward origin)
+  // FORGETTING = LOSS OF RESOLUTION & SEPARABILITY
   // ═══════════════════════════════════════════
 
   /**
-   * All traces drift toward origin. Well-anchored traces barely move.
-   * Weak traces fade into [0,0,...,0] = "nothing / unknown".
+   * Forgetting is NOT drift to origin. It's drift toward nearest ATTRACTOR.
+   * "I don't remember the specific ball, but I remember roundness."
+   *
+   * Traces lose distinctiveness → merge into nearest schema/cluster centroid.
+   * When a trace reaches its attractor and is weak → archived (absorbed).
    */
-  async drift(driftRate = 0.01): Promise<void> {
+  async drift(driftRate = 0.01): Promise<{ merged: number }> {
     const traces = await this.db.query<Trace>(
-      `SELECT trace_id, position, weight, reactivation_count, emotional_charge FROM trace WHERE archived = false AND array::len(position) > 0 LIMIT 200`,
+      `SELECT trace_id, position, weight, freshness, reactivation_count, emotional_charge FROM trace WHERE archived = false AND array::len(position) > 0 LIMIT 200`,
     );
-    if (traces.isErr()) return;
+    if (traces.isErr()) return { merged: 0 };
+
+    // Find attractors: cluster centroids
+    const clusters = await this.findClusters(2, 2.0);
+    let merged = 0;
 
     for (const trace of traces.value) {
       if (!trace.position || trace.position.length === 0) continue;
 
-      // Drift rate modulated by anchoring
+      // Find nearest attractor
+      let nearestCentroid = trace.position; // if no clusters, don't move
+      let nearestDist = Infinity;
+      for (const cluster of clusters) {
+        const dist = this.distance(trace.position, cluster.centroid);
+        if (dist < nearestDist && dist > 0.01) { // don't attract to self
+          nearestDist = dist;
+          nearestCentroid = cluster.centroid;
+        }
+      }
+
+      // Anchoring: well-established traces resist forgetting
       const anchoring = Math.log2(2 + (trace.reactivation_count || 0)) * (1 + Math.abs(trace.emotional_charge || 0));
-      const effectiveDrift = driftRate / anchoring;
+      const effectiveDrift = driftRate / Math.max(1, anchoring);
 
-      const newPos = trace.position.map(p => p * (1 - effectiveDrift));
+      // Drift toward nearest attractor (loss of specificity)
+      const newPos = trace.position.map((p, d) => {
+        const target = nearestCentroid[d] ?? p;
+        const diff = target - p;
+        return p + diff * effectiveDrift * (1 - (trace.weight || 0)); // weak → faster drift
+      });
 
-      await this.db.execute(
-        `UPDATE trace SET position = $pos WHERE trace_id = $tid`,
-        { pos: newPos, tid: trace.trace_id },
-      );
+      // Merge threshold: close to attractor AND fading
+      const archiveThreshold = this.config.get('kernel.archive_threshold');
+      if (nearestDist < 0.3 && (trace.weight || 0) * (trace.freshness || 0) < archiveThreshold) {
+        await this.db.execute('UPDATE trace SET archived = true WHERE trace_id = $tid', { tid: trace.trace_id });
+        merged++;
+      } else {
+        await this.db.execute('UPDATE trace SET position = $pos WHERE trace_id = $tid', { pos: newPos, tid: trace.trace_id });
+      }
     }
+
+    return { merged };
   }
 
   // ═══════════════════════════════════════════

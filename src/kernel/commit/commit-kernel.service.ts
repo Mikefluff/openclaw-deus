@@ -153,11 +153,19 @@ export class CommitKernelService {
       ? 1 - (activeTraces.value.reduce((s, t) => s + t.freshness, 0) / activeTraces.value.length)
       : 0;
 
-    // Dilation: emergent time perception (learnable weights)
+    // TIME = local rate of reconfiguration under limited commit bandwidth
+    // Not just density — cost of restructuring through bottleneck
+    const commitBandwidth = this.config.get('kernel.attention_window') || 20;
+    const reconfigCost = recent.slice(0, 20).reduce((s, c) => {
+      const movementCost = (c.changes?.traces_activated?.length || 0) * 0.1;
+      const dimBirthCost = (c.changes as Record<string, unknown>)?.new_dimensions ? 0.5 : 0;
+      return s + (c.novelty_cost || 0) + movementCost + dimBirthCost;
+    }, 0) / Math.max(1, commitBandwidth);
+
     const wNov = this.config.get('kernel.dilation_novelty_w');
     const wPred = this.config.get('kernel.dilation_pred_error_w');
     const wTempo = this.config.get('kernel.dilation_tempo_w');
-    const dilation = 0.5 + noveltyRate * wNov + predErrorRate * wPred - (1 - tempo) * wTempo;
+    const dilation = reconfigCost * wNov + predErrorRate * wPred + noveltyRate * 0.3 - (1 - tempo) * wTempo;
 
     // Rhythm phase: based on recent commit density pattern
     const phase: TimeSense['rhythm_phase'] = tempo > 0.5 ? 'active'
