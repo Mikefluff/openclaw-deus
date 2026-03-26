@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { RawSensoryEvent, ModalityResult } from './modality.types';
 import { ModalityDiscoveryService } from './modality-discovery.service';
+import { AttentionService } from './attention.service';
 import { TraceGraphService } from '../memory/trace-graph.service';
 import { Signal } from '../kernel.types';
 
@@ -24,6 +25,7 @@ export class RawStreamService {
 
   constructor(
     private readonly modalityDiscovery: ModalityDiscoveryService,
+    private readonly attention: AttentionService,
     private readonly traceGraph: TraceGraphService,
   ) {}
 
@@ -37,12 +39,24 @@ export class RawStreamService {
     // Discover modality + project into concept space
     const result = await this.modalityDiscovery.process(event, cycle);
 
-    // Create modality-tagged trace
+    // ATTENTION GATING: how deeply to process this event
+    const attentionDist = this.attention.attend(this.modalityDiscovery.getModalityCount());
+    const attentionLevel = this.attention.getAttentionLevel(result.modality_id);
+
+    // Involuntary capture: new modality or high novelty → snap attention
+    if (result.is_new_modality || result.novelty > 0.7) {
+      this.attention.capture(result.modality_id);
+    }
+
+    // Attention gates trace weight: high attention → strong trace, low → weak
+    const traceWeight = 0.3 + attentionLevel * 0.5 + result.novelty * 0.2;
+
+    // Create modality-tagged trace (depth gated by attention)
     const traceResult = await this.traceGraph.createTrace({
       source_type: 'signal',
-      content: event.content.slice(0, 500),
-      initial_weight: 0.5 + result.novelty * 0.3,
-      confidence: 0.6,
+      content: event.content.slice(0, attentionLevel > 0.2 ? 500 : 100), // shallow = less content stored
+      initial_weight: Math.min(1, traceWeight),
+      confidence: 0.4 + attentionLevel * 0.4, // high attention = higher confidence
       emotional_charge: 0,
     });
 
