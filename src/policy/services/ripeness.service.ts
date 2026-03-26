@@ -7,6 +7,16 @@ import { CognitiveConfigService } from '../../cognitive/cognitive-config.service
 export class RipenessService {
   constructor(private readonly config: CognitiveConfigService) {}
 
+  /**
+   * Score how "ripe" (ready to execute) an intent is based on preconditions.
+   * Evaluates goal clarity, world model quality, dependency readiness, authorization,
+   * environment readiness, and context freshness. Returns classification:
+   * ready, soon, preparing, not_ready, or blocked.
+   *
+   * @param intent - Normalized intent to assess
+   * @param worldModel - Current world model (may be null)
+   * @returns Ripeness score (0-1), classification, blockers, and factor breakdown
+   */
   score(intent: NormalizedIntent, worldModel: WorldModel | null): RipenessScore {
     const factors: Record<string, number> = {
       goal_clarity: this.getGoalClarityScore(intent),

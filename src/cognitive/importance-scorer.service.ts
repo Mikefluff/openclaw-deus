@@ -17,6 +17,15 @@ export class ImportanceScorerService {
     private readonly similarity: SimilarityProvider,
   ) {}
 
+  /**
+   * Score the importance of an activity log entry for memory retention.
+   * Combines weighted factors: impact (by type), uniqueness (vs recent entries),
+   * relevance (to active goals), user involvement, and belief impact.
+   *
+   * @param entry - The activity log entry to score
+   * @param context - Optional context with active goals and belief trigger flag
+   * @returns Importance score (0-1) with factor breakdown
+   */
   score(entry: ActivityLogEntry, context?: { activeGoals?: string[]; beliefTriggered?: boolean }): ImportanceScore {
     const factors = {
       impact: TYPE_IMPACT[entry.type] ?? 0.3,

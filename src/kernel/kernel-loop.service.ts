@@ -13,6 +13,7 @@ import { SubstrateBridgeService } from './substrate-bridge.service';
 import { ActiveCognitionService } from './cognition/active-cognition.service';
 import { NarrativeService } from './narrative/narrative.service';
 import { RawStreamService } from './sensory/raw-stream.service';
+import { EnergyService } from './energy.service';
 
 /**
  * KernelLoop: Continuous event loop with external interrupts.
@@ -91,6 +92,7 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
     private readonly activeCognition: ActiveCognitionService,
     private readonly narrative: NarrativeService,
     private readonly rawStream: RawStreamService,
+    private readonly energy: EnergyService,
   ) {}
 
   onModuleInit(): void {
@@ -141,7 +143,7 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
         const idx = this.pendingResolvers.findIndex(r => r.eventId === eventId);
         if (idx >= 0) {
           this.pendingResolvers.splice(idx, 1);
-          resolve(ok(this.buildOutput(this.allCommits.slice(-10))));
+          this.buildOutput(this.allCommits.slice(-10)).then(o => resolve(ok(o)));
         }
       }, thinkTimeout);
     });
@@ -225,6 +227,7 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
 
     try {
       const cycle = this.traceGraph.tick();
+      this.energy.tick();
 
       // Check for external events
       const event = this.eventQueue.shift();
@@ -277,6 +280,11 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
         context.llm_budget = { remaining: 0, used: 0, total: 0 };
       }
 
+      // Energy gate: if we can't afford LLM, zero out the budget
+      if (!this.energy.canAffordLlm()) {
+        context.llm_budget = { remaining: 0, used: context.llm_budget.used, total: context.llm_budget.total };
+      }
+
       const input = isReflection
         ? this.buildReflectionInput(cycleCommitsAll.slice(-3), context.time_sense, this.phenomenalState)
         : event.content;
@@ -323,6 +331,11 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
 
       cycleCommitsAll.push(...filteredCommits);
       this.allCommits.push(...filteredCommits);
+
+      // Energy cost per commit
+      for (const _commit of filteredCommits) {
+        this.energy.spend(this.energy.cost.commit, 'commit');
+      }
 
       // Affect processes commits
       const timeSense = await this.commitKernel.computeTimeSense();
@@ -378,7 +391,7 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
     await this.narrative.compact();
 
     // Resolve pending callers
-    const output = this.buildOutput(cycleCommitsAll);
+    const output = await this.buildOutput(cycleCommitsAll);
     const resolver = this.pendingResolvers.shift();
     if (resolver) resolver.resolve(output);
   }
@@ -395,6 +408,13 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
    * one consultation, then back to internal processing.
    */
   private async idleReflection(cycle: number): Promise<void> {
+    // Energy gate: if system needs sleep, skip reflection entirely
+    if (this.energy.needsSleep()) {
+      this.energy.sleep();
+      await new Promise(resolve => setTimeout(resolve, 200));
+      return;
+    }
+
     const activeTraces = await this.traceGraph.getActiveTraces(5);
     if (activeTraces.isErr() || activeTraces.value.length === 0) return;
 
@@ -430,14 +450,14 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
 
     let input: string;
 
-    if (isLearning) {
+    if (isLearning && this.energy.canAffordLlm()) {
       // LEARNING MODE: proactive domain study
       context.llm_budget = { remaining: 2, used: 0, total: 2 };
       this.idleCyclesSinceLastLlm = 0;
       this.learningCycleCount++;
       input = this.buildLearningInput(this.learningDomain!);
       this.logger.log(`Learning: cycle ${this.learningCycleCount} on "${this.learningDomain}"`);
-    } else if (needsExpert) {
+    } else if (needsExpert && this.energy.canAffordLlm()) {
       // EXPERT CONSULTATION: break internal loop
       context.llm_budget = { remaining: 1, used: 0, total: 1 };
       this.idleCyclesSinceLastLlm = 0;
@@ -462,6 +482,9 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
     ]);
 
     const allSignals = [...agentSignals, ...replaySignals, ...curiositySignals, ...inferenceSignals, ...schemaSignals];
+
+    // Energy cost for idle reflection cycle
+    this.energy.spend(this.energy.cost.reflection_cycle, 'idle_reflection');
 
     if (allSignals.length > 0) {
       const commitResult = await this.commitKernel.processCycle(allSignals);
@@ -544,10 +567,10 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
       // Domain has prediction errors → focus on resolving them
       parts.push(`I have prediction errors in ${domain}: ${domainGaps.map(g => `${g.domain}(error=${g.error.toFixed(2)})`).join(', ')}`);
       parts.push(`What am I getting wrong? How should I correct my understanding?`);
-    } else if (this.learningCycleCount < 3) {
+    } else if (this.learningCycleCount < this.config.get('kernel.learning_phase_early')) {
       // Early learning: fundamentals
       parts.push(`What are the essential concepts of ${domain} I must understand?`);
-    } else if (this.learningCycleCount < 8) {
+    } else if (this.learningCycleCount < this.config.get('kernel.learning_phase_mid')) {
       // Mid learning: depth + connections
       parts.push(`Given what I know about ${domain}, what patterns and connections am I missing?`);
       parts.push(`What are the non-obvious failure modes and risks?`);
@@ -578,8 +601,9 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
     // Learning mode: steady rhythm between study cycles
     if (this.learningDomain) return learningSleep;
 
-    // Arousal 0→sleepMax, 1→sleepMin
-    const baseSleep = sleepMax - affect.arousal * (sleepMax - sleepMin);
+    // Arousal modulated by energy: low energy dampens arousal effect → longer sleep
+    const effectiveArousal = affect.arousal * this.energy.attentionFactor();
+    const baseSleep = sleepMax - effectiveArousal * (sleepMax - sleepMin);
     return Math.max(sleepMin, Math.min(sleepMax, baseSleep));
   }
 
@@ -726,12 +750,12 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
   // OUTPUT
   // ═══════════════════════════════════════════
 
-  private buildOutput(commits: CommitDelta[]): KernelOutput {
+  private async buildOutput(commits: CommitDelta[]): Promise<KernelOutput> {
     const perceptual = commits.filter(c => c.type === 'perceptual');
     const interpretive = commits.filter(c => c.type === 'interpretive');
     const selfModel = commits.filter(c => c.type === 'self_model');
     const actions = commits.filter(c => c.type === 'action');
-    const timeSense = { cycle: this.traceGraph.getCycle(), tempo: 0, novelty_rate: 0, prediction_error_rate: 0, trace_decay_velocity: 0, dilation: 1, rhythm_phase: 'active' as const };
+    const timeSense = await this.commitKernel.computeTimeSense();
 
     return {
       total_cycles: this.traceGraph.getCycle(),

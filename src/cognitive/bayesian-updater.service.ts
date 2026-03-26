@@ -2,6 +2,13 @@ import { Injectable } from '@nestjs/common';
 import { CalibratedProbability, calibrated, EvidenceQuality } from '../common/types/cognitive.types';
 import { CognitiveConfigService } from './cognitive-config.service';
 
+/**
+ * BayesianUpdaterService: Bayesian belief update engine.
+ *
+ * Provides calibrated probability updates using evidence-weighted Bayesian inference.
+ * All confidence values are calibrated (mean + spread) to avoid overconfident point
+ * estimates. Evidence quality modulates the strength of belief updates.
+ */
 @Injectable()
 export class BayesianUpdaterService {
   constructor(private readonly config: CognitiveConfigService) {}
@@ -16,6 +23,13 @@ export class BayesianUpdaterService {
     return this.config.get(map[quality]);
   }
 
+  /**
+   * Compute posterior probability using Beta distribution conjugate prior.
+   * Returns calibrated probability with credible interval from Beta(alpha, beta).
+   *
+   * @param successes - Number of observed successes
+   * @param total - Total number of observations
+   */
   betaPosterior(successes: number, total: number): CalibratedProbability {
     const alpha = successes + 1;
     const beta_ = (total - successes) + 1;
@@ -26,6 +40,15 @@ export class BayesianUpdaterService {
     return calibrated(mean, spread);
   }
 
+  /**
+   * Update confidence given new evidence. Boost is proportional to evidence quality
+   * and inversely proportional to current confidence (diminishing returns).
+   * Spread narrows with more evidence (epistemic uncertainty decreases).
+   *
+   * @param currentConfidence - Current belief confidence (0-1)
+   * @param evidenceQuality - Quality tier of the new evidence
+   * @param evidenceCount - Total evidence count (including this update)
+   */
   updateWithEvidence(
     currentConfidence: number,
     evidenceQuality: EvidenceQuality,
@@ -39,15 +62,35 @@ export class BayesianUpdaterService {
     return calibrated(newConfidence, spread);
   }
 
+  /**
+   * Compute decay rate adjusted for evidence count. More evidence = slower decay
+   * (well-supported beliefs persist longer). Uses log2 scaling for diminishing returns.
+   *
+   * @param baseRate - Base decay rate before evidence adjustment
+   * @param evidenceCount - Number of supporting evidence instances
+   */
   evidenceWeightedDecayRate(baseRate: number, evidenceCount: number): number {
     return baseRate / Math.log2(1 + Math.max(1, evidenceCount));
   }
 
+  /**
+   * Get context-specific decay multiplier. Different knowledge scopes decay at
+   * different rates (e.g., values decay slowly, tool knowledge decays faster).
+   *
+   * @param scope - Knowledge scope (e.g., 'tools', 'values', 'technical')
+   */
   contextDecayMultiplier(scope: string): number {
     const key = `context_decay.${scope}`;
     return this.config.get(key) || 1.0;
   }
 
+  /**
+   * Compute prior probability for a belief class. Base priors vary by class
+   * (axioms start high, hypotheses start low) with a small evidence boost.
+   *
+   * @param beliefClass - Category of belief (e.g., 'axiom', 'hypothesis', 'fact')
+   * @param evidenceCount - Number of supporting evidence instances
+   */
   computePrior(beliefClass: string, evidenceCount: number): number {
     const BASE_PRIORS: Record<string, number> = {
       axiom: 1.0, self_model: 0.85, user_model: 0.6,
@@ -59,6 +102,14 @@ export class BayesianUpdaterService {
     return Math.min(0.95, base + evidenceBoost);
   }
 
+  /**
+   * Compute confidence boost from reinforcement (seeing the same belief again).
+   * Capped to prevent runaway confidence. Larger boost for lower confidence
+   * (diminishing returns as confidence approaches 1.0).
+   *
+   * @param currentConfidence - Current belief confidence (0-1)
+   * @param evidenceQuality - Quality of the reinforcing evidence
+   */
   reinforcementBoost(currentConfidence: number, evidenceQuality: EvidenceQuality): number {
     const weight = this.getEvidenceWeight(evidenceQuality);
     const cap = this.config.get('bayesian.reinforcement_boost_cap');

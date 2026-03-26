@@ -74,6 +74,18 @@ describe('KernelLoopService', () => {
     (service as any).processing = false;
     (service as any).running = false;
     (service as any).loopHandle = null;
+    (service as any).energy = {
+      tick: jest.fn(),
+      spend: jest.fn().mockReturnValue(true),
+      canAffordLlm: jest.fn().mockReturnValue(true),
+      canAffordExploration: jest.fn().mockReturnValue(true),
+      needsSleep: jest.fn().mockReturnValue(false),
+      attentionFactor: jest.fn().mockReturnValue(1.0),
+      sleep: jest.fn().mockReturnValue({ slept: true, cycles_awake: 10 }),
+      cost: { llm_call: 0.08, trace_create: 0.005, reflection_cycle: 0.01, commit: 0.005 },
+    };
+    (service as any).narrative = { compact: jest.fn().mockResolvedValue({ isOk: () => true }) };
+    (service as any).rawStream = { ingest: jest.fn().mockResolvedValue([]) };
     (service as any).logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
   });
 

@@ -8,6 +8,13 @@ import Anthropic from '@anthropic-ai/sdk';
 const EMBEDDING_MODEL = 'text-embedding-3-small';
 const EMBEDDING_DIM = 1536;
 
+/**
+ * EmbeddingsService: Text embedding with three-tier caching (memory, SurrealDB, API).
+ *
+ * Computes vector embeddings for semantic similarity. Uses OpenAI's embedding model
+ * when available, falls back to a deterministic hash-based pseudo-embedding otherwise.
+ * All embeddings are cached at two levels to minimize API calls.
+ */
 @Injectable()
 export class EmbeddingsService {
   private readonly logger = new Logger(EmbeddingsService.name);
@@ -19,6 +26,13 @@ export class EmbeddingsService {
     this.openaiApiKey = process.env.OPENAI_API_KEY || null;
   }
 
+  /**
+   * Embed a single text string into a vector. Checks L1 memory cache, then L2
+   * SurrealDB cache, then falls back to API call (or deterministic hash fallback).
+   *
+   * @param text - Text to embed (truncated to 8000 chars for API)
+   * @returns Vector embedding of dimension 1536
+   */
   async embed(text: string): Promise<Result<number[], DomainError>> {
     const hash = this.hashContent(text);
 
@@ -78,6 +92,13 @@ export class EmbeddingsService {
     }
   }
 
+  /**
+   * Embed multiple texts sequentially. Each text goes through the same
+   * three-tier cache as embed(). Fails fast on first error.
+   *
+   * @param texts - Array of text strings to embed
+   * @returns Array of vector embeddings, one per input text
+   */
   async embedBatch(texts: string[]): Promise<Result<number[][], DomainError>> {
     const results: number[][] = [];
     for (const text of texts) {

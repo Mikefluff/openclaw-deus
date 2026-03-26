@@ -9,6 +9,16 @@ import { IntentNormalizerService } from './intent-normalizer.service';
 export class DissensusService {
   constructor(private readonly normalizer: IntentNormalizerService) {}
 
+  /**
+   * Evaluate an intent against dissensus policy rules.
+   * Checks for invariant conflicts, missing human confirmation, identity-critical
+   * mutations, belief mutations, destructive actions, external reach, and high impact.
+   * Returns a decision: allow, signal_l1, pause_l2, or refuse_l3.
+   *
+   * @param intent - Normalized intent to evaluate
+   * @param worldModel - Current world model (may be null if unavailable)
+   * @returns Decision with trigger type, reason, and override options
+   */
   evaluate(intent: NormalizedIntent, worldModel: WorldModel | null): Result<DissensusDecision, DomainError> {
     const targetClass = this.normalizer.classifyTarget(intent.target);
     const timestamp = new Date().toISOString();
