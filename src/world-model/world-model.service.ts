@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Result, ok, err } from 'neverthrow';
 import { DomainError } from '../common/types/result.types';
 import { SurrealService } from '../database/surreal.service';
@@ -29,7 +29,7 @@ export class WorldModelService {
     private readonly db: SurrealService,
     private readonly config: CognitiveConfigService,
     private readonly temporal: TemporalCognitionService,
-    private readonly conceptSpace?: ConceptSpaceService,
+    @Optional() private readonly conceptSpace?: ConceptSpaceService,
   ) {}
 
   // Single SurrealQL query to gather ALL world model data (replaces 8+ service calls)
