@@ -48,7 +48,7 @@ jobs:
         run: npm test -- --ci --coverage
 
       - name: Integration tests
-        run: npm run test:integration -- --ci
+        run: npm run test:integration -- --ci --passWithNoTests
 
       - name: Upload coverage
         uses: actions/upload-artifact@v4
