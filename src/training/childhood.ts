@@ -47,6 +47,7 @@ async function main() {
 
   let totalMs = 0;
   let teacherCalls = { mama: 0, specialist: 0, alone: 0 };
+  let totalReflectionCycles = 0;
   let lastReportTraces = 0;
 
   for (let tick = 0; tick < TOTAL_TICKS; tick++) {
@@ -84,9 +85,22 @@ async function main() {
       }
     }
 
-    // === REFLECTION PAUSE: let kernel idle-process ===
-    // Don't rush — give time for trace dynamics, dreaming, schemas
-    await new Promise(r => setTimeout(r, 50)); // minimal pause for event loop
+    // === REFLECTION: wait until kernel settles ===
+    // Not a fixed pause — wait until the mind calms down.
+    // Like a child: sees something new → eyes wide → thinking... → "ah, got it" → ready.
+    let reflectionCycles = 0;
+    const maxReflection = 20;
+    while (reflectionCycles < maxReflection) {
+      const state = affect.getSnapshot();
+      // Settled: low arousal = "переварил"
+      if (state.arousal < 0.3 && reflectionCycles > 2) break;
+      // Bored: very low arousal = nothing to process
+      if (state.arousal < 0.15) break;
+      // Give kernel one idle tick to dream/infer/reflect
+      await new Promise(r => setTimeout(r, 100));
+      reflectionCycles++;
+    }
+    totalReflectionCycles += reflectionCycles;
 
     // === REPORT ===
     if ((tick + 1) % REPORT_INTERVAL === 0 || tick === TOTAL_TICKS - 1) {
@@ -102,6 +116,7 @@ async function main() {
       console.log(`  Traces: ${traces} (+${traces - lastReportTraces}) | Commits: ${commits} | Dims: ${dims} | Modalities: ${mods}`);
       console.log(`  Affect: mode=${affectState.mode} val=${affectState.valence} arousal=${affectState.arousal} loss=${affectState.loss}`);
       console.log(`  Teacher: mama=${teacherCalls.mama} specialist=${teacherCalls.specialist} alone=${teacherCalls.alone}`);
+      console.log(`  Reflection: ${totalReflectionCycles} total cycles (avg ${(totalReflectionCycles / Math.max(1, tick + 1)).toFixed(1)}/tick)`);
       console.log(`  Avg: ${Math.round(totalMs / Math.max(1, tick + 1))}ms/tick`);
 
       // Abstractions
