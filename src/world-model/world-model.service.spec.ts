@@ -59,7 +59,24 @@ describe('WorldModelService', () => {
         { provide: EpisodeService, useValue: {
           getSuccessRate: mockOk(0.85),
         }},
-        { provide: SurrealService, useValue: { query: mockOk([]), create: mockOk({}) } },
+        { provide: SurrealService, useValue: {
+          query: mockOk([]),
+          queryRaw: jest.fn().mockResolvedValue(ok([{
+            beliefs: { c: 3, avg: 0.85 },
+            axioms: [{ id: 'I1', content: 'Invariant 1', confidence: 1.0 }],
+            knowledge_count: 5,
+            k_axioms: [],
+            intentions: [{ intention_id: 'INT001', description: 'Ship auth', kind: 'goal', source: 'operator_explicit', status: 'active', priority: 0.9, progress: { blockers: [] } }],
+            gaps_open: [],
+            gaps_high: [],
+            ep_stats: { total: 10, successes: 8 },
+            latest_mem: { day_key: '2026-03-25' },
+            latest_intro: { generated_at: '2026-03-25T00:00:00Z' },
+            operator: { expertise: [{ domain: 'TypeScript', level: 'expert' }], patterns: { review_style: 'results_only', prefers_autonomous_work: true }, session: { frustration_signals: 0 } },
+            contradictions: 0,
+          }])),
+          create: mockOk({}),
+        } },
         { provide: CognitiveConfigService, useValue: mockCognitiveConfig },
       ],
     }).compile();

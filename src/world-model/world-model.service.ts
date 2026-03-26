@@ -28,79 +28,77 @@ export class WorldModelService {
     private readonly config: CognitiveConfigService,
   ) {}
 
+  // Single SurrealQL query to gather ALL world model data (replaces 8+ service calls)
+  private static readonly WORLD_MODEL_QUERY = `
+    LET $beliefs = (SELECT count() AS c, math::mean(confidence) AS avg FROM belief WHERE status = 'active' GROUP ALL);
+    LET $axioms = (SELECT belief_id AS id, content, confidence FROM belief WHERE belief_id ~ '^I[0-9]' AND status = 'active');
+    LET $knowledge_count = (SELECT count() AS c FROM knowledge WHERE status = 'active' GROUP ALL);
+    LET $k_axioms = (SELECT knowledge_id AS id, content FROM knowledge WHERE kind = 'axiom' AND status = 'active');
+    LET $intentions = (SELECT * FROM intention WHERE status IN ['recognized', 'adopted', 'active', 'suspended'] ORDER BY priority DESC LIMIT 20);
+    LET $gaps_open = (SELECT * FROM knowledge_gap WHERE status = 'open' ORDER BY impact DESC);
+    LET $gaps_high = (SELECT * FROM knowledge_gap WHERE status = 'open' AND impact >= 0.7);
+    LET $ep_stats = (SELECT count() AS total, count(outcome IN ['success', 'partial_success']) AS successes FROM episode GROUP ALL);
+    LET $latest_mem = (SELECT day_key FROM activity_log ORDER BY timestamp DESC LIMIT 1);
+    LET $latest_intro = (SELECT generated_at, posture FROM introspection_report ORDER BY generated_at DESC LIMIT 1);
+    LET $operator = (SELECT * FROM operator_model LIMIT 1);
+    LET $contradictions = (SELECT count() AS c FROM contradicts GROUP ALL);
+    RETURN {
+      beliefs: $beliefs[0],
+      axioms: $axioms,
+      knowledge_count: $knowledge_count[0].c OR 0,
+      k_axioms: $k_axioms,
+      intentions: $intentions,
+      gaps_open: $gaps_open,
+      gaps_high: $gaps_high,
+      ep_stats: $ep_stats[0],
+      latest_mem: $latest_mem[0],
+      latest_intro: $latest_intro[0],
+      operator: $operator[0],
+      contradictions: $contradictions[0].c OR 0
+    }
+  `;
+
   async build(now?: Date): Promise<Result<WorldModel, DomainError>> {
     const currentTime = now || new Date();
     const dayKey = currentTime.toISOString().slice(0, 10);
 
-    // === Gather data from ALL sources ===
+    // Single DB round-trip for ALL data
+    const dbResult = await this.db.queryRaw<any>(WorldModelService.WORLD_MODEL_QUERY);
+    const d = dbResult.isOk() ? (Array.isArray(dbResult.value) ? dbResult.value[dbResult.value.length - 1] : dbResult.value) : {} as any;
 
-    // v2: beliefs (legacy, still used for axioms)
-    const allBeliefs = await this.beliefs.findAll();
-    const beliefs = allBeliefs.isOk() ? allBeliefs.value : [];
-
-    // v4: knowledge
-    const allKnowledge = await this.knowledge.findAll({ status: 'active' });
-    const knowledgeItems = allKnowledge.isOk() ? allKnowledge.value : [];
-
-    // v4: intentions
-    const activeIntentions = await this.intentions.findActive();
-    const intentionsList = activeIntentions.isOk() ? activeIntentions.value : [];
-    const topIntention = intentionsList.length > 0 ? intentionsList[0] : null;
-
-    // v4: knowledge gaps
-    const openGaps = await this.gaps.findOpen();
-    const gapsList = openGaps.isOk() ? openGaps.value : [];
-    const highImpactGaps = await this.gaps.findHighImpact(0.7);
-    const highGaps = highImpactGaps.isOk() ? highImpactGaps.value : [];
-
-    // v4: operator model
-    const opModel = await this.operatorModel.getModel();
-    const operator = opModel.isOk() ? opModel.value : null;
-
-    // v4: episodes (success rate)
-    const successRate = await this.episodes.getSuccessRate();
-    const agentSuccessRate = successRate.isOk() ? successRate.value : 0.5;
-
-    // Memory
-    const recentEntries = await this.memory.getRecentEntries(7);
-    const memoryDays = recentEntries.isOk()
-      ? [...new Set(recentEntries.value.map((e) => e.day_key))].length : 0;
-    const latestMemoryDay = recentEntries.isOk() && recentEntries.value.length > 0
-      ? recentEntries.value[0].day_key : null;
-    const logCount = recentEntries.isOk() ? recentEntries.value.length : 0;
+    const beliefs = { count: d?.beliefs?.c || 0, avgConf: d?.beliefs?.avg || 0 };
+    const knowledgeCount = d?.knowledge_count || 0;
+    const intentionsList = d?.intentions || [];
+    const topIntention = intentionsList[0] || null;
+    const gapsList = d?.gaps_open || [];
+    const highGaps = d?.gaps_high || [];
+    const operator = d?.operator || null;
+    const epStats = d?.ep_stats || { total: 0, successes: 0 };
+    const agentSuccessRate = epStats.total > 0 ? epStats.successes / epStats.total : 0.5;
+    const latestMemoryDay = d?.latest_mem?.day_key || null;
+    const introDate = d?.latest_intro?.generated_at || null;
 
     const memoryFreshnessDays = latestMemoryDay
       ? Math.floor((currentTime.getTime() - new Date(latestMemoryDay).getTime()) / 86400000) : 999;
     const staleDays = this.config.get('worldmodel.memory_stale_days');
 
-    // Introspection
-    const latestIntrospection = await this.db.query<{ generated_at: string; posture: string }>(
-      'SELECT generated_at, posture FROM introspection_report ORDER BY generated_at DESC LIMIT 1',
-    );
-    const introDate = latestIntrospection.isOk() && latestIntrospection.value.length > 0
-      ? latestIntrospection.value[0].generated_at : null;
-
     // === Build invariants from both v2 (beliefs) and v4 (knowledge axioms) ===
-    const beliefInvariants = beliefs.filter((b) => /^I\d+$/.test(b.belief_id))
-      .map((b) => ({ id: b.belief_id, content: b.content, confidence: b.confidence }));
-    const knowledgeAxioms = knowledgeItems.filter((k) => k.kind === 'axiom')
-      .map((k) => ({ id: k.knowledge_id, content: k.content, confidence: (k.confidence as any).point || k.confidence as any }));
+    const beliefInvariants = (d?.axioms || []).map((b: any) => ({ id: b.id, content: b.content, confidence: b.confidence }));
+    const knowledgeAxioms = (d?.k_axioms || []).map((k: any) => ({ id: k.id, content: k.content, confidence: 1.0 }));
     const invariants = [...beliefInvariants, ...knowledgeAxioms];
 
-    // === Build goals from intentions (v4) + legacy beliefs ===
-    const intentionGoals = intentionsList.filter((i) => i.kind === 'goal')
-      .map((i) => ({ id: i.intention_id, content: i.description, confidence: i.priority }));
-    const beliefGoals = beliefs.filter((b) => /^G\d+$/.test(b.belief_id))
-      .map((b) => ({ id: b.belief_id, content: b.content, confidence: b.confidence }));
-    const goals = [...intentionGoals, ...beliefGoals];
+    // === Build goals from intentions ===
+    const intentionGoals = intentionsList.filter((i: any) => i.kind === 'goal')
+      .map((i: any) => ({ id: i.intention_id, content: i.description, confidence: i.priority }));
+    const goals = intentionGoals;
 
     // === Confidence calculation ===
     const confidence = this.calculateConfidence({
-      beliefCount: beliefs.length,
-      knowledgeCount: knowledgeItems.length,
+      beliefCount: beliefs.count,
+      knowledgeCount,
       intentionCount: intentionsList.length,
-      memoryDays,
-      logCount,
+      memoryDays: latestMemoryDay ? 1 : 0,
+      logCount: latestMemoryDay ? 1 : 0,
       gapCount: gapsList.length,
       agentSuccessRate,
     });
@@ -119,26 +117,26 @@ export class WorldModelService {
         review_pressure: gapsList.length + highGaps.length,
         active_limitations: [
           ...(memoryFreshnessDays > staleDays ? ['stale_memory'] : []),
-          ...(knowledgeItems.length < 5 ? ['low_knowledge_base'] : []),
+          ...(knowledgeCount < 5 ? ['low_knowledge_base'] : []),
           ...(agentSuccessRate < 0.5 ? ['low_success_rate'] : []),
         ],
       },
 
       human_model: {
-        preferences: operator?.expertise?.map((e) => `${e.domain}: ${e.level}`) || [],
+        preferences: operator?.expertise?.map((e: any) => `${e.domain}: ${e.level}`) || [],
         constraints: operator?.patterns ? [
           ...(operator.patterns.active_hours ? [`Active hours: ${operator.patterns.active_hours}`] : []),
           `Review style: ${operator.patterns.review_style}`,
         ] : [],
         active_requests: intentionsList
-          .filter((i) => i.source === 'operator_explicit' && i.status === 'active')
-          .map((i) => i.description),
+          .filter((i: any) => i.source === 'operator_explicit' && i.status === 'active')
+          .map((i: any) => i.description),
       },
 
       workspace_model: {
         active_project: topIntention?.description || null,
         mode: intentionsList.length > 0 ? 'active' : 'idle',
-        status: intentionsList.some((i) => i.progress.blockers.length > 0) ? 'blocked' : 'active',
+        status: intentionsList.some((i: any) => i.progress?.blockers?.length > 0) ? 'blocked' : 'active',
         repo_dirty: false,
         memory_freshness_days: memoryFreshnessDays,
         introspection_date: introDate,
@@ -147,19 +145,19 @@ export class WorldModelService {
 
       environment_model: {
         waiting_conditions: intentionsList
-          .filter((i) => i.status === 'suspended')
-          .map((i) => `Waiting: ${i.description}`),
+          .filter((i: any) => i.status === 'suspended')
+          .map((i: any) => `Waiting: ${i.description}`),
         dependencies: intentionsList
-          .filter((i) => i.progress.blockers.length > 0)
-          .flatMap((i) => i.progress.blockers),
-        open_tensions: highGaps.map((g) => g.description),
+          .filter((i: any) => i.progress?.blockers?.length > 0)
+          .flatMap((i: any) => i.progress.blockers),
+        open_tensions: highGaps.map((g: any) => g.description),
         external_systems: [],
       },
 
       action_priors: {
         hard_blocks: gapsList
-          .filter((g) => g.impact > 0.8)
-          .map((g) => `Knowledge gap: ${g.description}`),
+          .filter((g: any) => g.impact > 0.8)
+          .map((g: any) => `Knowledge gap: ${g.description}`),
         preferred_modes: operator?.patterns?.prefers_autonomous_work
           ? ['direct_act', 'prepare_conditions']
           : ['observe', 'analyze'],
@@ -171,9 +169,9 @@ export class WorldModelService {
       },
 
       sources: {
-        beliefs: { count: beliefs.length },
-        memory: { days: memoryDays, latest_day: latestMemoryDay },
-        logs: { entries: logCount },
+        beliefs: { count: beliefs.count },
+        memory: { days: latestMemoryDay ? 1 : 0, latest_day: latestMemoryDay },
+        logs: { entries: 0 },
         pending_beliefs: { count: 0 },
         status: { exists: true },
       },
