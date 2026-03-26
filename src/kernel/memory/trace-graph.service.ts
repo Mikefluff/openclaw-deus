@@ -134,89 +134,38 @@ export class TraceGraphService {
   // ═══════════════════════════════════════════
 
   /**
-   * Spreading activation: source fires → neighbors activate/inhibit.
-   * Hebbian learning: edges that co-activate strengthen. Fire together, wire together.
+   * Spreading activation + Hebbian learning via SurrealDB stored procedure.
+   * Single DB call instead of N+1 queries. Atomic.
    */
   async spreadActivation(sourceTraceId: string, depth = 0): Promise<void> {
     if (depth > 3) return;
 
-    const source = await this.findById(sourceTraceId);
-    if (!source || source.weight < 0.1) return;
-
-    const spreadFactor = this.config.get('kernel.spread_factor');
-    const inhibFactor = this.config.get('kernel.inhibition_factor');
-
-    // Get ALL outgoing edges (activates + inhibits)
-    const edges = await this.db.query<{ out_trace: string; relation: string; edge_weight: number }>(
-      `SELECT out.trace_id AS out_trace, 'activates' AS relation, weight AS edge_weight FROM activates WHERE in.trace_id = $tid
-       UNION ALL
-       SELECT out.trace_id AS out_trace, 'inhibits' AS relation, weight AS edge_weight FROM inhibits WHERE in.trace_id = $tid`,
-      { tid: sourceTraceId },
+    const result = await this.db.execute(
+      `fn::spread_activation($tid, $spread, $inhibit, $hebb_lr, $hebb_decay, $cycle)`,
+      {
+        tid: sourceTraceId,
+        spread: this.config.get('kernel.spread_factor'),
+        inhibit: this.config.get('kernel.inhibition_factor'),
+        hebb_lr: this.config.get('kernel.hebbian_learning_rate'),
+        hebb_decay: this.config.get('kernel.hebbian_decay_rate'),
+        cycle: this.cycle,
+      },
     );
 
-    if (edges.isErr()) return;
-
-    for (const edge of edges.value) {
-      const neighbor = await this.findById(edge.out_trace);
-      if (!neighbor || neighbor.archived) continue;
-
-      if (edge.relation === 'activates') {
-        const boost = edge.edge_weight * spreadFactor * source.weight;
-        if (boost > 0.01) {
-          const newWeight = Math.min(1, neighbor.weight + boost);
-          await this.db.execute(
-            `UPDATE trace SET weight = $w, last_reactivated_cycle = $c WHERE trace_id = $tid`,
-            { w: newWeight, c: this.cycle, tid: edge.out_trace },
-          );
-
-          // HEBBIAN: co-activation → strengthen edge
-          await this.hebbianUpdate(sourceTraceId, edge.out_trace, source.weight, newWeight, 'activates');
-
-          if (boost > 0.05) {
-            await this.spreadActivation(edge.out_trace, depth + 1);
+    // Recurse on heavily activated neighbors (depth-limited)
+    if (result.isOk() && depth < 2) {
+      const activated = await this.db.query<{ trace_id: string }>(
+        `SELECT trace_id FROM trace WHERE last_reactivated_cycle = $cycle AND weight > 0.3 AND NOT archived LIMIT 5`,
+        { cycle: this.cycle },
+      );
+      if (activated.isOk()) {
+        for (const t of activated.value.slice(0, 3)) {
+          if (t.trace_id !== sourceTraceId) {
+            await this.spreadActivation(t.trace_id, depth + 1);
           }
         }
-      } else if (edge.relation === 'inhibits') {
-        const suppression = edge.edge_weight * inhibFactor * source.weight;
-        const newWeight = Math.max(0, neighbor.weight - suppression);
-        await this.db.execute(
-          `UPDATE trace SET weight = $w, suppressed = $sup WHERE trace_id = $tid`,
-          { w: newWeight, sup: newWeight < 0.05, tid: edge.out_trace },
-        );
-
-        // ANTI-HEBBIAN: source fires but target is suppressed → weaken activating edges to target
-        await this.hebbianUpdate(sourceTraceId, edge.out_trace, source.weight, newWeight, 'inhibits');
       }
     }
-  }
-
-  /**
-   * Hebbian learning: fire together → wire together.
-   * Edge weight adjusts based on co-activation of source and target.
-   */
-  private async hebbianUpdate(
-    sourceId: string, targetId: string,
-    sourceWeight: number, targetWeight: number,
-    relation: string,
-  ): Promise<void> {
-    const lr = this.config.get('kernel.hebbian_learning_rate');
-    const decayRate = this.config.get('kernel.hebbian_decay_rate');
-
-    // Positive: both active → strengthen
-    const coActivation = sourceWeight * targetWeight;
-    const delta = lr * coActivation;
-
-    // Anti-Hebbian: target inactive → weaken
-    const antiHebbian = targetWeight < 0.1 ? -decayRate : 0;
-
-    await this.db.execute(
-      `UPDATE ${relation} SET
-        weight = math::clamp(weight + $delta + $anti, 0.01, 1.0),
-        co_activation_count = co_activation_count + 1,
-        last_co_activation = $cycle
-      WHERE in.trace_id = $from AND out.trace_id = $to`,
-      { delta, anti: antiHebbian, cycle: this.cycle, from: sourceId, to: targetId },
-    );
   }
 
   // ═══════════════════════════════════════════
@@ -224,39 +173,14 @@ export class TraceGraphService {
   // ═══════════════════════════════════════════
 
   /**
-   * When prediction error is detected, propagate backward through edges.
-   * Edges that contributed to wrong predictions get weakened.
+   * Prediction error backpropagation via SurrealDB stored procedure.
    */
-  async backpropagatePredictionError(traceId: string, error: number, depth = 0): Promise<void> {
-    if (depth > 3 || error < 0.01) return;
-
-    const rate = this.config.get('kernel.pred_error_backprop_rate');
-
-    // Find incoming edges (edges pointing TO this trace)
-    const inEdges = await this.db.query<{ in_trace: string; relation: string; edge_weight: number }>(
-      `SELECT in.trace_id AS in_trace, 'activates' AS relation, weight AS edge_weight FROM activates WHERE out.trace_id = $tid
-       UNION ALL
-       SELECT in.trace_id AS in_trace, 'inhibits' AS relation, weight AS edge_weight FROM inhibits WHERE out.trace_id = $tid`,
-      { tid: traceId },
+  async backpropagatePredictionError(traceId: string, error: number): Promise<void> {
+    if (error < 0.01) return;
+    await this.db.execute(
+      `fn::backprop_pred_error($tid, $error, $rate)`,
+      { tid: traceId, error, rate: this.config.get('kernel.pred_error_backprop_rate') },
     );
-
-    if (inEdges.isErr()) return;
-
-    for (const edge of inEdges.value) {
-      const delta = -rate * error * edge.edge_weight;
-      await this.db.execute(
-        `UPDATE ${edge.relation} SET
-          weight = math::clamp(weight + $delta, 0.01, 1.0),
-          prediction_error_sum = prediction_error_sum + $error
-        WHERE in.trace_id = $from AND out.trace_id = $tid`,
-        { delta, error, from: edge.in_trace, tid: traceId },
-      );
-
-      // Recurse backward (diminishing)
-      if (Math.abs(delta) > 0.01) {
-        await this.backpropagatePredictionError(edge.in_trace, error * edge.edge_weight, depth + 1);
-      }
-    }
   }
 
   // ═══════════════════════════════════════════
@@ -264,51 +188,31 @@ export class TraceGraphService {
   // ═══════════════════════════════════════════
 
   /**
-   * Reinforce or weaken traces/edges based on episode outcome.
-   * Success → strengthen contributing path. Failure → weaken.
+   * Outcome reinforcement via SurrealDB stored procedure.
    */
   async reinforceFromOutcome(traceIds: string[], reward: number): Promise<void> {
-    const rate = this.config.get('kernel.reinforcement_rate');
-
-    for (const traceId of traceIds) {
-      // Adjust trace weight
-      await this.db.execute(
-        `UPDATE trace SET weight = math::clamp(weight + $delta, 0.01, 1.0) WHERE trace_id = $tid`,
-        { delta: reward * rate, tid: traceId },
-      );
-
-      // Adjust all outgoing edges
-      await this.db.execute(
-        `UPDATE activates SET
-          weight = math::clamp(weight + $delta, 0.01, 1.0),
-          outcome_reinforcement = outcome_reinforcement + $reward
-        WHERE in.trace_id = $tid`,
-        { delta: reward * rate * 0.5, reward, tid: traceId },
-      );
-    }
+    await this.db.execute(
+      `fn::reinforce_outcome($tids, $reward, $rate)`,
+      { tids: traceIds, reward, rate: this.config.get('kernel.reinforcement_rate') },
+    );
   }
 
   // ═══════════════════════════════════════════
   // FORGETTING
   // ═══════════════════════════════════════════
 
+  /**
+   * Forgetting via SurrealDB stored procedure — single atomic operation.
+   */
   async forget(): Promise<Result<{ decayed: number; archived: number }, DomainError>> {
-    const decay = this.config.get('kernel.freshness_decay');
-    const threshold = this.config.get('kernel.archive_threshold');
-
-    await this.db.execute(
-      `UPDATE trace SET
-        freshness = freshness * (1.0 - $decay / math::max([1.0, math::log2(1.0 + reactivation_count)]) * IF emotional_charge != 0 THEN 0.5 ELSE 1.0 END)
-      WHERE NOT archived AND NOT suppressed`,
-      { decay },
+    const result = await this.db.execute(
+      `fn::forget_traces($decay, $threshold)`,
+      {
+        decay: this.config.get('kernel.freshness_decay'),
+        threshold: this.config.get('kernel.archive_threshold'),
+      },
     );
-
-    await this.db.execute(
-      `UPDATE trace SET archived = true WHERE NOT archived AND weight * freshness < $threshold`,
-      { threshold },
-    );
-
-    return ok({ decayed: 1, archived: 0 });
+    return ok({ decayed: 1, archived: result.isOk() ? ((result.value as any)?.archived ?? 0) : 0 });
   }
 
   // ═══════════════════════════════════════════
