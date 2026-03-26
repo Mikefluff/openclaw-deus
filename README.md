@@ -1,132 +1,149 @@
 # DEUS — Cognitive Runtime
 
-Self-recursive cognitive architecture where time, emotions, and learning emerge from system dynamics rather than being hardcoded.
+A mind, not a pipeline. Self-recursive cognitive architecture where time, emotions, abstractions, and world model emerge from one unified structure — the adaptive concept space.
 
-## Architecture: 5-Layer Cognitive Kernel
+## Core Idea
+
+One structure holds everything: world model, self model, predictions, desires, memory.
 
 ```
-                    ┌─────────────────────────────────┐
-                    │     OPERATOR MESSAGE             │
-                    └──────────────┬──────────────────┘
-                                   │
-                    ┌──────────────▼──────────────────┐
-                    │   LAYER 1: AGENT SWARM           │
-                    │   5 agents in parallel            │
-                    │   System 1 (fast) + System 2 (LLM)│
-                    │   Sensory│Predictive│Affective     │
-                    │   Priority│Strategic               │
-                    └──────────────┬──────────────────┘
-                                   │ signals
-                    ┌──────────────▼──────────────────┐
-                    │   LAYER 2: TRACE GRAPH           │
-                    │   Unified memory substrate        │
-                    │   Spreading activation + Hebbian   │
-                    │   Prediction error backprop        │
-                    │   SurrealDB stored procedures      │
-                    └──────────────┬──────────────────┘
-                                   │ convergence
-                    ┌──────────────▼──────────────────┐
-                    │   LAYER 3: COMMIT KERNEL         │
-                    │   Attention bottleneck            │
-                    │   Typed commits (6 types)         │
-                    │   Energy-based stabilization       │
-                    └──────────────┬──────────────────┘
-                                   │ commits
-                    ┌──────────────▼──────────────────┐
-                    │   LAYER 4: AFFECT MODEL          │
-                    │   Gradient descent (~40 params)   │
-                    │   Loss = pain + error - reward    │
-                    │   Hormones → config modulation    │
-                    └──────────────┬──────────────────┘
-                                   │ config deltas
-                    ┌──────────────▼──────────────────┐
-                    │   LAYER 5: SELF-RECURSION        │
-                    │   Commits trigger new signals     │
-                    │   Loop until energy stabilizes    │
-                    │   Guardrails vs hallucination     │
-                    └──────────────┬──────────────────┘
-                                   │
-                    ┌──────────────▼──────────────────┐
-                    │   OUTPUT: Remainder after         │
-                    │   stabilization                   │
-                    │   what_changed │ what_clearer     │
-                    │   what_tense  │ actions_matured   │
-                    └─────────────────────────────────┘
+              CONCEPT SPACE = THE MIND
+             /       |       |        \
+        World      Self    Predict    Desire
+        (dims +    (self-  (trajec-  (gradient
+         positions  traces  tories)   field:
+         clusters)  same             attract +
+                    space)           repel)
 ```
 
-## Key Principles
+- **Dimensions are born from conflicts.** "Ball rolls, cube doesn't" → shape-axis emerges
+- **Traces have positions.** New facts are placed near similar knowledge
+- **Abstractions are centroids.** {ball, plate, wheel} cluster → "roundness" emerges at center
+- **Time is emergent.** Not `Date.now()` — commit density × novelty × prediction error
+- **Emotions are learned.** Gradient descent affect model, not keyword matching
+- **Self-reflection is autonomous.** Inner dialogue runs without LLM — pure trace dynamics
 
-**Time is emergent.** No `Date.now()` in the kernel. Cognitive cycles are the only clock. "Давно" = low trace weight + few reactivations. "Только что" = high freshness. "Тянулось" = many commits + high prediction error.
+## Architecture
 
-**Learning is real.** Not `config.adjust()` stochastic parrot. Hebbian learning on graph edges (fire together → wire together). Prediction error backpropagation through causal paths. Outcome reinforcement from episodes. Gradient descent in affect model.
+### Continuous Event Loop
 
-**Emotions modulate cognition.** Affect model: 7 accumulators → W₁ → sigmoid → 4 hormones → W₂ → config deltas. Loss = prediction_error + pain - convergence - reward. Cortisol (stress) → conservative. Dopamine (reward) → explorative. System learns to minimize pain.
+```
+KERNEL (always running):
+  Event in queue? → process (LLM on perception, then pure internal reflection)
+  No event?       → idle thinking: dreaming, curiosity, inference, schemas
 
-**Self-recursion IS consciousness.** The kernel doesn't process messages — it experiences them. Agents signal → traces activate → convergence → commit → commit changes world → new signals → loop. Stops when energy stabilizes, not when counter expires.
+  Sleep modulated by arousal:
+    high arousal → 50ms  (active thinking)
+    low arousal  → 2000ms (resting)
+    learning mode → 500ms (steady study)
+```
 
-**Substrate preserved.** Current BDI pipeline (intentions, knowledge, beliefs, episodes) = reptilian brain. Kernel = neocortex on top. 22 NestJS modules, all functional.
+### 5 Layers
+
+| Layer | What | How |
+|-------|------|-----|
+| **Agent Swarm** | 5 agents in parallel (sensory→strategic) | System 1 fast-path + System 2 LLM slow-path |
+| **Trace Graph** | Unified memory with Hebbian learning | SurrealDB stored procedures: spread_activation, forget, backprop, reinforce |
+| **Commit Kernel** | Attention bottleneck | Convergence detection, 6 typed commits, energy-based stabilization |
+| **Affect Model** | Gradient descent hormones (~40 params) | Loss = pain + error - reward. Accumulators → sigmoid → hormones → config deltas |
+| **Concept Space** | Adaptive N-dimensional world model | Dimensions born from conflicts, traces have positions, abstractions = centroids |
+
+### Cognitive Agents
+
+| Agent | Rank | Role |
+|-------|------|------|
+| Sensory | 1 | Change detection, novelty, interoception (senses own state changes) |
+| Predictive | 2 | Prediction errors, causal graph VOI, trajectory tracking |
+| Affective | 3 | Hormonal state, pain/reward detection from system dynamics |
+| Priority | 4 | Intention conflicts, urgency from phenomenal state |
+| Strategic | 5 | Full deliberation with episode + causal + temporal context |
+
+### Active Cognition (idle, no LLM)
+
+| Process | What |
+|---------|------|
+| **Episodic Replay** | Re-live past episodes through trace graph (failures first) — like dreaming |
+| **Curiosity** | VOI from causal graph + knowledge gaps → intrinsic exploration motivation |
+| **Active Inference** | "A strongly implies B but B is weak" → boost B. Deduction from graph structure |
+| **Schema Detection** | Co-activation count > threshold → abstract hub trace emerges |
+| **Abstraction** | Cluster centroid = category concept. Property words across 3+ traces → [PROPERTY] trace |
+
+### Concept Space (Gärdenfors-inspired)
+
+```
+"мячик круглый, катится" → trace at []
+"кубик угловатый"        → CONFLICT → DIMENSION BORN: axis_0
+  мячик → [+1], кубик → [-1]
+
+"тарелка круглая" → projected near мячик → [+0.8]
+"коробка угловатая" → near кубик → [-0.7]
+
+axis_0 named: "круглый ↔ угловатый"
+
+Cluster {мячик, тарелка, колесо} → centroid IS "круглое"
+```
+
+### Affect Model (learned, not hardcoded)
+
+```
+7 accumulators × W₁ → sigmoid → 4 hormones (cortisol, dopamine, NE, serotonin)
+hormones × W₂ → tanh → 6 config deltas
+hormones × W_mode → softmax → mode (explore/exploit/defensive/resting)
+
+Loss = pred_error + pain - convergence - reward
+Backward: analytical gradients, clipping, Xavier init
+Weights persisted in SurrealDB — cumulative across restarts
+```
+
+### Unified World Model
+
+Concept space IS the world model. No separate SQL snapshot.
+
+| Aspect | Source |
+|--------|--------|
+| World structure | Dimensions (each = a learned distinction) |
+| Facts | Trace positions |
+| Categories | Spatial clusters |
+| Self-knowledge | Self-traces in same space |
+| Predictions | Trajectories (position→position vectors) |
+| Desires | Gradient field (attractors from success, repellers from pain) |
+| Coherence | Cluster tightness |
+| Gaps | Empty regions where traces should exist |
 
 ## Stack
 
 - **NestJS** — DI, modules, lifecycle
 - **SurrealDB 3.0** — graph DB, stored procedures, HNSW vectors
-- **Claude API** — LLM for extraction, deliberation, diagnosis
-- **neverthrow** — Result<T,E> error handling
+- **Claude API** — LLM for perception (extraction, deliberation)
+- **neverthrow** — Result<T,E>
 - **TypeScript** — strict mode
 
 ## Numbers
 
-- 174 files, 17,200 lines TypeScript
-- 29 test suites, 193 tests
-- 22 NestJS modules, 18 nightly stages
-- ~60 learnable config params + ~40 gradient-learned affect params
-- 14 SurrealDB migrations, 4 stored procedures
-- 6 commit types, 5 cognitive agents, 4 hormones
-
-## Kernel Components
-
-### Agent Swarm (Layer 1)
-| Agent | Rank | Fast-path | Slow-path |
-|-------|------|-----------|-----------|
-| Sensory | 1 | Change detection, novelty, interoception | LLM: intention + knowledge extraction |
-| Predictive | 2 | Bayesian priors, causal graph VOI | LLM: scenario planning |
-| Affective | 3 | Hormonal state, importance scoring | Emotional charge from dynamics |
-| Priority | 4 | Intention stack, ripeness, conflict detection | LLM: reprioritization |
-| Strategic | 5 | Meta-learning, deliberation history | LLM: full deliberation |
-
-### Trace Graph (Layer 2)
-- **Spreading activation** via `fn::spread_activation` (SurrealDB)
-- **Hebbian**: co-active traces strengthen their edge
-- **Prediction error backprop** via `fn::backprop_pred_error`
-- **Outcome reinforcement** via `fn::reinforce_outcome`
-- **Forgetting** via `fn::forget_traces` — emotional traces decay slower
-
-### Commit Kernel (Layer 3)
-- **Convergence**: 2+ agents agree → commit
-- **Escalation**: single agent urgency breakthrough
-- **6 types**: perceptual, interpretive, priority, self_model, action, meta
-- **Energy-based stabilization** (not counter)
-- **Guardrails**: hallucination detection, self_model blocking, uncertainty monotonicity
-
-### Affect Model (Layer 4)
 ```
-accumulators × W₁ → sigmoid → hormones (cortisol, dopamine, NE, serotonin)
-hormones × W₂ → tanh → config_deltas (6 kernel params)
-hormones × W_mode → softmax → mode (explore/exploit/defensive/resting)
-
-Loss = pred_error + pain - convergence - reward
-Backward: analytical gradients, clipping [-1,1], Xavier init
-Weights persisted in SurrealDB — cumulative learning across restarts
+~18,500 lines TypeScript
+176 files
+29 test suites, 193 tests
+22 NestJS modules
+18 nightly stages
+16 SurrealDB migrations
+~60 learnable config params
+~40 gradient-learned affect params
+6 commit types
+5 cognitive agents
+4 SurrealDB stored procedures
+4 hormones
 ```
 
-### Self-Recursion (Layer 5)
-```
-iter 0: agents process raw input
-iter 1+: agents process own commits (inner dialogue)
-  SensoryAgent → interoception (trace weight shifts)
-  AffectiveAgent → hormonal shift signals
-  PredictiveAgent → prediction errors
-  → loop until energy < threshold
+## Learning Mode
+
+```typescript
+kernel.startLearning('geometric shapes');
+// System proactively studies during idle:
+// - Uses LLM as "teacher" every ~3 cycles
+// - Adaptive curriculum from prediction errors + knowledge gaps
+// - Monitor: kernel.getLearningProgress()
+kernel.stopLearning();
 ```
 
 ## Quick Start
@@ -134,10 +151,11 @@ iter 1+: agents process own commits (inner dialogue)
 ```bash
 npm run deus:db                          # Start SurrealDB
 npx ts-node src/cli.ts bootstrap         # Migrations + seed + cognitive baseline
-npx ts-node src/cli.ts metrics           # Cognitive snapshot (10 dimensions)
-npx ts-node src/cli.ts diagnose          # Weakness detection (rule + LLM)
-npx ts-node src/cli.ts improve           # Recursive self-improvement loop
+npx ts-node src/cli.ts metrics           # Cognitive snapshot
+npx ts-node src/cli.ts diagnose          # Weakness detection
+npx ts-node src/cli.ts improve           # Recursive self-improvement
 npx ts-node src/cli.ts nightly           # 18-stage nightly pipeline
+npx ts-node src/training/childhood.ts    # Train like a child (shapes curriculum)
 npm test                                 # 29 suites, 193 tests
 ```
 
@@ -145,29 +163,28 @@ npm test                                 # 29 suites, 193 tests
 
 ```
 src/
-├── kernel/                    # 5-Layer Cognitive Kernel
+├── kernel/                    # Cognitive Kernel
+│   ├── kernel-loop.service    # Continuous event loop (the mind's main process)
 │   ├── agents/                # Sensory, Predictive, Affective, Priority, Strategic
 │   ├── memory/                # Trace graph (Hebbian, spreading activation)
+│   ├── space/                 # Adaptive concept space (dimensions, positions, clusters)
 │   ├── commit/                # Attention bottleneck (typed commits, energy)
 │   ├── affect/                # Gradient descent affect model
-│   └── narrative/             # Temporal storytelling + commit compaction
-├── cognitive/                 # Substrate: config, pipeline, causal, bayesian, temporal
+│   ├── cognition/             # Active cognition (dreaming, curiosity, inference, schemas)
+│   ├── narrative/             # Temporal storytelling + commit compaction
+│   └── substrate-bridge       # Sync reptilian brain ↔ traces ↔ world model
+├── cognitive/                 # Substrate: config, pipeline, causal, bayesian, temporal, meta-learning
 ├── beliefs/                   # Extraction, decay, contradiction, promotion
 ├── knowledge/                 # Extraction, gaps, reinforcement, vector search
 ├── intention/                 # BDI: recognition, dedup, stack, lifecycle
-├── deliberation/              # LLM deliberation with episodes + causal context
+├── deliberation/              # LLM deliberation with full context
 ├── experience/                # Episodes, procedures, self-assessment
 ├── memory/                    # Activity log, aggregation, forgetting curve
-├── metrics/                   # Metrics, diagnosis, benchmarks, experiments
+├── metrics/                   # Cognitive metrics, diagnosis, benchmarks, experiments
 ├── nightly/                   # 18-stage nightly pipeline
-├── introspection/             # Coherence, posture
-├── world-model/               # Unified reality snapshot
-├── operator-model/            # Human modeling
-├── policy/                    # Ripeness, dissensus
-├── llm/                       # Claude API, budget, cache
-├── embeddings/                # Vectors, HNSW, similarity
-├── database/                  # SurrealDB, 14 migrations, 4 stored procedures
-└── events/                    # WebSocket, webhooks
+├── world-model/               # Delegates to concept space (spatial world model)
+├── training/                  # Childhood curriculum (instance-based learning)
+└── ...                        # introspection, policy, llm, embeddings, database, events, auth, health
 ```
 
 ## License
