@@ -25,6 +25,8 @@ import { ModalityDiscoveryService } from '../kernel/sensory/modality-discovery.s
 import { SurrealService } from '../database/surreal.service';
 import { VirtualWorld } from './virtual-world';
 
+function pick<T>(arr: T[]): T { return arr[Math.floor(Math.random() * arr.length)]; }
+
 const TOTAL_TICKS = parseInt(process.argv[2] || '500', 10);
 const REPORT_INTERVAL = Math.max(10, Math.floor(TOTAL_TICKS / 20));
 
@@ -55,11 +57,30 @@ async function main() {
     const events = world.tick();
     if (events.length === 0) continue;
 
-    // === PROCESS each event through kernel ===
+    // === PROCESS world events (passive perception) ===
     for (const event of events) {
       const start = Date.now();
-      const result = await pipeline.processMessage(event.content);
+      await pipeline.processMessage(event.content);
       totalMs += Date.now() - start;
+    }
+
+    // === CHILD ACTS (active exploration) ===
+    // Curiosity-driven: choose action based on what's least known
+    if (Math.random() < 0.4 && world.getObjectNames().length > 0) {
+      const objects = world.getObjectNames();
+      const actions = world.getAvailableActions();
+      const targetObj = pick(objects);
+      const action = pick(actions);
+
+      // ACT on the world
+      const consequences = world.childAction(action, targetObj);
+
+      // Process consequences through kernel
+      for (const event of consequences) {
+        const start = Date.now();
+        await pipeline.processMessage(event.content);
+        totalMs += Date.now() - start;
+      }
     }
 
     // === CHECK: does child need teacher? ===
@@ -125,6 +146,30 @@ async function main() {
       );
       if (abstractions.isOk() && abstractions.value.length > 0) {
         console.log(`  Abstractions: ${abstractions.value.map(a => `"${(a.content as string).slice(0, 50)}"`).join(', ')}`);
+      }
+
+      // VERIFICATION: does internal model match the world?
+      const groundTruth = world.getGroundTruth();
+      let knownCorrect = 0;
+      let knownTotal = 0;
+      for (const obj of groundTruth) {
+        // Check if system has traces about this object
+        const objTraces = await db.query<Record<string, unknown>>(
+          `SELECT content FROM trace WHERE content CONTAINS $name AND archived = false LIMIT 5`,
+          { name: obj.name },
+        );
+        if (objTraces.isOk() && objTraces.value.length > 0) {
+          knownTotal++;
+          // Check if any trace mentions a correct property
+          const traceTexts = objTraces.value.map(t => (t.content as string || '').toLowerCase());
+          const hasCorrectProp = Object.values(obj.properties).some(prop =>
+            traceTexts.some(t => t.includes(prop.toLowerCase())),
+          );
+          if (hasCorrectProp) knownCorrect++;
+        }
+      }
+      if (knownTotal > 0) {
+        console.log(`  World model accuracy: ${knownCorrect}/${knownTotal} objects with correct properties (${Math.round(knownCorrect / knownTotal * 100)}%)`);
       }
 
       lastReportTraces = traces;

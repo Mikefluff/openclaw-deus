@@ -258,6 +258,112 @@ export class VirtualWorld {
 
   getState(): WorldState { return { ...this.state }; }
 
+  /**
+   * Child ACTS on the world. Returns consequences as events.
+   * The child is not passive — it explores, tests, manipulates.
+   */
+  childAction(action: string, targetObject?: string): RawSensoryEvent[] {
+    const events: RawSensoryEvent[] = [];
+    const now = Date.now();
+    const obj = targetObject
+      ? this.state.objects.find(o => o.nameRu === targetObject)
+      : this.state.objects.length > 0 ? pick(this.state.objects) : null;
+
+    if (!obj) {
+      events.push(this.event('Ничего не произошло — нечего трогать.', 'consequence', now));
+      return events;
+    }
+
+    const props = obj.properties;
+
+    switch (action) {
+      case 'touch': {
+        events.push(this.event(
+          `Потрогал ${obj.nameRu}. На ощупь: ${props.texture || 'обычный'}.`,
+          'touch_result', now,
+        ));
+        break;
+      }
+
+      case 'push': {
+        const isRound = (props.shape || '').includes('кругл');
+        const rolls = isRound || (props.physics || '').includes('катится');
+        events.push(this.event(
+          `Толкнул ${obj.nameRu}. ${rolls ? `${obj.nameRu.charAt(0).toUpperCase() + obj.nameRu.slice(1)} покатился!` : `${obj.nameRu.charAt(0).toUpperCase() + obj.nameRu.slice(1)} не покатился. Просто сдвинулся.`}`,
+          'physics_result', now,
+        ));
+        break;
+      }
+
+      case 'drop': {
+        const fragile = (props.texture || '').includes('стеклян') || (props.physics || '').includes('разбивается');
+        events.push(this.event(
+          `Уронил ${obj.nameRu}. ${fragile ? 'Разбился! Дзынь! Мама: "Осторожнее!"' : `${obj.nameRu.charAt(0).toUpperCase() + obj.nameRu.slice(1)} упал, но цел.`}`,
+          'physics_result', now,
+        ));
+        if (fragile && this.state.mamaPresent) {
+          events.push(this.event('Мама расстроена. "Не бросай вещи!"', 'mama_emotion', now));
+        }
+        break;
+      }
+
+      case 'shake': {
+        events.push(this.event(
+          `Потряс ${obj.nameRu}. Звук: ${props.sound || 'тихо'}.`,
+          'sound_result', now,
+        ));
+        break;
+      }
+
+      case 'look_closely': {
+        events.push(this.event(
+          `Разглядываю ${obj.nameRu} вблизи. Цвет: ${props.color || '?'}. Форма: ${props.shape || '?'}. Размер: ${props.size || '?'}.`,
+          'visual_detail', now,
+        ));
+        break;
+      }
+
+      case 'put_in_water': {
+        const heavy = (props.size || '').includes('тяжёл') || (props.texture || '').includes('метал') || obj.nameRu === 'камень';
+        events.push(this.event(
+          `Положил ${obj.nameRu} в воду. ${heavy ? 'Утонул! Тяжёлый.' : 'Плавает! Лёгкий.'}`,
+          'physics_result', now,
+        ));
+        break;
+      }
+
+      default: {
+        events.push(this.event(
+          `Сделал что-то с ${obj.nameRu}. ${props.physics || 'Ничего особенного.'}`,
+          'consequence', now,
+        ));
+      }
+    }
+
+    return events;
+  }
+
+  /**
+   * GROUND TRUTH: what the world actually knows about objects.
+   * Used for verification — does the child's model match reality?
+   */
+  getGroundTruth(): Array<{ name: string; properties: Record<string, string> }> {
+    return this.state.objects.map(obj => ({
+      name: obj.nameRu,
+      properties: obj.properties,
+    }));
+  }
+
+  /** Get available actions for exploration. */
+  getAvailableActions(): string[] {
+    return ['touch', 'push', 'drop', 'shake', 'look_closely', 'put_in_water'];
+  }
+
+  /** Get object names in current location. */
+  getObjectNames(): string[] {
+    return this.state.objects.map(o => o.nameRu);
+  }
+
   private event(content: string, source: string, timestamp: number): RawSensoryEvent {
     return { content, source, timestamp: timestamp + this.eventCounter++, byte_length: Buffer.byteLength(content, 'utf-8') };
   }
