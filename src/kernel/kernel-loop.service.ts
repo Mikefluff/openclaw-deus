@@ -9,6 +9,8 @@ import { TraceGraphService } from './memory/trace-graph.service';
 import { CommitKernelService } from './commit/commit-kernel.service';
 import { CognitiveConfigService } from '../cognitive/cognitive-config.service';
 import { AffectiveStateService } from './affect/affective-state.service';
+import { SubstrateBridgeService } from './substrate-bridge.service';
+import { ActiveCognitionService } from './cognition/active-cognition.service';
 
 /**
  * KernelLoop: Continuous event loop with external interrupts.
@@ -80,6 +82,8 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
     private readonly commitKernel: CommitKernelService,
     private readonly config: CognitiveConfigService,
     private readonly affect: AffectiveStateService,
+    private readonly substrateBridge: SubstrateBridgeService,
+    private readonly activeCognition: ActiveCognitionService,
   ) {}
 
   onModuleInit(): void {
@@ -169,6 +173,24 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
   injectReward(amount: number): void {
     this.affect.reward(amount);
     this.eventQueue.push({ type: 'episode_outcome', content: `Reward: ${amount}`, payload: { amount }, timestamp: Date.now() });
+    this.wakeUp();
+  }
+
+  /**
+   * Episode completed: reinforce traces + train affect model.
+   * This closes the loop: episode outcome → trace reinforcement → affect gradient.
+   */
+  async onEpisodeOutcome(episodeId: string, outcome: string): Promise<void> {
+    // Reinforce trace graph paths
+    await this.substrateBridge.reinforceFromEpisode(episodeId, outcome);
+
+    // Train affect: success = reward, failure = pain
+    if (outcome === 'success' || outcome === 'partial_success') {
+      this.affect.reward(outcome === 'success' ? 0.4 : 0.2);
+    } else if (outcome === 'failure') {
+      this.affect.inflictPain(`episode_failure:${episodeId}`, 0.4);
+    }
+
     this.wakeUp();
   }
 
@@ -330,6 +352,12 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
+    // Sync substrate → traces (new knowledge/intentions/episodes → traces)
+    await this.substrateBridge.syncSubstrateToTraces(this.traceGraph.getCycle());
+
+    // Apply commits → world model (actually update the picture of reality)
+    await this.substrateBridge.applyCommitsToWorldModel(cycleCommitsAll);
+
     // Resolve pending callers
     const output = this.buildOutput(cycleCommitsAll);
     const resolver = this.pendingResolvers.shift();
@@ -390,10 +418,21 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
       input = '[Idle — pure internal reflection]';
     }
 
-    const signals = await this.runAgents(input, context, cycle);
+    // Collect signals from agents + active cognition processes
+    const agentSignals = await this.runAgents(input, context, cycle);
 
-    if (signals.length > 0) {
-      const commitResult = await this.commitKernel.processCycle(signals);
+    // ACTIVE COGNITION (pure internal, no LLM):
+    const [replaySignals, curiositySignals, inferenceSignals, schemaSignals] = await Promise.all([
+      this.activeCognition.replayEpisode(cycle),   // dreaming
+      this.activeCognition.generateCuriosity(cycle), // curiosity
+      this.activeCognition.activeInference(cycle),   // deduction
+      this.activeCognition.detectSchemas(cycle),     // pattern abstraction
+    ]);
+
+    const allSignals = [...agentSignals, ...replaySignals, ...curiositySignals, ...inferenceSignals, ...schemaSignals];
+
+    if (allSignals.length > 0) {
+      const commitResult = await this.commitKernel.processCycle(allSignals);
       if (commitResult.isOk() && commitResult.value.length > 0) {
         this.allCommits.push(...commitResult.value);
         const timeSense = await this.commitKernel.computeTimeSense();
@@ -403,6 +442,9 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
         }
       }
     }
+
+    // Substrate sync during idle too
+    await this.substrateBridge.syncSubstrateToTraces(cycle);
 
     await this.traceGraph.forget();
   }
@@ -450,21 +492,26 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    // Progressive learning: different questions each cycle
-    const phase = this.learningCycleCount % 4;
-    switch (phase) {
-      case 0:
-        parts.push(`What are the fundamental concepts of ${domain}? What must I understand first?`);
-        break;
-      case 1:
-        parts.push(`What are the common patterns and best practices in ${domain}?`);
-        break;
-      case 2:
-        parts.push(`What are the risks, pitfalls, and failure modes in ${domain}?`);
-        break;
-      case 3:
-        parts.push(`How does ${domain} connect to what I already know? What gaps remain?`);
-        break;
+    // ADAPTIVE curriculum: driven by knowledge gaps and curiosity, not hardcoded phases
+    // Check what gaps exist in this domain
+    const domainGaps = this.phenomenalState?.prediction_error_hotspots
+      .filter(h => h.domain.toLowerCase().includes(domain.toLowerCase()));
+
+    if (domainGaps && domainGaps.length > 0) {
+      // Domain has prediction errors → focus on resolving them
+      parts.push(`I have prediction errors in ${domain}: ${domainGaps.map(g => `${g.domain}(error=${g.error.toFixed(2)})`).join(', ')}`);
+      parts.push(`What am I getting wrong? How should I correct my understanding?`);
+    } else if (this.learningCycleCount < 3) {
+      // Early learning: fundamentals
+      parts.push(`What are the essential concepts of ${domain} I must understand?`);
+    } else if (this.learningCycleCount < 8) {
+      // Mid learning: depth + connections
+      parts.push(`Given what I know about ${domain}, what patterns and connections am I missing?`);
+      parts.push(`What are the non-obvious failure modes and risks?`);
+    } else {
+      // Advanced learning: integration with existing knowledge
+      parts.push(`How does ${domain} interact with everything else I know?`);
+      parts.push(`What should I be able to predict now that I couldn't before?`);
     }
 
     return parts.join('\n');

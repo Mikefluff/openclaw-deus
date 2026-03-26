@@ -9,6 +9,9 @@ import { PriorityAgent } from './agents/priority.agent';
 import { StrategicAgent } from './agents/strategic.agent';
 import { AffectiveStateService } from './affect/affective-state.service';
 import { NarrativeService } from './narrative/narrative.service';
+import { SubstrateBridgeService } from './substrate-bridge.service';
+import { ActiveCognitionService } from './cognition/active-cognition.service';
+import { WorldModelModule } from '../world-model/world-model.module';
 import { IntentionModule } from '../intention/intention.module';
 import { KnowledgeModule } from '../knowledge/knowledge.module';
 import { DeliberationModule } from '../deliberation/deliberation.module';
@@ -24,6 +27,7 @@ import { PolicyModule } from '../policy/policy.module';
     ExperienceModule,
     OperatorModelModule,
     PolicyModule,
+    WorldModelModule,
   ],
   providers: [
     TraceGraphService,
@@ -31,6 +35,8 @@ import { PolicyModule } from '../policy/policy.module';
     KernelLoopService,
     AffectiveStateService,
     NarrativeService,
+    SubstrateBridgeService,
+    ActiveCognitionService,
     SensoryAgent,
     PredictiveAgent,
     AffectiveAgent,
@@ -43,6 +49,8 @@ import { PolicyModule } from '../policy/policy.module';
     KernelLoopService,
     AffectiveStateService,
     NarrativeService,
+    SubstrateBridgeService,
+    ActiveCognitionService,
   ],
 })
 export class KernelModule implements OnModuleInit {
