@@ -8,6 +8,7 @@ import { RipenessService } from '../policy/services/ripeness.service';
 import { IntentNormalizerService } from '../policy/services/intent-normalizer.service';
 import { EpisodeService } from '../experience/episode.service';
 import { CausalGraphService } from '../cognitive/causal-graph.service';
+import { TemporalCognitionService } from '../cognitive/temporal-cognition.service';
 import { mockEventsService } from '../__mocks__/events.mock';
 import { ok } from 'neverthrow';
 import { Intention } from '../common/types/intention.types';
@@ -50,6 +51,7 @@ describe('DeliberationService', () => {
           findRecent: jest.fn().mockResolvedValue(ok([])),
         }},
         { provide: CausalGraphService, useValue: { build: jest.fn().mockResolvedValue({ isOk: () => true, isErr: () => false, value: { nodes: [], edges: [] } }), predictGoalSuccess: jest.fn().mockReturnValue({ success_probability: 0.5, blockers: [] }), getTopVOIBeliefs: jest.fn().mockReturnValue([]) } },
+        { provide: TemporalCognitionService, useValue: { anticipate: jest.fn().mockResolvedValue({ isOk: () => true, isErr: () => false, value: { expected_cycles: 3, confidence: 0.5, basis: 'default', urgency: 0.3 } }), perceive: jest.fn().mockResolvedValue({ isOk: () => true, value: { cognitive_age: 10, events_since_rest: 5, tempo: 3, dilation: 1, phase: 'active' } }) } },
       ],
     }).compile();
 

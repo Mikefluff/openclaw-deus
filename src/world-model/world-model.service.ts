@@ -11,6 +11,7 @@ import { KnowledgeService } from '../knowledge/knowledge.service';
 import { KnowledgeGapService } from '../knowledge/services/knowledge-gap.service';
 import { OperatorModelService } from '../operator-model/operator-model.service';
 import { EpisodeService } from '../experience/episode.service';
+import { TemporalCognitionService } from '../cognitive/temporal-cognition.service';
 
 @Injectable()
 export class WorldModelService {
@@ -26,6 +27,7 @@ export class WorldModelService {
     private readonly episodes: EpisodeService,
     private readonly db: SurrealService,
     private readonly config: CognitiveConfigService,
+    private readonly temporal: TemporalCognitionService,
   ) {}
 
   // Single SurrealQL query to gather ALL world model data (replaces 8+ service calls)

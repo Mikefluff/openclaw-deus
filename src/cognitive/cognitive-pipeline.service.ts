@@ -19,6 +19,7 @@ import { CognitiveConfigService } from './cognitive-config.service';
 import { WorldModelService } from '../world-model/world-model.service';
 import { BeliefsService } from '../beliefs/beliefs.service';
 import { SimilarityProvider } from './similarity.provider';
+import { TemporalCognitionService } from './temporal-cognition.service';
 
 /**
  * CognitivePipelineService: THE BRAIN's MAIN LOOP.
@@ -51,6 +52,7 @@ export class CognitivePipelineService {
     private readonly config: CognitiveConfigService,
     private readonly worldModel: WorldModelService,
     private readonly beliefsService: BeliefsService,
+    private readonly temporalCognition: TemporalCognitionService,
   ) {}
 
   /**
@@ -67,9 +69,10 @@ export class CognitivePipelineService {
       duration_ms: 0,
     };
 
-    // Step 0: Session tracking (sync, fast, no LLM)
+    // Step 0: Session tracking + temporal perception (sync, fast, no LLM)
     await this.sessionTracker.trackMessage(message);
     await this.memory.logInteraction(message);
+    this.temporalCognition.tick(message);
 
     // Step 0.5: Active recall — proactively retrieve relevant context before processing
     const priorContext = await this.activeRecall(message);

@@ -14,6 +14,7 @@ import { Knowledge } from '../common/types/knowledge.types';
 import { EpisodeService } from '../experience/episode.service';
 import { Episode } from '../common/types/episode.types';
 import { CausalGraphService } from '../cognitive/causal-graph.service';
+import { TemporalCognitionService } from '../cognitive/temporal-cognition.service';
 
 const SYSTEM_PROMPT = `You are the deliberation module of a cognitive agent called DEUS.
 Given an intention to advance, relevant knowledge, and PAST EPISODE HISTORY, generate 2-3 approaches.
@@ -73,6 +74,7 @@ export class DeliberationService {
     private readonly normalizer: IntentNormalizerService,
     private readonly episodes: EpisodeService,
     private readonly causalGraph: CausalGraphService,
+    private readonly temporal: TemporalCognitionService,
   ) {}
 
   async deliberate(intention: Intention, context?: { knowledge?: Knowledge[] }): Promise<Result<DeliberationResult, DomainError>> {
@@ -83,10 +85,11 @@ export class DeliberationService {
     let reasoning: string;
 
     if (this.llm.isAvailable()) {
-      // Fetch past episodes + causal prediction in parallel
-      const [pastEpisodes, causalPrediction] = await Promise.all([
+      // Fetch past episodes + causal prediction + temporal context in parallel
+      const [pastEpisodes, causalPrediction, temporalContext] = await Promise.all([
         this.fetchRelevantEpisodes(intention),
         this.getCausalPrediction(intention.intention_id),
+        this.getTemporalContext(intention),
       ]);
 
       // LLM deliberation with full cognitive context
@@ -95,7 +98,7 @@ export class DeliberationService {
         priority: LlmPriority.HIGH,
         maxTokens: 1024,
         systemPrompt: SYSTEM_PROMPT,
-        userMessage: this.buildUserMessage(intention, context?.knowledge || [], pastEpisodes, causalPrediction),
+        userMessage: this.buildUserMessage(intention, context?.knowledge || [], pastEpisodes, causalPrediction, temporalContext),
         tools: [DELIBERATE_TOOL],
         forceTool: 'deliberate',
       });
@@ -239,7 +242,35 @@ export class DeliberationService {
     }
   }
 
-  private buildUserMessage(intention: Intention, knowledge: Knowledge[], episodes: Episode[] = [], causalPrediction?: string | null): string {
+  /**
+   * Temporal context: how long should this take? What's the urgency?
+   * Learned from past episodes, not hardcoded.
+   */
+  private async getTemporalContext(intention: Intention): Promise<string | null> {
+    try {
+      const anticipation = await this.temporal.anticipate(intention.description);
+      if (anticipation.isErr()) return null;
+
+      const a = anticipation.value;
+      const perception = await this.temporal.perceive();
+      const p = perception.isOk() ? perception.value : null;
+
+      const parts: string[] = [];
+      parts.push(`Expected effort: ~${a.expected_cycles} cognitive cycles (${a.basis})`);
+      parts.push(`Current urgency: ${(a.urgency * 100).toFixed(0)}%`);
+      if (p) {
+        parts.push(`System tempo: ${p.tempo} events/hour, time dilation: ${p.dilation}x, phase: ${p.phase}`);
+      }
+      if (a.urgency > 0.7) {
+        parts.push('WARNING: This intention has consumed most of its expected cycles — consider escalating or simplifying');
+      }
+      return parts.join('\n');
+    } catch {
+      return null;
+    }
+  }
+
+  private buildUserMessage(intention: Intention, knowledge: Knowledge[], episodes: Episode[] = [], causalPrediction?: string | null, temporalContext?: string | null): string {
     const knowledgeContext = knowledge.length > 0
       ? `\n\nRelevant knowledge:\n${knowledge.slice(0, 15).map((k) => `- [${k.knowledge_id}] ${k.content}`).join('\n')}`
       : '';
@@ -255,6 +286,10 @@ export class DeliberationService {
       ? `\n\nCausal analysis:\n${causalPrediction}`
       : '';
 
-    return `Intention to advance:\n"${intention.description}"\n\nKind: ${intention.kind}\nSuccess criteria: ${intention.success_criteria}\nCurrent progress: ${intention.progress.estimated_completion * 100}%\nBlockers: ${intention.progress.blockers.join(', ') || 'none'}${knowledgeContext}${episodeContext}${causalContext}`;
+    const temporalCtx = temporalContext
+      ? `\n\nTemporal perception:\n${temporalContext}`
+      : '';
+
+    return `Intention to advance:\n"${intention.description}"\n\nKind: ${intention.kind}\nSuccess criteria: ${intention.success_criteria}\nCurrent progress: ${intention.progress.estimated_completion * 100}%\nBlockers: ${intention.progress.blockers.join(', ') || 'none'}${knowledgeContext}${episodeContext}${causalContext}${temporalCtx}`;
   }
 }
