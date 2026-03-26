@@ -125,7 +125,7 @@ export class EpisodeService {
 
     const result = await this.db.create<Episode>('episode', episode as unknown as Episode);
     if (result.isOk()) {
-      await this.events.emit('episode.created' as any, { episode_id: episodeId, outcome: finalOutcome, lessons_count: lessons.length });
+      await this.events.emit('episode.created', { episode_id: episodeId, outcome: finalOutcome, lessons_count: lessons.length });
       if (intentionId) {
         await this.graphLinking.linkEpisodeToIntention(episodeId, intentionId);
       }

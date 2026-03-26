@@ -69,7 +69,7 @@ export class EmbeddingsService {
         belief_id: hash,
         embedding,
         content_hash: hash,
-      } as any);
+      } as Record<string, unknown>);
 
       return ok(embedding);
     } catch (error) {
@@ -97,7 +97,7 @@ export class EmbeddingsService {
       belief_id: beliefId,
       embedding: embedding.value,
       content_hash: this.hashContent(content),
-    } as any);
+    } as Record<string, unknown>);
 
     return ok(undefined);
   }

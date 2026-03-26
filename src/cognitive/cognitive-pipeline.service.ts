@@ -8,6 +8,7 @@ import { IntentionStackService } from '../intention/services/intention-stack.ser
 import { IntentionService } from '../intention/intention.service';
 import { KnowledgeExtractionService } from '../knowledge/services/knowledge-extraction.service';
 import { KnowledgeService } from '../knowledge/knowledge.service';
+import { Knowledge } from '../common/types/knowledge.types';
 import { KnowledgeGapService } from '../knowledge/services/knowledge-gap.service';
 import { DeliberationService } from '../deliberation/deliberation.service';
 import { EpisodeService } from '../experience/episode.service';
@@ -110,7 +111,7 @@ export class CognitivePipelineService {
         c.changes.traces_created.length > 0 || c.source_agents.includes('sensory'),
       ).length,
       intentions_completed: perceptual.filter(c =>
-        (c.changes as any).completed,
+        (c.changes as Record<string, unknown>).completed,
       ).length,
       knowledge_extracted: perceptual.length,
       knowledge_gaps_found: 0,
@@ -169,7 +170,7 @@ export class CognitivePipelineService {
       const active = await this.intentions.findActive();
       if (active.isErr()) continue;
 
-      const intention = active.value.find((i: any) =>
+      const intention = active.value.find((i) =>
         i.description === newInt.description && i.status === 'recognized',
       );
       if (!intention) continue;
@@ -177,11 +178,11 @@ export class CognitivePipelineService {
       const relevantKnowledge = await this.knowledge.findSimilar(intention.description, similarityThreshold);
       const knowledgeContext = relevantKnowledge.isOk() ? relevantKnowledge.value : [];
 
-      const deliberationResult = await this.deliberation.deliberate(intention, { knowledge: knowledgeContext as any });
+      const deliberationResult = await this.deliberation.deliberate(intention, { knowledge: knowledgeContext as Knowledge[] });
       if (deliberationResult.isOk()) {
         deliberationCount++;
         for (const k of knowledgeContext) {
-          await this.graphLinking.linkIntentionToKnowledge(intention.intention_id, (k as any).knowledge_id);
+          await this.graphLinking.linkIntentionToKnowledge(intention.intention_id, (k as Knowledge).knowledge_id);
         }
       }
     }
@@ -228,7 +229,7 @@ export class CognitivePipelineService {
       });
 
       if (kResult.isOk()) {
-        await this.graphLinking.linkKnowledgeToEpisode((kResult.value as any).knowledge_id, episode.episode_id);
+        await this.graphLinking.linkKnowledgeToEpisode((kResult.value as Knowledge).knowledge_id, episode.episode_id);
       }
     }
   }
@@ -267,6 +268,6 @@ export class CognitivePipelineService {
           this.logger.warn(`Background world model rebuild failed: ${e}`);
         });
       }
-    }).catch(() => {});
+    }).catch((e) => this.logger.debug?.('Background world model rebuild failed: ' + e));
   }
 }

@@ -69,7 +69,7 @@ export class TraceGraphService {
       archived: false,
     };
 
-    return this.db.create<Trace>('trace', trace as any);
+    return this.db.create<Trace>('trace', trace as unknown as Trace);
   }
 
   // ═══════════════════════════════════════════
@@ -244,7 +244,7 @@ export class TraceGraphService {
         threshold: this.config.get('kernel.archive_threshold'),
       },
     );
-    return ok({ decayed: 1, archived: result.isOk() ? ((result.value as any)?.archived ?? 0) : 0 });
+    return ok({ decayed: 1, archived: result.isOk() ? ((result.value as Record<string, unknown>)?.archived as number ?? 0) : 0 });
   }
 
   // ═══════════════════════════════════════════

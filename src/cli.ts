@@ -9,6 +9,7 @@ import { BeliefExtractionService } from './beliefs/services/belief-extraction.se
 import { BeliefContradictionService } from './beliefs/services/belief-contradiction.service';
 import { BeliefPromotionService } from './beliefs/services/belief-promotion.service';
 import { MemoryService } from './memory/memory.service';
+import { ActivityType } from './common/types/memory.types';
 import { MemoryAggregationService } from './memory/services/memory-aggregation.service';
 import { PolicyService } from './policy/policy.service';
 import { WorldModelService } from './world-model/world-model.service';
@@ -129,7 +130,7 @@ async function runCommand(app: any, command: string, args: string[]): Promise<an
 
     case 'memory:log': {
       const svc = app.get(MemoryService);
-      const type = args[0] as any;
+      const type = args[0] as ActivityType;
       const desc = args.slice(1).join(' ');
       const r = await svc.logActivity({ type, description: desc });
       if (r.isErr()) throw new Error(r.error.message);

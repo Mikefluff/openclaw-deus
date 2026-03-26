@@ -4,6 +4,7 @@ import { DomainError, NotFoundError } from '../common/types/result.types';
 import { SurrealService } from '../database/surreal.service';
 import { EventsService } from '../events/events.service';
 import { Intention, IntentionStatus, IntentionTransition } from '../common/types/intention.types';
+import { DeusEvent } from '../common/types/events.types';
 
 @Injectable()
 export class IntentionService {
@@ -27,7 +28,7 @@ export class IntentionService {
     } as unknown as Intention);
 
     if (result.isOk()) {
-      await this.events.emit('intention.recognized' as any, { intention_id: intentionId, description: data.description });
+      await this.events.emit('intention.recognized', { intention_id: intentionId, description: data.description });
       this.logger.log(`Intention created: ${intentionId} — ${data.description}`);
     }
     return result;
@@ -70,7 +71,7 @@ export class IntentionService {
       reason,
       triggered_by: triggeredBy,
       timestamp: new Date().toISOString(),
-    } as any);
+    } as Record<string, unknown>);
 
     // Update intention
     const updateData: Record<string, unknown> = {
@@ -87,7 +88,7 @@ export class IntentionService {
         : toStatus === 'failed' ? 'intention.failed'
         : toStatus === 'abandoned' ? 'intention.abandoned'
         : 'intention.adopted';
-      await this.events.emit(eventName as any, { intention_id: intentionId, from: fromStatus, to: toStatus, reason });
+      await this.events.emit(eventName as DeusEvent, { intention_id: intentionId, from: fromStatus, to: toStatus, reason });
       this.logger.log(`Intention ${intentionId}: ${fromStatus} → ${toStatus} (${reason})`);
     }
     return updated;

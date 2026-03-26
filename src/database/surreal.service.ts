@@ -42,7 +42,8 @@ export class SurrealService implements OnModuleInit, OnModuleDestroy {
   async connect(config?: Partial<SurrealConfig>): Promise<void> {
     if (config) this.config = { ...this.config, ...config };
     try {
-      await this.db.connect(this.config.url, { versionCheck: false } as any);
+      // SurrealDB SDK connect options are loosely typed; versionCheck is a valid but untyped option
+      await this.db.connect(this.config.url, { versionCheck: false } as Record<string, unknown>);
       await this.db.signin({ username: this.config.username, password: this.config.password });
       await this.db.use({ namespace: this.config.namespace, database: this.config.database });
       this.connected = true;
@@ -113,7 +114,8 @@ export class SurrealService implements OnModuleInit, OnModuleDestroy {
 
   async create<T>(table: string, data: T): Promise<Result<T, DatabaseError>> {
     try {
-      const result = await this.db.create(table, this.coerceDatetimes(data) as any);
+      // SurrealDB SDK expects loosely typed data for create/merge operations
+      const result = await this.db.create(table, this.coerceDatetimes(data) as Record<string, unknown>);
       const record = Array.isArray(result) ? result[0] : result;
       return ok(record as unknown as T);
     } catch (error) {
@@ -123,7 +125,7 @@ export class SurrealService implements OnModuleInit, OnModuleDestroy {
 
   async update<T>(id: string, data: Partial<T>): Promise<Result<T, DatabaseError>> {
     try {
-      const result = await this.db.merge(id, this.coerceDatetimes(data) as any);
+      const result = await this.db.merge(id, this.coerceDatetimes(data) as Record<string, unknown>);
       return ok(result as unknown as T);
     } catch (error) {
       return err(new DatabaseError(`Update ${id} failed: ${error}`, error));

@@ -80,7 +80,7 @@ export class NarrativeService {
     for (const chunk of chunks) {
       const frame = await this.compactChunk(chunk);
       if (frame) {
-        await this.db.create('narrative_frame', frame as any);
+        await this.db.create('narrative_frame', frame as unknown as Record<string, unknown>);
         // Delete compacted commits
         for (const c of chunk) {
           if (c.id) await this.db.remove(c.id);

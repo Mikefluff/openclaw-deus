@@ -3,6 +3,7 @@ import { SurrealService } from '../../database/surreal.service';
 import { CognitiveConfigService } from '../../cognitive/cognitive-config.service';
 import { Dimension, SpatialConflict, SpatialMovement, SpatialCluster, WorldSnapshot, GradientField, Trajectory, SpatialGap } from './concept-space.types';
 import { Trace } from '../kernel.types';
+import { NEGATION_WORDS, ANTONYM_PAIRS } from './concept-space.constants';
 
 /**
  * ConceptSpaceService: Adaptive multidimensional cognitive space.
@@ -14,8 +15,6 @@ import { Trace } from '../kernel.types';
  * Like a child's mind: starts 0-dimensional, each new distinction
  * creates a new axis of differentiation.
  */
-
-const NEGATION_WORDS = ['не', 'нет', 'без', 'никогда', 'not', 'no', 'without', 'never', 'unlike'];
 
 @Injectable()
 export class ConceptSpaceService {
@@ -148,13 +147,7 @@ export class ConceptSpaceService {
     }
 
     // Explicit antonyms (круглый/угловатый, катится/не катится)
-    const antonymPairs = [
-      ['круглый', 'угловатый'], ['круглая', 'угловатая'], ['круглое', 'угловатое'],
-      ['катится', 'не катится'], ['гладкий', 'шершавый'],
-      ['большой', 'маленький'], ['тяжёлый', 'лёгкий'],
-      ['round', 'angular'], ['rolls', 'doesn\'t roll'],
-    ];
-    for (const [w1, w2] of antonymPairs) {
+    for (const [w1, w2] of ANTONYM_PAIRS) {
       if ((a.includes(w1) && b.includes(w2)) || (a.includes(w2) && b.includes(w1))) {
         return true;
       }
@@ -208,7 +201,7 @@ export class ConceptSpaceService {
       negative_exemplars: dim.negative_exemplars,
       variance: dim.variance,
       usage_count: dim.usage_count,
-    } as any);
+    } as Record<string, unknown>);
 
     this.logger.log(`DIMENSION BORN: axis_${dim.id} from conflict "${conflict.trace_a_content.slice(0, 30)}" vs "${conflict.trace_b_content.slice(0, 30)}"`);
 
@@ -564,7 +557,7 @@ export class ConceptSpaceService {
       velocity: new Array(position.length).fill(0),
       suppressed: false,
       archived: false,
-    } as any);
+    } as Record<string, unknown>);
   }
 
   // ═══════════════════════════════════════════
@@ -587,7 +580,7 @@ export class ConceptSpaceService {
       action,
       confidence: 0.5,
       traversal_count: 1,
-    } as any);
+    } as Record<string, unknown>);
   }
 
   async predict(currentPosition: number[], action: string): Promise<number[] | null> {

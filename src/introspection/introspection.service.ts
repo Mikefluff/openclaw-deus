@@ -57,7 +57,7 @@ export class IntrospectionService {
     // extraction (full only)
     if (stages.includes('extraction')) {
       const extractResult = await this.extraction.extractFromMemory();
-      stageResults.push({ name: 'extraction', status: extractResult.isOk() ? 'ok' : 'error', data: extractResult.isOk() ? extractResult.value as any : undefined });
+      stageResults.push({ name: 'extraction', status: extractResult.isOk() ? 'ok' : 'error', data: extractResult.isOk() ? extractResult.value as unknown as Record<string, unknown> : undefined });
       stageOutputs.extraction = extractResult.isOk() ? extractResult.value : { error: extractResult.error.message };
     }
 
@@ -66,14 +66,14 @@ export class IntrospectionService {
     if (stages.includes('contradiction_scan')) {
       const contrResult = await this.contradictions.scanForContradictions();
       contradictionsFound = contrResult.isOk() ? contrResult.value.contradictions_found : 0;
-      stageResults.push({ name: 'contradiction_scan', status: contrResult.isOk() ? 'ok' : 'error', data: contrResult.isOk() ? contrResult.value as any : undefined });
+      stageResults.push({ name: 'contradiction_scan', status: contrResult.isOk() ? 'ok' : 'error', data: contrResult.isOk() ? contrResult.value as unknown as Record<string, unknown> : undefined });
       stageOutputs.contradiction_scan = contrResult.isOk() ? contrResult.value : { error: contrResult.error.message };
     }
 
     // decay (full only)
     if (stages.includes('decay')) {
       const decayResult = await this.decay.runDecayCycle();
-      stageResults.push({ name: 'decay', status: decayResult.isOk() ? 'ok' : 'error', data: decayResult.isOk() ? decayResult.value as any : undefined });
+      stageResults.push({ name: 'decay', status: decayResult.isOk() ? 'ok' : 'error', data: decayResult.isOk() ? decayResult.value as unknown as Record<string, unknown> : undefined });
       stageOutputs.decay = decayResult.isOk() ? decayResult.value : { error: decayResult.error.message };
     }
 
@@ -122,7 +122,7 @@ export class IntrospectionService {
     };
 
     // Persist
-    await this.db.create('introspection_report', report as any);
+    await this.db.create('introspection_report', report as unknown as Record<string, unknown>);
 
     return ok(report);
   }

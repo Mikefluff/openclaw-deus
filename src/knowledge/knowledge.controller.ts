@@ -2,6 +2,7 @@ import { Controller, Get, Post, Param, Query, Body, BadRequestException, NotFoun
 import { KnowledgeService } from './knowledge.service';
 import { KnowledgeExtractionService } from './services/knowledge-extraction.service';
 import { KnowledgeGapService } from './services/knowledge-gap.service';
+import { KnowledgeKind, KnowledgeStatus } from '../common/types/knowledge.types';
 
 @Controller('knowledge')
 export class KnowledgeController {
@@ -13,7 +14,7 @@ export class KnowledgeController {
 
   @Get()
   async findAll(@Query('kind') kind?: string, @Query('domain') domain?: string, @Query('status') status?: string) {
-    const result = await this.knowledge.findAll({ kind: kind as any, domain, status: status as any });
+    const result = await this.knowledge.findAll({ kind: kind as KnowledgeKind, domain, status: status as KnowledgeStatus });
     if (result.isErr()) throw new BadRequestException(result.error.message);
     return result.value;
   }

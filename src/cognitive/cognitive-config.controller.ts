@@ -28,7 +28,7 @@ export class CognitiveConfigController {
 
   @Post('feedback')
   async feedback(@Body() body: Record<string, unknown>) {
-    await this.config.adjustFromFeedback(body as any);
+    await this.config.adjustFromFeedback(body as Parameters<CognitiveConfigService['adjustFromFeedback']>[0]);
     return { status: 'adjusted', params: this.config.getAll().filter((p) => p.last_adjusted) };
   }
 }

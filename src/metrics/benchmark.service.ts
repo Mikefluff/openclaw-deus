@@ -123,7 +123,7 @@ export class BenchmarkService {
       run_at: new Date().toISOString(),
     };
 
-    await this.db.create('benchmark_result', suite as any);
+    await this.db.create('benchmark_result', suite as unknown as Record<string, unknown>);
     this.logger.log(`Benchmarks: ${suite.passed}/${suite.total} passed, ${suite.duration_ms}ms`);
     return ok(suite);
   }
@@ -281,11 +281,11 @@ export class BenchmarkService {
         'SELECT * FROM nightly_run ORDER BY started_at DESC LIMIT 1',
       );
       if (latest.isOk() && latest.value.length > 0) {
-        const summary = latest.value[0].summary as any;
+        const summary = latest.value[0].summary as Record<string, unknown>;
         actual.total_stages = summary.total_stages;
         actual.passed_stages = summary.passed;
         actual.failed_stages = summary.failed;
-        if (scenario.expectations.all_stages_passed && summary.failed > 0) {
+        if (scenario.expectations.all_stages_passed && (summary.failed as number) > 0) {
           failures.push(`${summary.failed} nightly stages failed`);
         }
       } else {

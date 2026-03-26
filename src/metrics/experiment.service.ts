@@ -68,7 +68,7 @@ export class ExperimentService {
       started_at: now,
     };
 
-    await this.events.emit('experiment.started' as any, { hypothesis_id: hypothesis.id });
+    await this.events.emit('experiment.started', { hypothesis_id: hypothesis.id });
 
     // Step 2: Mutate
     for (const change of hypothesis.param_changes) {
@@ -100,14 +100,14 @@ export class ExperimentService {
     if (verdict === 'regressed') {
       await this.rollback(configSnapshot);
       experiment.status = 'rolled_back';
-      await this.events.emit('experiment.rolled_back' as any, {
+      await this.events.emit('experiment.rolled_back', {
         hypothesis_id: hypothesis.id,
         reason: 'Benchmark regression detected',
       });
       this.logger.warn(`Experiment ${hypothesis.id}: ROLLED BACK (regressed)`);
     } else {
       experiment.status = 'completed';
-      await this.events.emit('experiment.committed' as any, {
+      await this.events.emit('experiment.committed', {
         hypothesis_id: hypothesis.id,
         verdict,
         improvement: experiment.improvement,
@@ -116,7 +116,7 @@ export class ExperimentService {
     }
 
     experiment.finished_at = new Date().toISOString();
-    await this.db.create('experiment', experiment as any);
+    await this.db.create('experiment', experiment as unknown as Record<string, unknown>);
 
     return ok(experiment);
   }
@@ -127,7 +127,7 @@ export class ExperimentService {
   async proposeLogicImprovement(hypothesis: Hypothesis): Promise<Result<CognitiveImprovement, DomainError>> {
     const improvement: CognitiveImprovement = {
       hypothesis_id: hypothesis.id,
-      type: hypothesis.type as any,
+      type: hypothesis.type as CognitiveImprovement['type'],
       target_service: hypothesis.target_service,
       target_method: hypothesis.target_method,
       description: hypothesis.description,
@@ -135,13 +135,13 @@ export class ExperimentService {
       code_sketch: hypothesis.code_sketch,
       expected_improvement: hypothesis.expected_improvement,
       status: 'pending',
-      created_at: new Date(),
-    } as any;
+      created_at: new Date().toISOString(),
+    } as CognitiveImprovement;
 
-    const result = await this.db.create('cognitive_improvement', improvement as any);
+    const result = await this.db.create('cognitive_improvement', improvement as unknown as Record<string, unknown>);
     if (result.isErr()) return err(result.error);
 
-    await this.events.emit('improvement.proposed' as any, {
+    await this.events.emit('improvement.proposed', {
       target_service: hypothesis.target_service,
       description: hypothesis.description,
     });
@@ -162,7 +162,7 @@ export class ExperimentService {
       status: decision,
       operator_notes: notes,
       reviewed_at: new Date().toISOString(),
-    } as any);
+    } as unknown as Record<string, unknown>);
     if (result.isErr()) return err(result.error);
     return ok(result.value);
   }

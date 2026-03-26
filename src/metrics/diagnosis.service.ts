@@ -126,7 +126,7 @@ export class DiagnosisService {
       created_at: now,
     };
 
-    await this.db.create('diagnosis', result as any);
+    await this.db.create('diagnosis', result as unknown as Record<string, unknown>);
     this.logger.log(`Diagnosis: ${merged.length} issues found`);
     return ok(result);
   }
@@ -394,7 +394,7 @@ export class DiagnosisService {
       : '';
 
     const nightlySummary = latestNightly
-      ? `\n\nLast nightly: ${(latestNightly.summary as any)?.passed || '?'}/${(latestNightly.summary as any)?.total_stages || '?'} stages passed`
+      ? `\n\nLast nightly: ${(latestNightly.summary as unknown as Record<string, unknown>)?.passed || '?'}/${(latestNightly.summary as unknown as Record<string, unknown>)?.total_stages || '?'} stages passed`
       : '';
 
     return `Current cognitive snapshot:

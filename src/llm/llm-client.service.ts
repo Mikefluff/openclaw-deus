@@ -155,7 +155,7 @@ export class LlmClientService {
               usage: {
                 input_tokens: response.usage.input_tokens,
                 output_tokens: response.usage.output_tokens,
-                cache_read_tokens: (response.usage as any).cache_read_input_tokens || 0,
+                cache_read_tokens: (response.usage as unknown as Record<string, unknown>).cache_read_input_tokens as number || 0, // Anthropic extended usage field
               },
             });
           } catch {
@@ -168,7 +168,7 @@ export class LlmClientService {
           usage: {
             input_tokens: response.usage.input_tokens,
             output_tokens: response.usage.output_tokens,
-            cache_read_tokens: (response.usage as any).cache_read_input_tokens || 0,
+            cache_read_tokens: (response.usage as unknown as Record<string, unknown>).cache_read_input_tokens as number || 0, // Anthropic extended usage field
           },
         });
       } catch (error: any) {

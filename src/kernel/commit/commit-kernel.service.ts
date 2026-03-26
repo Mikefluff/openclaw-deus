@@ -90,7 +90,7 @@ export class CommitKernelService {
       urgency: Number(commit.urgency) || 0,
       energy: Number(commit.energy) || 0,
       changes: commit.changes || {},
-    } as any);
+    } as Record<string, unknown>);
 
     if (result.isErr()) {
       this.logger.warn(`Commit failed: ${result.error.message}`);
@@ -160,7 +160,7 @@ export class CommitKernelService {
     const dilation = 0.5 + noveltyRate * wNov + predErrorRate * wPred - (1 - tempo) * wTempo;
 
     // Rhythm phase: based on recent commit density pattern
-    const phase = tempo > 0.5 ? 'active'
+    const phase: TimeSense['rhythm_phase'] = tempo > 0.5 ? 'active'
       : tempo > 0.1 ? 'consolidating'
       : 'resting';
 
@@ -171,7 +171,7 @@ export class CommitKernelService {
       prediction_error_rate: Math.round(predErrorRate * 1000) / 1000,
       trace_decay_velocity: Math.round(traceDecayVelocity * 1000) / 1000,
       dilation: Math.round(Math.max(0.1, Math.min(3.0, dilation)) * 100) / 100,
-      rhythm_phase: phase as any,
+      rhythm_phase: phase,
     };
   }
 

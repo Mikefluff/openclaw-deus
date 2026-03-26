@@ -163,8 +163,8 @@ export class BeliefContradictionService {
         b1.status = 'review_needed'; b2.status = 'review_needed';
       }
 
-      b1.drift_history.push({ timestamp: now, confidence: b1.confidence, reason: `bayesian_contradiction_resolution(ev=${ev1})`, with: contr.belief_2 } as any);
-      b2.drift_history.push({ timestamp: now, confidence: b2.confidence, reason: `bayesian_contradiction_resolution(ev=${ev2})`, with: contr.belief_1 } as any);
+      b1.drift_history.push({ timestamp: now, confidence: b1.confidence, reason: `bayesian_contradiction_resolution(ev=${ev1})`, with: contr.belief_2 });
+      b2.drift_history.push({ timestamp: now, confidence: b2.confidence, reason: `bayesian_contradiction_resolution(ev=${ev2})`, with: contr.belief_1 });
     }
   }
 

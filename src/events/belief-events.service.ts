@@ -3,7 +3,7 @@ import { Result, ok, err } from 'neverthrow';
 import { DomainError } from '../common/types/result.types';
 import { SurrealService } from '../database/surreal.service';
 import { EventsService } from './events.service';
-import { BeliefEvent } from '../common/types/events.types';
+import { BeliefEvent, DeusEvent } from '../common/types/events.types';
 
 @Injectable()
 export class BeliefEventsService {
@@ -25,7 +25,7 @@ export class BeliefEventsService {
     const result = await this.db.create<BeliefEvent>('belief_event', event as unknown as BeliefEvent);
 
     // Emit WebSocket event
-    this.events.emit(`belief.${eventType}` as any, { belief_id: beliefId, ...payload });
+    this.events.emit(`belief.${eventType}` as DeusEvent, { belief_id: beliefId, ...payload });
 
     return result;
   }

@@ -54,7 +54,7 @@ export class WebhooksService {
           payload,
           status: response.status,
           delivered_at: new Date().toISOString(),
-        } as any);
+        } as Record<string, unknown>);
       } catch (error) {
         this.logger.warn(`Webhook delivery to ${webhook.url} failed: ${error}`);
       }

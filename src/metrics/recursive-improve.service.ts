@@ -49,7 +49,7 @@ export class RecursiveImproveService {
         started_at: startedAt,
         finished_at: new Date().toISOString(),
       };
-      await this.db.create('improvement_run', run as any);
+      await this.db.create('improvement_run', run as unknown as Record<string, unknown>);
       return ok(run);
     }
 
@@ -108,7 +108,7 @@ export class RecursiveImproveService {
       finished_at: new Date().toISOString(),
     };
 
-    await this.db.create('improvement_run', run as any);
+    await this.db.create('improvement_run', run as unknown as Record<string, unknown>);
 
     this.logger.log(
       `Improvement loop: ${diagnosisResult.diagnoses.length} diagnoses, ` +

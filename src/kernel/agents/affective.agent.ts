@@ -3,6 +3,7 @@ import { Signal } from '../kernel.types';
 import { CognitiveAgent, AgentContext } from '../kernel-loop.service';
 import { ImportanceScorerService } from '../../cognitive/importance-scorer.service';
 import { AffectiveStateService } from '../affect/affective-state.service';
+import { ActivityLogEntry } from '../../common/types/memory.types';
 
 /**
  * AffectiveAgent (rank 3): "How does this FEEL? What matters?"
@@ -37,7 +38,7 @@ export class AffectiveAgent implements CognitiveAgent {
       agent: 'DEUS',
       day_key: '',
       timestamp: '',
-    } as any);
+    } as ActivityLogEntry);
 
     // Detect explicit pain/reward from input
     this.detectPainReward(input);

@@ -90,7 +90,7 @@ export class MetricsService {
 
     const d = dbResult.isOk()
       ? (Array.isArray(dbResult.value) ? dbResult.value[dbResult.value.length - 1] : dbResult.value)
-      : {} as any;
+      : {} as Record<string, unknown>;
 
     const cal = calResult.isOk() ? calResult.value : { ece: 0, overconfident: false, sample_size: 0 };
 
@@ -199,7 +199,7 @@ export class MetricsService {
     };
 
     // Persist
-    await this.db.create('cognitive_snapshot', snapshot as any);
+    await this.db.create('cognitive_snapshot', snapshot as unknown as Record<string, unknown>);
 
     this.logger.log(`Snapshot: health=${healthScore}, weak=[${weakDimensions.join(',')}]`);
     return ok(snapshot);

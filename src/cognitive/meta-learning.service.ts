@@ -112,7 +112,7 @@ export class MetaLearningService {
     const raw = await this.db.queryRaw<any>(META_QUERY);
     const d = raw.isOk()
       ? (Array.isArray(raw.value) ? raw.value[raw.value.length - 1] : raw.value)
-      : {} as any;
+      : {} as Record<string, unknown>;
 
     const domainStats = d?.domain_stats || [];
     const domainGaps = d?.domain_gaps || [];
@@ -136,7 +136,7 @@ export class MetaLearningService {
         avg_confidence: Math.round((ds.avg_confidence || 0) * 1000) / 1000,
         knowledge_count: ds.knowledge_count || 0,
         gap_count: gaps,
-        risk_level: gaps > 5 ? 'high' : gaps > 2 ? 'medium' : 'low' as any,
+        risk_level: (gaps > 5 ? 'high' : gaps > 2 ? 'medium' : 'low') as DomainEffectiveness['risk_level'],
       };
     });
 
@@ -171,7 +171,7 @@ export class MetaLearningService {
       recommendations,
     };
 
-    await this.db.create('meta_learning_report', report as any);
+    await this.db.create('meta_learning_report', report as unknown as Record<string, unknown>);
     this.logger.log(`Meta-learning: ${domainEffectiveness.length} domains, ${recommendations.length} recommendations`);
     return ok(report);
   }

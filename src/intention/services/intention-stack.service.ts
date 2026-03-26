@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Result, ok, err } from 'neverthrow';
 import { DomainError } from '../../common/types/result.types';
 import { IntentionService } from '../intention.service';
-import { Intention } from '../../common/types/intention.types';
+import { Intention, IntentionStatus } from '../../common/types/intention.types';
 
 @Injectable()
 export class IntentionStackService {
@@ -41,7 +41,7 @@ export class IntentionStackService {
       const status = anyFailed ? 'failed' : 'completed';
       await this.intentions.transition(
         parent.value.intention_id,
-        status as any,
+        status as IntentionStatus,
         `All ${children.value.length} sub-intentions resolved`,
         'task_completion',
       );

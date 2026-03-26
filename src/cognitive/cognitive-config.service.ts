@@ -137,6 +137,12 @@ const DEFAULTS: Record<string, Omit<CognitiveParam, 'key'>> = {
   // --- Kernel: concept space ---
   'kernel.conflict_radius': { value: 2.0, description: 'Max distance for conflict detection', min: 0.5, max: 10, tunable: true },
   'kernel.separation_threshold': { value: 0.5, description: 'Min separation along dimension to resolve conflict', min: 0.1, max: 3, tunable: true },
+
+  // --- Kernel: sleep & timeout ---
+  'kernel.sleep_max_ms': { value: 2000, description: 'Max idle sleep duration', min: 100, max: 10000, tunable: true },
+  'kernel.sleep_min_ms': { value: 50, description: 'Min idle sleep duration', min: 10, max: 500, tunable: true },
+  'kernel.learning_sleep_ms': { value: 500, description: 'Sleep between learning cycles', min: 100, max: 5000, tunable: true },
+  'kernel.think_timeout_ms': { value: 60000, description: 'Max wait time for think() result', min: 5000, max: 300000, tunable: false },
 };
 
 @Injectable()

@@ -78,7 +78,7 @@ export class PolicyService {
       reason: dissensusDecision.reason,
       ripeness_score: ripenessScore.score,
       evaluated_at: new Date().toISOString(),
-    } as any);
+    } as Record<string, unknown>);
 
     await this.events.emit('policy.evaluated', {
       action_type: intent.action_type,

@@ -84,7 +84,7 @@ export class SelfAssessmentService {
     }
 
     if (assessments.length > 0) {
-      await this.events.emit('self_assessment.updated' as any, { domains: assessments.map((a) => a.domain) });
+      await this.events.emit('self_assessment.updated', { domains: assessments.map((a) => a.domain) });
     }
 
     return ok(assessments);

@@ -62,7 +62,7 @@ export class NightlyService {
         this.logger.error(`Nightly ${name} failed: ${error.message}`);
         stages.push({ name, status: 'error', result: { error: error.message } });
       }
-      await this.events.emit('nightly.stage_completed' as any, { stage: name, status: stages[stages.length - 1].status });
+      await this.events.emit('nightly.stage_completed', { stage: name, status: stages[stages.length - 1].status });
     };
 
     // === Phase 1: Data collection ===
@@ -165,8 +165,8 @@ export class NightlyService {
       finished_at: finishedAt,
     };
 
-    await this.db.create('nightly_run', nightlyResult as any);
-    await this.events.emit('nightly.completed' as any, nightlyResult.summary);
+    await this.db.create('nightly_run', nightlyResult as unknown as Record<string, unknown>);
+    await this.events.emit('nightly.completed', nightlyResult.summary);
 
     this.logger.log(`Nightly complete: ${nightlyResult.summary.passed}/${nightlyResult.summary.total_stages} stages passed`);
     return ok(nightlyResult);

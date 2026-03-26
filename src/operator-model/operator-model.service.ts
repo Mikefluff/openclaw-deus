@@ -64,7 +64,7 @@ export class OperatorModelService {
     return this.db.update<OperatorModel>(current.id!, {
       session: newSession,
       updated_at: new Date().toISOString(),
-    } as any);
+    } as Record<string, unknown>);
   }
 
   async updateTrust(overrideOccurred: boolean): Promise<Result<void, DomainError>> {
@@ -103,7 +103,7 @@ export class OperatorModelService {
     }
 
     await this.db.update(model.value.id!, { expertise, updated_at: new Date().toISOString() });
-    await this.events.emit('operator_model.updated' as any, { domain, level });
+    await this.events.emit('operator_model.updated', { domain, level });
     return ok(undefined);
   }
 }

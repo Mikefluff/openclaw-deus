@@ -402,6 +402,6 @@ export class AffectiveStateService implements OnModuleInit {
       W_mode: this.W_mode,
       learning_rate: this.lr,
       step_count: this.stepCount,
-    } as any);
+    } as Record<string, unknown>);
   }
 }

@@ -33,11 +33,11 @@ export class BeliefPromotionService {
       const decision = this.decidePromotion(candidate);
 
       if (decision === 'promote') {
-        const existing = this.similarity.findBestWordMatch(candidate.content, allBeliefs as any[], 'similarity.belief_match');
+        const existing = this.similarity.findBestWordMatch(candidate.content, allBeliefs as Array<{ content: string; confidence: number; belief_id: string }>, 'similarity.belief_match');
 
         if (existing) {
           // Refresh existing belief
-          (existing as any).confidence = Math.min(1.0, (existing as any).confidence + this.config.get('promotion.confidence_boost'));
+          existing.confidence = Math.min(1.0, existing.confidence + this.config.get('promotion.confidence_boost'));
           await this.beliefs.update(existing.belief_id, {
             confidence: existing.confidence,
           });

@@ -32,7 +32,7 @@ export class KnowledgeGapService {
     } as unknown as KnowledgeGap);
 
     if (result.isOk()) {
-      await this.events.emit('knowledge_gap.discovered' as any, { description: data.description, impact: data.impact });
+      await this.events.emit('knowledge_gap.discovered', { description: data.description, impact: data.impact });
       this.logger.log(`Knowledge gap discovered: ${data.description} (impact: ${data.impact})`);
     }
     return result;
@@ -43,7 +43,7 @@ export class KnowledgeGapService {
       status: 'resolved',
       resolved_by: resolvedByKnowledgeId,
     });
-    await this.events.emit('knowledge_gap.resolved' as any, { gap_id: gapId, resolved_by: resolvedByKnowledgeId });
+    await this.events.emit('knowledge_gap.resolved', { gap_id: gapId, resolved_by: resolvedByKnowledgeId });
     return ok(undefined);
   }
 
@@ -69,7 +69,7 @@ export class KnowledgeGapService {
       { days: `${staleDays}d` },
     );
 
-    const closedStale = staleResult.isOk() ? (Array.isArray(staleResult.value) ? (staleResult.value as any[]).length : 0) : 0;
+    const closedStale = staleResult.isOk() ? (Array.isArray(staleResult.value) ? (staleResult.value as unknown[]).length : 0) : 0;
 
     const remaining = await this.findOpen();
     const remainingCount = remaining.isOk() ? remaining.value.length : 0;

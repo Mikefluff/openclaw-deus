@@ -5,6 +5,7 @@ import { DeliberationService } from '../../deliberation/deliberation.service';
 import { MetaLearningService } from '../../cognitive/meta-learning.service';
 import { IntentionService } from '../../intention/intention.service';
 import { KnowledgeService } from '../../knowledge/knowledge.service';
+import { Knowledge } from '../../common/types/knowledge.types';
 
 /**
  * StrategicAgent (rank 5): "What should we do? How should we approach this?"
@@ -39,7 +40,7 @@ export class StrategicAgent implements CognitiveAgent {
     if (activeResult.isErr()) return signals;
 
     const needsDeliberation = activeResult.value.filter(
-      (i: any) => i.status === 'recognized' || i.status === 'adopted',
+      (i) => i.status === 'recognized' || i.status === 'adopted',
     );
 
     if (needsDeliberation.length === 0) return signals;
@@ -51,7 +52,7 @@ export class StrategicAgent implements CognitiveAgent {
       const relevantKnowledge = await this.knowledge.findSimilar(topIntention.description, 0.5);
       const knowledgeContext = relevantKnowledge.isOk() ? relevantKnowledge.value : [];
 
-      const result = await this.deliberation.deliberate(topIntention, { knowledge: knowledgeContext as any });
+      const result = await this.deliberation.deliberate(topIntention, { knowledge: knowledgeContext as Knowledge[] });
 
       if (result.isOk()) {
         const delib = result.value;

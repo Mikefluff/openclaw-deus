@@ -2,6 +2,7 @@ import { Controller, Get, Post, Patch, Param, Body, Query, BadRequestException, 
 import { IntentionService } from './intention.service';
 import { IntentionRecognitionService } from './services/intention-recognition.service';
 import { IntentionStackService } from './services/intention-stack.service';
+import { IntentionStatus, IntentionProgress } from '../common/types/intention.types';
 
 @Controller('intentions')
 export class IntentionController {
@@ -46,7 +47,7 @@ export class IntentionController {
     @Body('status') status: string,
     @Body('reason') reason: string,
   ) {
-    const result = await this.intentions.transition(id, status as any, reason || 'manual transition', 'operator');
+    const result = await this.intentions.transition(id, status as IntentionStatus, reason || 'manual transition', 'operator');
     if (result.isErr()) throw new NotFoundException(result.error.message);
     return result.value;
   }
@@ -56,7 +57,7 @@ export class IntentionController {
     @Param('intentionId') id: string,
     @Body() progress: Record<string, unknown>,
   ) {
-    const result = await this.intentions.updateProgress(id, progress as any);
+    const result = await this.intentions.updateProgress(id, progress as Partial<IntentionProgress>);
     if (result.isErr()) throw new NotFoundException(result.error.message);
     return result.value;
   }

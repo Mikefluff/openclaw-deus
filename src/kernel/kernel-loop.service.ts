@@ -129,13 +129,14 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
       });
 
       // Timeout safety: don't wait forever
+      const thinkTimeout = this.config.get('kernel.think_timeout_ms');
       setTimeout(() => {
         const idx = this.pendingResolvers.findIndex(r => r.eventId === eventId);
         if (idx >= 0) {
           this.pendingResolvers.splice(idx, 1);
           resolve(ok(this.buildOutput(this.allCommits.slice(-10))));
         }
-      }, 60000);
+      }, thinkTimeout);
     });
   }
 
@@ -528,12 +529,16 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
 
     if (hasEvents) return 0;
 
-    // Learning mode: steady rhythm (500ms between study cycles)
-    if (this.learningDomain) return 500;
+    const sleepMax = this.config.get('kernel.sleep_max_ms');
+    const sleepMin = this.config.get('kernel.sleep_min_ms');
+    const learningSleep = this.config.get('kernel.learning_sleep_ms');
 
-    // Arousal 0→2000ms, 1→50ms
-    const baseSleep = 2000 - affect.arousal * 1950;
-    return Math.max(50, Math.min(5000, baseSleep));
+    // Learning mode: steady rhythm between study cycles
+    if (this.learningDomain) return learningSleep;
+
+    // Arousal 0→sleepMax, 1→sleepMin
+    const baseSleep = sleepMax - affect.arousal * (sleepMax - sleepMin);
+    return Math.max(sleepMin, Math.min(sleepMax, baseSleep));
   }
 
   // ═══════════════════════════════════════════

@@ -117,7 +117,7 @@ export class TemporalCognitionService {
     const raw = await this.db.queryRaw<any>(TEMPORAL_STATE_QUERY, { today, yesterday });
     const d = raw.isOk()
       ? (Array.isArray(raw.value) ? raw.value[raw.value.length - 1] : raw.value)
-      : {} as any;
+      : {} as Record<string, unknown>;
 
     const totalEpisodes = d?.total_episodes || 0;
     const totalNightly = d?.total_nightly || 0;

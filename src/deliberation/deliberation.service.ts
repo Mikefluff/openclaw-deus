@@ -136,7 +136,7 @@ export class DeliberationService {
       reasoning,
       commitment_level: safetyPassed ? 'committed' : 'tentative',
       safety_check: {
-        dissensus: dissensusResult.isOk() ? dissensusResult.value : undefined as any,
+        dissensus: dissensusResult.isOk() ? dissensusResult.value : undefined!,
         ripeness: ripenessResult,
         passed: safetyPassed,
       },
@@ -145,8 +145,8 @@ export class DeliberationService {
     };
 
     // Persist
-    await this.db.create('deliberation', deliberation as any);
-    await this.events.emit('deliberation.decided' as any, {
+    await this.db.create('deliberation', deliberation as unknown as Record<string, unknown>);
+    await this.events.emit('deliberation.decided', {
       intention_id: intention.intention_id,
       selected: selected.description,
       safety_passed: safetyPassed,

@@ -54,7 +54,7 @@ export class KnowledgeService {
 
     const result = await this.db.create<Knowledge>('knowledge', knowledge as unknown as Knowledge);
     if (result.isOk()) {
-      await this.events.emit('knowledge.updated' as any, { knowledge_id: knowledgeId, action: 'created', content: data.content });
+      await this.events.emit('knowledge.updated', { knowledge_id: knowledgeId, action: 'created', content: data.content });
     }
     return result;
   }
@@ -83,8 +83,8 @@ export class KnowledgeService {
 
     const k = existing.value;
     const evidence = [...(k.evidence || []), newEvidence];
-    const conf = k.confidence as any;
-    const currentPoint = conf.point ?? conf ?? 0.5;
+    const conf = k.confidence as unknown as Record<string, unknown>;
+    const currentPoint = (conf.point as number) ?? (typeof k.confidence === 'number' ? k.confidence : 0.5);
     const quality = (newEvidence.quality || 'strong_implication') as EvidenceQuality;
 
     // Bayesian evidence-weighted update: stronger evidence → bigger boost, diminishing returns
@@ -95,7 +95,7 @@ export class KnowledgeService {
       confidence: updated,
       last_reinforcement: new Date().toISOString(),
       updated_at: new Date().toISOString(),
-    } as any);
+    } as Record<string, unknown>);
 
     // Knowledge → Belief promotion: when evidence accumulates, create review candidate
     if (evidence.length >= 3 && updated.point >= 0.7) {
@@ -137,7 +137,7 @@ export class KnowledgeService {
       status: 'pending',
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
-    } as any);
+    } as Record<string, unknown>);
 
     this.logger.log(`Knowledge ${knowledge.knowledge_id} promoted to belief candidate (evidence=${evidenceCount}, conf=${confidence})`);
   }

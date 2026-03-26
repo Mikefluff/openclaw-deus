@@ -4,7 +4,7 @@ import { DomainError } from '../../common/types/result.types';
 import { LlmClientService, LlmError } from '../../llm/llm-client.service';
 import { LlmOperationType, LlmPriority } from '../../llm/types/llm.types';
 import { IntentionService } from '../intention.service';
-import { Intention, IntentionRecognitionResult } from '../../common/types/intention.types';
+import { Intention, IntentionRecognitionResult, IntentionStatus, IntentionProgress } from '../../common/types/intention.types';
 import { SimilarityProvider } from '../../cognitive/similarity.provider';
 
 const SYSTEM_PROMPT = `You are the intention recognition module of a cognitive agent called DEUS.
@@ -177,10 +177,10 @@ export class IntentionRecognitionService {
       if (update.update && typeof update.update === 'object') {
         const upd = update.update as Record<string, unknown>;
         if (upd.progress) {
-          await this.intentions.updateProgress(update.intention_id, upd.progress as any);
+          await this.intentions.updateProgress(update.intention_id, upd.progress as Partial<IntentionProgress>);
         }
         if (upd.status) {
-          await this.intentions.transition(update.intention_id, upd.status as any, update.reasoning, 'operator');
+          await this.intentions.transition(update.intention_id, upd.status as IntentionStatus, update.reasoning, 'operator');
         }
       }
     }
@@ -189,7 +189,7 @@ export class IntentionRecognitionService {
     for (const completed of recognition.completed_intentions) {
       await this.intentions.transition(
         completed.intention_id,
-        completed.outcome as any,
+        completed.outcome as IntentionStatus,
         completed.reasoning,
         'operator',
       );

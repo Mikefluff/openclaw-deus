@@ -73,7 +73,7 @@ export class WorldModelService {
 
     // Single DB round-trip for ALL data
     const dbResult = await this.db.queryRaw<any>(WorldModelService.WORLD_MODEL_QUERY);
-    const d = dbResult.isOk() ? (Array.isArray(dbResult.value) ? dbResult.value[dbResult.value.length - 1] : dbResult.value) : {} as any;
+    const d = dbResult.isOk() ? (Array.isArray(dbResult.value) ? dbResult.value[dbResult.value.length - 1] : dbResult.value) : {} as Record<string, unknown>;
 
     const beliefs = { count: d?.beliefs?.c || 0, avgConf: d?.beliefs?.avg || 0 };
     const knowledgeCount = d?.knowledge_count || 0;
@@ -186,7 +186,7 @@ export class WorldModelService {
       },
     };
 
-    await this.db.create('world_model', model as any);
+    await this.db.create('world_model', model as unknown as Record<string, unknown>);
     return ok(model);
   }
 
@@ -257,9 +257,9 @@ export class WorldModelService {
         coherence: spatial.coherence,
         gaps: spatial.gaps.length,
       },
-    } as any;
+    } as unknown as WorldModel;
 
-    await this.db.create('world_model', model as any);
+    await this.db.create('world_model', model as unknown as Record<string, unknown>);
     return ok(model);
   }
 
