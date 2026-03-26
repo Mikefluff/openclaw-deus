@@ -14,6 +14,8 @@ import { CognitiveConfigService } from '../cognitive/cognitive-config.service';
 import { WorldModelService } from '../world-model/world-model.service';
 import { EventsService } from '../events/events.service';
 import { SurrealService } from '../database/surreal.service';
+import { MetricsService } from '../metrics/metrics.service';
+import { RecursiveImproveService } from '../metrics/recursive-improve.service';
 import { mockEventsService } from '../__mocks__/events.mock';
 import { mockCognitiveConfig } from '../__mocks__/cognitive-config.mock';
 import { ok, err } from 'neverthrow';
@@ -42,25 +44,27 @@ describe('NightlyService', () => {
         { provide: WorldModelService, useValue: { build: mockOk({ confidence: 0.8 }) } },
         { provide: EventsService, useValue: mockEventsService },
         { provide: SurrealService, useValue: { create: mockOk({}) } },
+        { provide: MetricsService, useValue: { snapshot: mockOk({}) } },
+        { provide: RecursiveImproveService, useValue: { run: mockOk({}) } },
       ],
     }).compile();
 
     service = module.get(NightlyService);
   });
 
-  it('should execute all 12 stages', async () => {
+  it('should execute all 14 stages', async () => {
     const result = await service.run();
     expect(result.isOk()).toBe(true);
     const run = result._unsafeUnwrap();
-    expect(run.stages.length).toBe(12);
-    expect(run.summary.total_stages).toBe(12);
+    expect(run.stages.length).toBe(14);
+    expect(run.summary.total_stages).toBe(14);
   });
 
   it('should report passed/failed in summary', async () => {
     const result = await service.run();
     const run = result._unsafeUnwrap();
     const summary = run.summary as any;
-    expect(summary.passed + summary.failed).toBe(12);
+    expect(summary.passed + summary.failed).toBe(14);
     expect(summary.passed).toBeGreaterThanOrEqual(10);
   });
 
@@ -82,13 +86,15 @@ describe('NightlyService', () => {
         { provide: WorldModelService, useValue: { build: mockOk({}) } },
         { provide: EventsService, useValue: mockEventsService },
         { provide: SurrealService, useValue: { create: mockOk({}) } },
+        { provide: MetricsService, useValue: { snapshot: mockOk({}) } },
+        { provide: RecursiveImproveService, useValue: { run: mockOk({}) } },
       ],
     }).compile();
 
     const svc = module.get(NightlyService);
     const result = await svc.run();
     expect(result.isOk()).toBe(true);
-    expect(result._unsafeUnwrap().stages.length).toBe(12);
+    expect(result._unsafeUnwrap().stages.length).toBe(14);
   });
 
   it('should set timestamps', async () => {
@@ -105,7 +111,7 @@ describe('NightlyService', () => {
     expect(names).toContain('procedure_extraction');
     expect(names).toContain('self_assessment');
     expect(names).toContain('intention_review');
-    expect(names).toContain('knowledge_gap_review');
+    expect(names).toContain('knowledge_gap_triage');
     expect(names).toContain('cognitive_config_tuning');
     expect(names).toContain('world_model_rebuild');
   });

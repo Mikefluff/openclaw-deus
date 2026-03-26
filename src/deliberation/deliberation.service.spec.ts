@@ -6,6 +6,7 @@ import { LlmClientService } from '../llm/llm-client.service';
 import { DissensusService } from '../policy/services/dissensus.service';
 import { RipenessService } from '../policy/services/ripeness.service';
 import { IntentNormalizerService } from '../policy/services/intent-normalizer.service';
+import { EpisodeService } from '../experience/episode.service';
 import { mockEventsService } from '../__mocks__/events.mock';
 import { ok } from 'neverthrow';
 import { Intention } from '../common/types/intention.types';
@@ -42,6 +43,10 @@ describe('DeliberationService', () => {
         }},
         { provide: RipenessService, useValue: {
           score: jest.fn().mockReturnValue({ score: 0.8, class: 'ready', blockers: [], missing_preconditions: [], factor_scores: {}, rationale: '' }),
+        }},
+        { provide: EpisodeService, useValue: {
+          findByIntention: jest.fn().mockResolvedValue(ok([])),
+          findRecent: jest.fn().mockResolvedValue(ok([])),
         }},
       ],
     }).compile();

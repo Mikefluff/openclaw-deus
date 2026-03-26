@@ -13,6 +13,7 @@ export enum LlmOperationType {
   OPERATOR_MODEL_UPDATE = 'operator_model_update',
   SELF_ASSESSMENT = 'self_assessment',
   PROCEDURE_EXTRACTION = 'procedure_extraction',
+  DIAGNOSIS = 'diagnosis',
 }
 
 export enum LlmPriority {

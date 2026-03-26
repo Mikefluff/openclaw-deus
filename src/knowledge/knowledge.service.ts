@@ -84,12 +84,56 @@ export class KnowledgeService {
     const conf = k.confidence as any;
     const newConfidence = Math.min(1.0, (conf.point || conf) + 0.03 * (1 - (conf.point || conf)));
 
-    return this.db.update<Knowledge>(k.id!, {
+    const result = await this.db.update<Knowledge>(k.id!, {
       evidence,
       confidence: calibrated(newConfidence, 0.12 / Math.sqrt(1 + evidence.length)),
       last_reinforcement: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     } as any);
+
+    // Knowledge → Belief promotion: when evidence accumulates, create review candidate
+    if (evidence.length >= 3 && newConfidence >= 0.7) {
+      await this.promoteToBeliefCandidate(k, evidence.length, newConfidence);
+    }
+
+    return result;
+  }
+
+  /**
+   * When knowledge is reinforced enough, create a review_candidate for belief promotion.
+   * Closes the knowledge → belief learning loop.
+   */
+  private async promoteToBeliefCandidate(knowledge: Knowledge, evidenceCount: number, confidence: number): Promise<void> {
+    // Check if already promoted
+    const existing = await this.db.query<any>(
+      `SELECT * FROM review_candidate WHERE content = $content AND status IN ['pending', 'promoted'] LIMIT 1`,
+      { content: knowledge.content },
+    );
+    if (existing.isOk() && existing.value.length > 0) {
+      // Bump recurrence
+      const candidate = existing.value[0];
+      await this.db.update(candidate.id, {
+        recurrence: (candidate.recurrence || 1) + 1,
+        confidence_proposal: confidence,
+        updated_at: new Date().toISOString(),
+      });
+      return;
+    }
+
+    await this.db.create('review_candidate', {
+      content: knowledge.content,
+      confidence_proposal: confidence,
+      recurrence: evidenceCount,
+      source: `knowledge:${knowledge.knowledge_id}`,
+      category: knowledge.domain,
+      prefix: knowledge.kind === 'fact' ? 'F' : knowledge.kind === 'procedural' ? 'P' : 'O',
+      human_review_needed: 'no',
+      status: 'pending',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    } as any);
+
+    this.logger.log(`Knowledge ${knowledge.knowledge_id} promoted to belief candidate (evidence=${evidenceCount}, conf=${confidence})`);
   }
 
   async supersede(oldKnowledgeId: string, newKnowledgeId: string): Promise<Result<void, DomainError>> {
@@ -108,11 +152,25 @@ export class KnowledgeService {
     const embResult = await this.embeddings.embed(content);
     if (embResult.isErr()) return ok([]); // graceful degradation
 
-    // Brute force cosine similarity (TODO: use MTREE when SurrealDB supports it properly)
+    const queryEmb = embResult.value;
+
+    // Try HNSW vector search in SurrealDB first (O(log n) vs O(n) brute force)
+    const vectorResult = await this.db.query<Knowledge>(
+      `SELECT *, vector::similarity::cosine(embedding, $vec) AS score
+       FROM knowledge
+       WHERE embedding != NONE AND status = 'active'
+       ORDER BY score DESC LIMIT 20`,
+      { vec: queryEmb },
+    );
+
+    if (vectorResult.isOk() && vectorResult.value.length > 0) {
+      return ok(vectorResult.value.filter((k: any) => (k.score ?? 0) >= threshold));
+    }
+
+    // Fallback: brute force cosine in application code
     const all = await this.findAll({ status: 'active' });
     if (all.isErr()) return err(all.error);
 
-    const queryEmb = embResult.value;
     return ok(all.value.filter((k) => {
       if (!k.embedding) return false;
       const sim = this.similarityProvider.cosine(queryEmb, k.embedding);

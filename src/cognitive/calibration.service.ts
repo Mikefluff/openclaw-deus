@@ -2,20 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Result, ok, err } from 'neverthrow';
 import { DomainError } from '../common/types/result.types';
 import { SurrealService } from '../database/surreal.service';
-
-export interface CalibrationReport {
-  ece: number;                    // Expected Calibration Error (0 = perfect)
-  overconfident: boolean;
-  underconfident: boolean;
-  correction_factor: number;      // Apply to future confidence estimates
-  sample_size: number;
-  calibration_curve: Array<{
-    predicted: number;
-    actual: number;
-    count: number;
-  }>;
-  suggestion: string;
-}
+import { CalibrationReport } from '../common/types/cognitive-config.types';
 
 @Injectable()
 export class CalibrationService {
@@ -51,7 +38,7 @@ export class CalibrationService {
     const predictions = await this.db.query<{
       confidence: number;
       outcome: boolean;
-    }>('SELECT confidence, outcome FROM prediction WHERE outcome != NONE ORDER BY created_at DESC LIMIT 500');
+    }>('SELECT confidence, outcome, created_at FROM prediction WHERE outcome != NONE ORDER BY created_at DESC LIMIT 500');
 
     if (predictions.isErr()) return err(predictions.error);
     const data = predictions.value;

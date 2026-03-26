@@ -8,12 +8,14 @@ import { SimilarityProvider } from './similarity.provider';
 import { CognitiveConfigController } from './cognitive-config.controller';
 import { CognitivePipelineService } from './cognitive-pipeline.service';
 import { CognitivePipelineController } from './cognitive-pipeline.controller';
+import { GraphLinkingService } from './graph-linking.service';
 import { IntentionModule } from '../intention/intention.module';
 import { KnowledgeModule } from '../knowledge/knowledge.module';
 import { DeliberationModule } from '../deliberation/deliberation.module';
 import { ExperienceModule } from '../experience/experience.module';
 import { OperatorModelModule } from '../operator-model/operator-model.module';
 import { MemoryModule } from '../memory/memory.module';
+import { WorldModelModule } from '../world-model/world-model.module';
 
 @Global()
 @Module({
@@ -24,6 +26,7 @@ import { MemoryModule } from '../memory/memory.module';
     ExperienceModule,
     OperatorModelModule,
     MemoryModule,
+    WorldModelModule,
   ],
   controllers: [CognitiveConfigController, CognitivePipelineController],
   providers: [
@@ -34,6 +37,7 @@ import { MemoryModule } from '../memory/memory.module';
     CalibrationService,
     ImportanceScorerService,
     CognitivePipelineService,
+    GraphLinkingService,
   ],
   exports: [
     CognitiveConfigService,
@@ -43,6 +47,7 @@ import { MemoryModule } from '../memory/memory.module';
     CalibrationService,
     ImportanceScorerService,
     CognitivePipelineService,
+    GraphLinkingService,
   ],
 })
 export class CognitiveModule {}

@@ -24,6 +24,7 @@ import { KnowledgeModule } from './knowledge/knowledge.module';
 import { OperatorModelModule } from './operator-model/operator-model.module';
 import { DeliberationModule } from './deliberation/deliberation.module';
 import { ExperienceModule } from './experience/experience.module';
+import { MetricsModule } from './metrics/metrics.module';
 
 @Module({
   imports: [
@@ -55,6 +56,7 @@ import { ExperienceModule } from './experience/experience.module';
     OperatorModelModule,
     DeliberationModule,
     ExperienceModule,
+    MetricsModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

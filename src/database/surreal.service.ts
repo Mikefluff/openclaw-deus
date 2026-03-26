@@ -6,13 +6,7 @@ import Surreal from 'surrealdb';
 import * as fs from 'fs';
 import * as path from 'path';
 
-export interface SurrealConfig {
-  url: string;
-  namespace: string;
-  database: string;
-  username: string;
-  password: string;
-}
+import { SurrealConfig } from '../common/types/database.types';
 
 @Injectable()
 export class SurrealService implements OnModuleInit, OnModuleDestroy {
@@ -48,7 +42,7 @@ export class SurrealService implements OnModuleInit, OnModuleDestroy {
   async connect(config?: Partial<SurrealConfig>): Promise<void> {
     if (config) this.config = { ...this.config, ...config };
     try {
-      await this.db.connect(this.config.url);
+      await this.db.connect(this.config.url, { versionCheck: false } as any);
       await this.db.signin({ username: this.config.username, password: this.config.password });
       await this.db.use({ namespace: this.config.namespace, database: this.config.database });
       this.connected = true;
@@ -119,7 +113,7 @@ export class SurrealService implements OnModuleInit, OnModuleDestroy {
 
   async create<T>(table: string, data: T): Promise<Result<T, DatabaseError>> {
     try {
-      const result = await this.db.create(table, data as any);
+      const result = await this.db.create(table, this.coerceDatetimes(data) as any);
       const record = Array.isArray(result) ? result[0] : result;
       return ok(record as unknown as T);
     } catch (error) {
@@ -129,7 +123,7 @@ export class SurrealService implements OnModuleInit, OnModuleDestroy {
 
   async update<T>(id: string, data: Partial<T>): Promise<Result<T, DatabaseError>> {
     try {
-      const result = await this.db.merge(id, data as any);
+      const result = await this.db.merge(id, this.coerceDatetimes(data) as any);
       return ok(result as unknown as T);
     } catch (error) {
       return err(new DatabaseError(`Update ${id} failed: ${error}`, error));
@@ -158,10 +152,11 @@ export class SurrealService implements OnModuleInit, OnModuleDestroy {
   // --- SurrealDB-native features ---
 
   async relate(from: string, relation: string, to: string, data?: Record<string, unknown>): Promise<Result<unknown, DatabaseError>> {
+    const vars: Record<string, unknown> = { ...data };
     const setClause = data
-      ? ' SET ' + Object.entries(data).map(([k, v]) => `${k} = ${JSON.stringify(v)}`).join(', ')
+      ? ' SET ' + Object.keys(data).map((k) => `${k} = $${k}`).join(', ')
       : '';
-    return this.execute(`RELATE ${from} -> ${relation} -> ${to}${setClause}`);
+    return this.execute(`RELATE ${from} -> ${relation} -> ${to}${setClause}`, vars);
   }
 
   async transaction(statements: string[], vars?: Record<string, unknown>): Promise<Result<unknown, DatabaseError>> {
@@ -198,20 +193,56 @@ export class SurrealService implements OnModuleInit, OnModuleDestroy {
   async runMigration(migrationPath: string): Promise<Result<void, DatabaseError>> {
     try {
       const sql = fs.readFileSync(migrationPath, 'utf-8');
-      const statements = sql
-        .split(';')
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0 && !s.startsWith('--'));
+      const statements = this.parseSqlStatements(sql);
+      let applied = 0;
+      let failed = 0;
 
       for (const stmt of statements) {
-        await this.db.query(stmt);
+        try {
+          await this.db.query(stmt);
+          applied++;
+        } catch (error: any) {
+          failed++;
+          this.logger.warn(`Migration stmt failed (${path.basename(migrationPath)}): ${error.message?.slice(0, 120)}`);
+        }
       }
 
-      this.logger.log(`Migration applied: ${path.basename(migrationPath)}`);
+      this.logger.log(`Migration applied: ${path.basename(migrationPath)} (${applied} ok, ${failed} failed)`);
       return ok(undefined);
     } catch (error) {
       return err(new DatabaseError(`Migration failed: ${error}`, error));
     }
+  }
+
+  /**
+   * Parse SQL respecting braces (for DEFINE FUNCTION bodies).
+   * Splits on `;` only when brace depth is 0.
+   */
+  private parseSqlStatements(sql: string): string[] {
+    const statements: string[] = [];
+    let current = '';
+    let depth = 0;
+
+    for (const char of sql) {
+      if (char === '{') depth++;
+      if (char === '}') depth--;
+      if (char === ';' && depth === 0) {
+        const trimmed = current.trim();
+        if (trimmed.length > 0 && !trimmed.startsWith('--')) {
+          statements.push(trimmed);
+        }
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+
+    const trimmed = current.trim();
+    if (trimmed.length > 0 && !trimmed.startsWith('--')) {
+      statements.push(trimmed);
+    }
+
+    return statements;
   }
 
   async ping(): Promise<Result<boolean, DatabaseError>> {
@@ -221,5 +252,28 @@ export class SurrealService implements OnModuleInit, OnModuleDestroy {
     } catch (error) {
       return err(new DatabaseError(`Ping failed: ${error}`, error));
     }
+  }
+
+  /**
+   * SurrealDB 3.0 doesn't coerce ISO strings to datetime.
+   * Recursively convert ISO date strings to Date objects for SCHEMAFULL tables.
+   */
+  private coerceDatetimes<T>(data: T): T {
+    if (data === null || data === undefined) return data;
+    if (data instanceof Date) return data;
+    if (typeof data === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(data)) {
+      return new Date(data) as unknown as T;
+    }
+    if (Array.isArray(data)) {
+      return data.map((item) => this.coerceDatetimes(item)) as unknown as T;
+    }
+    if (typeof data === 'object') {
+      const result: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+        result[key] = this.coerceDatetimes(value);
+      }
+      return result as T;
+    }
+    return data;
   }
 }

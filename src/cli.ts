@@ -25,6 +25,11 @@ import { EpisodeService } from './experience/episode.service';
 import { ProcedureService } from './experience/procedure.service';
 import { SelfAssessmentService } from './experience/self-assessment.service';
 import { OperatorModelService } from './operator-model/operator-model.service';
+import { MetricsService } from './metrics/metrics.service';
+import { DiagnosisService } from './metrics/diagnosis.service';
+import { BenchmarkService } from './metrics/benchmark.service';
+import { ExperimentService } from './metrics/experiment.service';
+import { RecursiveImproveService } from './metrics/recursive-improve.service';
 
 async function main() {
   const app = await NestFactory.createApplicationContext(AppModule, { logger: ['error', 'warn'] });
@@ -260,6 +265,53 @@ async function runCommand(app: any, command: string, args: string[]): Promise<an
       return r.value;
     }
 
+    // === v5 Metrics & Recursive Improvement ===
+
+    case 'metrics': {
+      const svc = app.get(MetricsService);
+      const r = await svc.snapshot();
+      if (r.isErr()) throw new Error(r.error.message);
+      return r.value;
+    }
+
+    case 'metrics:history': {
+      const svc = app.get(MetricsService);
+      const r = await svc.getHistory(parseInt(args[0] || '10'));
+      if (r.isErr()) throw new Error(r.error.message);
+      return r.value;
+    }
+
+    case 'diagnose': {
+      const metricsSvc = app.get(MetricsService);
+      const diagSvc = app.get(DiagnosisService);
+      const snap = await metricsSvc.snapshot();
+      if (snap.isErr()) throw new Error(snap.error.message);
+      const r = await diagSvc.analyze(snap.value);
+      if (r.isErr()) throw new Error(r.error.message);
+      return r.value;
+    }
+
+    case 'benchmark': {
+      const svc = app.get(BenchmarkService);
+      const r = await svc.runAll();
+      if (r.isErr()) throw new Error(r.error.message);
+      return r.value;
+    }
+
+    case 'improve': {
+      const svc = app.get(RecursiveImproveService);
+      const r = await svc.run();
+      if (r.isErr()) throw new Error(r.error.message);
+      return r.value;
+    }
+
+    case 'improvements': {
+      const svc = app.get(ExperimentService);
+      const r = await svc.getPendingImprovements();
+      if (r.isErr()) throw new Error(r.error.message);
+      return r.value;
+    }
+
     default:
       console.log(`DEUS CLI — Available commands:
   bootstrap          Validate identity + init DB + seed
@@ -290,7 +342,15 @@ async function runCommand(app: any, command: string, args: string[]): Promise<an
   episodes [limit]     Recent episodes
   procedures           Extracted procedures
   self-assessment      Agent skill assessment
-  operator-model       Operator mental model`);
+  operator-model       Operator mental model
+
+  --- Cognitive Metrics & Recursive Improvement ---
+  metrics              Take cognitive snapshot
+  metrics:history [n]  Snapshot history
+  diagnose             Run diagnosis on latest snapshot
+  benchmark            Run all benchmark scenarios
+  improve              Full recursive improvement loop
+  improvements         List pending logic proposals`);
       return undefined;
   }
 }

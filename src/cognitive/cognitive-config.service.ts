@@ -11,16 +11,7 @@ import { SurrealService } from '../database/surreal.service';
  * To let the agent tune: call adjustFromFeedback() with accuracy metrics
  */
 
-export interface CognitiveParam {
-  key: string;
-  value: number;
-  description: string;
-  min: number;
-  max: number;
-  tunable: boolean;          // can the agent adjust this?
-  last_adjusted?: string;
-  adjustment_reason?: string;
-}
+import { CognitiveParam } from '../common/types/cognitive-config.types';
 
 // Defaults — these are the STARTING values. The agent can tune them.
 const DEFAULTS: Record<string, Omit<CognitiveParam, 'key'>> = {
@@ -104,6 +95,12 @@ const DEFAULTS: Record<string, Omit<CognitiveParam, 'key'>> = {
   'llm.max_tokens_recognition': { value: 1024, description: 'Max tokens for intention recognition', min: 256, max: 4096, tunable: false },
   'llm.max_tokens_extraction': { value: 1024, description: 'Max tokens for knowledge extraction', min: 256, max: 4096, tunable: false },
   'llm.max_tokens_deliberation': { value: 1024, description: 'Max tokens for deliberation', min: 256, max: 4096, tunable: false },
+
+  // --- Query limits ---
+  'query.episode_limit': { value: 30, description: 'Limit for episode queries in procedure extraction', min: 5, max: 100, tunable: false },
+  'query.procedure_limit': { value: 5, description: 'Limit for procedure search results', min: 1, max: 20, tunable: false },
+  'query.causal_decision_limit': { value: 100, description: 'Limit for policy decisions in causal graph', min: 10, max: 500, tunable: false },
+  'query.embeddings_fallback_limit': { value: 500, description: 'Limit for brute-force embedding fallback', min: 50, max: 2000, tunable: false },
 };
 
 @Injectable()

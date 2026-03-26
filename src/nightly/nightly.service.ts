@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Inject, Logger, forwardRef } from '@nestjs/common';
 import { Result, ok } from 'neverthrow';
 import { DomainError } from '../common/types/result.types';
 import { SurrealService } from '../database/surreal.service';
@@ -16,6 +16,8 @@ import { CalibrationService } from '../cognitive/calibration.service';
 import { CognitiveConfigService } from '../cognitive/cognitive-config.service';
 import { WorldModelService } from '../world-model/world-model.service';
 import { EventsService } from '../events/events.service';
+import { MetricsService } from '../metrics/metrics.service';
+import { RecursiveImproveService } from '../metrics/recursive-improve.service';
 
 @Injectable()
 export class NightlyService {
@@ -36,6 +38,8 @@ export class NightlyService {
     private readonly worldModel: WorldModelService,
     private readonly events: EventsService,
     private readonly db: SurrealService,
+    @Inject(forwardRef(() => MetricsService)) private readonly metrics: MetricsService,
+    @Inject(forwardRef(() => RecursiveImproveService)) private readonly recursiveImprove: RecursiveImproveService,
   ) {}
 
   async run(now?: Date): Promise<Result<NightlyRunResult, DomainError>> {
@@ -96,11 +100,12 @@ export class NightlyService {
       };
     });
 
-    await runStage('knowledge_gap_review', async () => {
-      const openGaps = await this.gaps.findOpen();
+    await runStage('knowledge_gap_triage', async () => {
+      // Triage: close stale gaps, then report (proposed by DiagnosisService)
+      const triage = await this.gaps.triageGaps(14);
       const highImpact = await this.gaps.findHighImpact(0.7);
       return {
-        open_gaps: openGaps.isOk() ? openGaps.value.length : 0,
+        ...(triage.isOk() ? triage.value : { closed_stale: 0, remaining: 0 }),
         high_impact: highImpact.isOk() ? highImpact.value.length : 0,
       };
     });
@@ -120,6 +125,10 @@ export class NightlyService {
 
     // === Phase 7: Rebuild world model ===
     await runStage('world_model_rebuild', () => this.worldModel.build());
+
+    // === Phase 8: Recursive self-improvement ===
+    await runStage('cognitive_metrics', () => this.metrics.snapshot());
+    await runStage('recursive_improve', () => this.recursiveImprove.run());
 
     const finishedAt = new Date().toISOString();
     const nightlyResult: NightlyRunResult = {

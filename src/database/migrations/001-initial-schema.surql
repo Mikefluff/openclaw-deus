@@ -33,7 +33,8 @@ DEFINE INDEX idx_belief_status ON belief FIELDS status;
 DEFINE INDEX idx_belief_scope  ON belief FIELDS context_scope;
 
 DEFINE ANALYZER belief_content TOKENIZERS blank, class FILTERS lowercase, snowball(russian), snowball(english);
-DEFINE INDEX idx_belief_search ON belief FIELDS content SEARCH ANALYZER belief_content BM25;
+-- NOTE: Full-text SEARCH indexes removed — not supported in SurrealDB 3.0
+-- Use string::contains() for text search in application code
 
 -- ═══════════════════════════════════════════
 -- ACTIVITY LOGS
@@ -52,7 +53,6 @@ DEFINE INDEX idx_log_day  ON activity_log FIELDS day_key;
 DEFINE INDEX idx_log_type ON activity_log FIELDS type;
 
 DEFINE ANALYZER log_content TOKENIZERS blank, class FILTERS lowercase;
-DEFINE INDEX idx_log_search ON activity_log FIELDS description SEARCH ANALYZER log_content BM25;
 
 -- ═══════════════════════════════════════════
 -- DAILY MEMORY

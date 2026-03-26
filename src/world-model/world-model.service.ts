@@ -31,14 +31,14 @@ export class WorldModelService {
   // Single SurrealQL query to gather ALL world model data (replaces 8+ service calls)
   private static readonly WORLD_MODEL_QUERY = `
     LET $beliefs = (SELECT count() AS c, math::mean(confidence) AS avg FROM belief WHERE status = 'active' GROUP ALL);
-    LET $axioms = (SELECT belief_id AS id, content, confidence FROM belief WHERE belief_id ~ '^I[0-9]' AND status = 'active');
+    LET $axioms = (SELECT belief_id AS id, content, confidence FROM belief WHERE string::starts_with(belief_id, 'I') AND status = 'active');
     LET $knowledge_count = (SELECT count() AS c FROM knowledge WHERE status = 'active' GROUP ALL);
     LET $k_axioms = (SELECT knowledge_id AS id, content FROM knowledge WHERE kind = 'axiom' AND status = 'active');
     LET $intentions = (SELECT * FROM intention WHERE status IN ['recognized', 'adopted', 'active', 'suspended'] ORDER BY priority DESC LIMIT 20);
     LET $gaps_open = (SELECT * FROM knowledge_gap WHERE status = 'open' ORDER BY impact DESC);
     LET $gaps_high = (SELECT * FROM knowledge_gap WHERE status = 'open' AND impact >= 0.7);
     LET $ep_stats = (SELECT count() AS total, count(outcome IN ['success', 'partial_success']) AS successes FROM episode GROUP ALL);
-    LET $latest_mem = (SELECT day_key FROM activity_log ORDER BY timestamp DESC LIMIT 1);
+    LET $latest_mem = (SELECT day_key, timestamp FROM activity_log ORDER BY timestamp DESC LIMIT 1);
     LET $latest_intro = (SELECT generated_at, posture FROM introspection_report ORDER BY generated_at DESC LIMIT 1);
     LET $operator = (SELECT * FROM operator_model LIMIT 1);
     LET $contradictions = (SELECT count() AS c FROM contradicts GROUP ALL);

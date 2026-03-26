@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Result, ok, err } from 'neverthrow';
+import { Result, ok } from 'neverthrow';
 import { DomainError } from '../common/types/result.types';
-import { SurrealService } from '../database/surreal.service';
+import { CognitivePipelineResult } from '../common/types/cognitive-config.types';
 import { EventsService } from '../events/events.service';
 import { IntentionRecognitionService } from '../intention/services/intention-recognition.service';
 import { IntentionStackService } from '../intention/services/intention-stack.service';
@@ -14,6 +14,9 @@ import { EpisodeService } from '../experience/episode.service';
 import { SelfAssessmentService } from '../experience/self-assessment.service';
 import { SessionTrackerService } from '../operator-model/services/session-tracker.service';
 import { MemoryService } from '../memory/memory.service';
+import { GraphLinkingService } from './graph-linking.service';
+import { CognitiveConfigService } from './cognitive-config.service';
+import { WorldModelService } from '../world-model/world-model.service';
 
 /**
  * CognitivePipelineService: THE BRAIN's MAIN LOOP.
@@ -30,7 +33,6 @@ export class CognitivePipelineService {
   private readonly logger = new Logger(CognitivePipelineService.name);
 
   constructor(
-    private readonly db: SurrealService,
     private readonly events: EventsService,
     private readonly intentionRecognition: IntentionRecognitionService,
     private readonly intentionStack: IntentionStackService,
@@ -43,19 +45,13 @@ export class CognitivePipelineService {
     private readonly selfAssessment: SelfAssessmentService,
     private readonly sessionTracker: SessionTrackerService,
     private readonly memory: MemoryService,
+    private readonly graphLinking: GraphLinkingService,
+    private readonly config: CognitiveConfigService,
+    private readonly worldModel: WorldModelService,
   ) {}
 
   /**
    * Process an operator message through the full cognitive pipeline.
-   * Called on every substantive interaction.
-   *
-   * Pipeline:
-   * [0] Track session (sync, no LLM)
-   * [1a] Recognize intentions (LLM, CRITICAL priority) — parallel with 1b
-   * [1b] Extract knowledge (LLM, HIGH priority) — parallel with 1a
-   * [2] Deliberate on new intentions (LLM, HIGH priority)
-   * [3] Link knowledge gaps to intentions
-   * [4] Auto-adopt recognized intentions
    */
   async processMessage(message: string): Promise<Result<CognitivePipelineResult, DomainError>> {
     const startTime = Date.now();
@@ -74,91 +70,33 @@ export class CognitivePipelineService {
 
     // Step 1: Parallel — intention recognition + knowledge extraction
     const [intentionResult, knowledgeResult] = await Promise.all([
-      this.intentionRecognition.recognizeFromMessage(message).catch((e) => {
-        this.logger.warn(`Intention recognition failed: ${e}`);
-        return ok({ new_intentions: [], updated_intentions: [], completed_intentions: [] }) as any;
-      }),
-      this.knowledgeExtraction.extractFromInteraction(message).catch((e) => {
-        this.logger.warn(`Knowledge extraction failed: ${e}`);
-        return ok({ new_knowledge: [], updated_knowledge: [], knowledge_gaps: [] }) as any;
-      }),
+      this.recognizeIntentions(message),
+      this.extractKnowledge(message),
     ]);
 
-    // Process intention results
-    if (intentionResult.isOk()) {
-      const recognition = intentionResult.value;
-      result.intentions_recognized = recognition.new_intentions.length;
+    // Step 2: Process intention results → deliberate
+    if (intentionResult) {
+      result.intentions_recognized = intentionResult.new_intentions.length;
+      result.deliberations_made = await this.deliberateOnIntentions(intentionResult.new_intentions);
 
-      // Step 2: Deliberate on each new intention
-      for (const newInt of recognition.new_intentions) {
-        // Find the just-created intention
-        const active = await this.intentions.findActive();
-        if (active.isErr()) continue;
-
-        const intention = active.value.find((i: any) =>
-          i.description === newInt.description && i.status === 'recognized',
-        );
-
-        if (intention) {
-          // Fetch relevant knowledge for context
-          const relevantKnowledge = await this.knowledge.findSimilar(intention.description, 0.5);
-          const knowledgeContext = relevantKnowledge.isOk() ? relevantKnowledge.value : [];
-
-          const deliberationResult = await this.deliberation.deliberate(intention, { knowledge: knowledgeContext as any });
-          if (deliberationResult.isOk()) {
-            result.deliberations_made++;
-
-            // Create graph: intention -> requires -> knowledge
-            for (const k of knowledgeContext) {
-              await this.db.relate(
-                `(SELECT id FROM intention WHERE intention_id = '${intention.intention_id}' LIMIT 1)`,
-                'requires',
-                `(SELECT id FROM knowledge WHERE knowledge_id = '${(k as any).knowledge_id}' LIMIT 1)`,
-              );
-            }
-          }
-        }
-      }
-
-      // Process completed intentions
-      for (const completed of recognition.completed_intentions) {
+      for (const completed of intentionResult.completed_intentions) {
         result.intentions_completed++;
         await this.onIntentionCompleted(completed.intention_id, completed.outcome as any, completed.reasoning);
       }
     }
 
-    // Process knowledge results
-    if (knowledgeResult.isOk()) {
-      const extraction = knowledgeResult.value;
-      result.knowledge_extracted = extraction.new_knowledge.length;
-      result.knowledge_gaps_found = extraction.knowledge_gaps.length;
-
-      // Step 3: Link knowledge gaps to blocking intentions
-      for (const gap of extraction.knowledge_gaps) {
-        const openGaps = await this.gaps.findOpen();
-        if (openGaps.isErr()) continue;
-
-        const matchingGap = openGaps.value.find((g: any) => g.description === gap.description);
-        if (matchingGap) {
-          const activeIntentions = await this.intentions.findActive();
-          if (activeIntentions.isOk()) {
-            for (const intention of activeIntentions.value) {
-              // Link if domains overlap
-              if (this.domainOverlap(intention.description, gap.domain)) {
-                await this.db.relate(
-                  `(SELECT id FROM intention WHERE intention_id = '${intention.intention_id}' LIMIT 1)`,
-                  'blocked_by',
-                  `(SELECT id FROM knowledge_gap WHERE description = '${gap.description.replace(/'/g, "\\'")}' LIMIT 1)`,
-                );
-              }
-            }
-          }
-        }
-      }
+    // Step 3: Process knowledge results → link gaps
+    if (knowledgeResult) {
+      result.knowledge_extracted = knowledgeResult.new_knowledge.length;
+      result.knowledge_gaps_found = knowledgeResult.knowledge_gaps.length;
+      await this.linkGapsToIntentions(knowledgeResult.knowledge_gaps);
     }
 
     // Step 4: Auto-adopt recognized intentions
     await this.intentionStack.autoAdopt();
+
+    // Step 5: Rebuild world model if stale (proposed by DiagnosisService)
+    this.refreshWorldModelIfStale();
 
     result.duration_ms = Date.now() - startTime;
     this.logger.log(
@@ -175,61 +113,130 @@ export class CognitivePipelineService {
   async onIntentionCompleted(intentionId: string, outcome: 'completed' | 'failed' | 'abandoned', reason: string): Promise<void> {
     this.logger.log(`Intention ${intentionId} completed: ${outcome}`);
 
-    // Step 1: Create episode
     const episodeOutcome = outcome === 'completed' ? 'success' as const
       : outcome === 'failed' ? 'failure' as const
       : 'abandoned' as const;
+
     const episodeResult = await this.episodes.createFromCompletion(intentionId, reason, episodeOutcome);
 
     if (episodeResult.isOk()) {
-      const episode = episodeResult.value;
+      await this.extractKnowledgeFromEpisode(episodeResult.value);
+    }
 
-      // Step 2: Extract knowledge from episode lessons
-      for (const lesson of episode.lessons || []) {
-        const knowledgeKind = lesson.kind === 'factual' ? 'fact' as const
-          : lesson.kind === 'procedural' ? 'procedural' as const
-          : 'meta' as const;
+    await this.intentionStack.checkParentCompletion(intentionId);
+    await this.selfAssessment.updateFromEpisodes();
+  }
 
-        const kResult = await this.knowledge.create({
-          kind: knowledgeKind,
-          content: lesson.content,
-          domain: 'general',
-          confidence: lesson.confidence,
-          evidence: [{
-            source: episode.episode_id,
-            quality: 'strong_implication',
-            timestamp: new Date().toISOString(),
-            content: `Lesson from episode ${episode.episode_id}`,
-          }],
-        });
+  // --- Private pipeline steps ---
 
-        // Create graph: knowledge -> derived_from_episode -> episode
-        if (kResult.isOk()) {
-          await this.db.execute(
-            `RELATE (SELECT id FROM knowledge WHERE knowledge_id = $kid LIMIT 1) -> derived_from_episode -> (SELECT id FROM episode WHERE episode_id = $eid LIMIT 1)`,
-            { kid: (kResult.value as any).knowledge_id, eid: episode.episode_id },
-          );
+  private async recognizeIntentions(message: string): Promise<any | null> {
+    try {
+      const result = await this.intentionRecognition.recognizeFromMessage(message);
+      return result.isOk() ? result.value : null;
+    } catch (e) {
+      this.logger.warn(`Intention recognition failed: ${e}`);
+      return null;
+    }
+  }
+
+  private async extractKnowledge(message: string): Promise<any | null> {
+    try {
+      const result = await this.knowledgeExtraction.extractFromInteraction(message);
+      return result.isOk() ? result.value : null;
+    } catch (e) {
+      this.logger.warn(`Knowledge extraction failed: ${e}`);
+      return null;
+    }
+  }
+
+  private async deliberateOnIntentions(newIntentions: any[]): Promise<number> {
+    let deliberationCount = 0;
+    const similarityThreshold = this.config.get('similarity.knowledge_match');
+
+    for (const newInt of newIntentions) {
+      const active = await this.intentions.findActive();
+      if (active.isErr()) continue;
+
+      const intention = active.value.find((i: any) =>
+        i.description === newInt.description && i.status === 'recognized',
+      );
+      if (!intention) continue;
+
+      const relevantKnowledge = await this.knowledge.findSimilar(intention.description, similarityThreshold);
+      const knowledgeContext = relevantKnowledge.isOk() ? relevantKnowledge.value : [];
+
+      const deliberationResult = await this.deliberation.deliberate(intention, { knowledge: knowledgeContext as any });
+      if (deliberationResult.isOk()) {
+        deliberationCount++;
+        for (const k of knowledgeContext) {
+          await this.graphLinking.linkIntentionToKnowledge(intention.intention_id, (k as any).knowledge_id);
         }
       }
     }
 
-    // Step 3: Check if parent intention is now complete
-    await this.intentionStack.checkParentCompletion(intentionId);
+    return deliberationCount;
+  }
 
-    // Step 4: Self-assessment update (lightweight)
-    await this.selfAssessment.updateFromEpisodes();
+  private async linkGapsToIntentions(knowledgeGaps: any[]): Promise<void> {
+    for (const gap of knowledgeGaps) {
+      const openGaps = await this.gaps.findOpen();
+      if (openGaps.isErr()) continue;
+
+      const matchingGap = openGaps.value.find((g: any) => g.description === gap.description);
+      if (!matchingGap) continue;
+
+      const activeIntentions = await this.intentions.findActive();
+      if (activeIntentions.isErr()) continue;
+
+      for (const intention of activeIntentions.value) {
+        if (this.domainOverlap(intention.description, gap.domain)) {
+          await this.graphLinking.linkIntentionToGap(intention.intention_id, gap.description);
+        }
+      }
+    }
+  }
+
+  private async extractKnowledgeFromEpisode(episode: any): Promise<void> {
+    for (const lesson of episode.lessons || []) {
+      const knowledgeKind = lesson.kind === 'factual' ? 'fact' as const
+        : lesson.kind === 'procedural' ? 'procedural' as const
+        : 'meta' as const;
+
+      const kResult = await this.knowledge.create({
+        kind: knowledgeKind,
+        content: lesson.content,
+        domain: 'general',
+        confidence: lesson.confidence,
+        evidence: [{
+          source: episode.episode_id,
+          quality: 'strong_implication',
+          timestamp: new Date().toISOString(),
+          content: `Lesson from episode ${episode.episode_id}`,
+        }],
+      });
+
+      if (kResult.isOk()) {
+        await this.graphLinking.linkKnowledgeToEpisode((kResult.value as any).knowledge_id, episode.episode_id);
+      }
+    }
   }
 
   private domainOverlap(text: string, domain: string): boolean {
     return text.toLowerCase().includes(domain.toLowerCase());
   }
-}
 
-export interface CognitivePipelineResult {
-  intentions_recognized: number;
-  intentions_completed: number;
-  knowledge_extracted: number;
-  knowledge_gaps_found: number;
-  deliberations_made: number;
-  duration_ms: number;
+  /**
+   * Non-blocking world model refresh when stale.
+   * (Proposed by DiagnosisService — cognitive self-modification)
+   */
+  private refreshWorldModelIfStale(): void {
+    this.worldModel.getLatest().then((wmResult) => {
+      if (wmResult.isErr() || !wmResult.value || !this.worldModel.isFresh(wmResult.value)) {
+        this.logger.log('World model stale — triggering rebuild');
+        this.worldModel.build().catch((e) => {
+          this.logger.warn(`Background world model rebuild failed: ${e}`);
+        });
+      }
+    }).catch(() => {});
+  }
 }

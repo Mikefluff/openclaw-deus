@@ -15,17 +15,36 @@ export class SelfAssessmentService {
   ) {}
 
   async updateFromEpisodes(): Promise<Result<SelfAssessment[], DomainError>> {
-    // Group episodes by domain, compute success rates
-    const stats = await this.db.query<{ domain: string; total: number; successes: number; episode_ids: string[] }>(
+    // Multi-domain assessment: group episodes by intention domain
+    // First: get domain-specific stats by joining episodes with their intentions' knowledge domains
+    const domainStats = await this.db.query<{ domain: string; total: number; successes: number; episode_ids: string[] }>(
       `SELECT
-        'general' AS domain,
+        domain,
         count() AS total,
         count(outcome IN ['success', 'partial_success']) AS successes,
         array::group(episode_id) AS episode_ids
-      FROM episode
-      WHERE created_at > time::now() - 30d
-      GROUP ALL`,
+      FROM (
+        SELECT episode_id, outcome, created_at,
+          (SELECT domain FROM knowledge WHERE knowledge_id IN $parent.relevant_knowledge_ids LIMIT 1)[0].domain ?? 'general' AS domain
+        FROM episode
+        WHERE created_at > time::now() - 30d
+      )
+      GROUP BY domain`,
     );
+
+    // Fallback: if domain query fails, use simple aggregate
+    const stats = domainStats.isOk() && domainStats.value.length > 0
+      ? domainStats
+      : await this.db.query<{ domain: string; total: number; successes: number; episode_ids: string[] }>(
+          `SELECT
+            'general' AS domain,
+            count() AS total,
+            count(outcome IN ['success', 'partial_success']) AS successes,
+            array::group(episode_id) AS episode_ids
+          FROM episode
+          WHERE created_at > time::now() - 30d
+          GROUP ALL`,
+        );
 
     if (stats.isErr()) return err(stats.error);
     const assessments: SelfAssessment[] = [];

@@ -1,30 +1,24 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Result, ok, err } from 'neverthrow';
 import { DomainError, ValidationError, FileSystemError } from '../common/types/result.types';
 import { SurrealService } from '../database/surreal.service';
 import { IDENTITY_FILES, BELIEFS_SEED_FILE } from '../common/constants/paths.constants';
 import { Belief } from '../common/types/belief.types';
+import { BootstrapCheck, BootstrapReport } from '../common/types/bootstrap.types';
+import { IntrospectionService } from '../introspection/introspection.service';
+import { WorldModelService } from '../world-model/world-model.service';
 import * as fs from 'fs';
 import * as path from 'path';
-
-export interface BootstrapCheck {
-  name: string;
-  ok: boolean;
-  detail: string;
-}
-
-export interface BootstrapReport {
-  timestamp: string;
-  checks: BootstrapCheck[];
-  allPassed: boolean;
-  seeded: boolean;
-}
 
 @Injectable()
 export class BootstrapService {
   private readonly logger = new Logger(BootstrapService.name);
 
-  constructor(private readonly db: SurrealService) {}
+  constructor(
+    private readonly db: SurrealService,
+    @Optional() private readonly introspection?: IntrospectionService,
+    @Optional() private readonly worldModel?: WorldModelService,
+  ) {}
 
   async validate(workspaceRoot?: string): Promise<Result<BootstrapReport, DomainError>> {
     const root = workspaceRoot || process.cwd();
@@ -105,8 +99,8 @@ export class BootstrapService {
           inference_trace: belief.inference_trace || [],
           archivable: belief.archivable ?? true,
           refresh_strategy: belief.refresh_strategy || null,
-          timestamp_created: belief.timestamp_created || new Date().toISOString(),
-          timestamp_updated: belief.timestamp_updated || new Date().toISOString(),
+          timestamp_created: new Date(belief.timestamp_created || Date.now()),
+          timestamp_updated: new Date(belief.timestamp_updated || Date.now()),
         });
 
         if (result.isOk()) seeded++;
@@ -117,7 +111,40 @@ export class BootstrapService {
     }
 
     this.logger.log(`Seeded ${seeded} beliefs from ${seedPath}`);
+
+    // Self-modification proposal: establish cognitive baseline on first boot
+    if (seeded > 0) {
+      await this.establishCognitiveBaseline();
+    }
+
     return ok({ seeded, skipped: 0 });
+  }
+
+  /**
+   * Run introspection + world model build after first seed.
+   * Ensures coherence_score and posture are computed from day one.
+   * (Proposed by DiagnosisService — cognitive self-modification)
+   */
+  private async establishCognitiveBaseline(): Promise<void> {
+    if (this.introspection) {
+      this.logger.log('Establishing cognitive baseline: running introspection...');
+      const result = await this.introspection.run('full');
+      if (result.isOk()) {
+        this.logger.log(`Baseline coherence: ${result.value.coherence_score} (${result.value.posture})`);
+      } else {
+        this.logger.warn(`Baseline introspection failed: ${result.error.message}`);
+      }
+    }
+
+    if (this.worldModel) {
+      this.logger.log('Establishing cognitive baseline: building world model...');
+      const result = await this.worldModel.build();
+      if (result.isOk()) {
+        this.logger.log(`Baseline world model: confidence=${result.value.confidence}`);
+      } else {
+        this.logger.warn(`Baseline world model failed: ${result.error.message}`);
+      }
+    }
   }
 
   async runMigrations(): Promise<Result<void, DomainError>> {

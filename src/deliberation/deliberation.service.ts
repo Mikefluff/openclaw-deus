@@ -11,21 +11,27 @@ import { IntentNormalizerService } from '../policy/services/intent-normalizer.se
 import { Deliberation, DeliberationResult, DeliberationOption } from '../common/types/deliberation.types';
 import { Intention } from '../common/types/intention.types';
 import { Knowledge } from '../common/types/knowledge.types';
+import { EpisodeService } from '../experience/episode.service';
+import { Episode } from '../common/types/episode.types';
 
 const SYSTEM_PROMPT = `You are the deliberation module of a cognitive agent called DEUS.
-Given an intention to advance and the current context, generate 2-3 approaches.
+Given an intention to advance, relevant knowledge, and PAST EPISODE HISTORY, generate 2-3 approaches.
 
 For each approach:
 - Describe what to do
-- Estimate success probability (0-1)
+- Estimate success probability (0-1) — calibrate based on past episode outcomes
 - Identify risks and prerequisites
 - Classify as minimal/standard/thorough
 
 Then select the BEST approach and explain your reasoning. Consider:
 - What does the operator expect?
-- What has worked before in similar situations?
+- What has WORKED before? (look at successful episodes)
+- What has FAILED before? (avoid repeating failed strategies)
+- What lessons were learned from past episodes?
 - What could go wrong?
-- Is this the right time to act?`;
+- Is this the right time to act?
+
+CRITICAL: If past episodes show failures for similar intentions, explicitly address what went wrong and how your proposed approach avoids those pitfalls.`;
 
 const DELIBERATE_TOOL = {
   name: 'deliberate',
@@ -64,6 +70,7 @@ export class DeliberationService {
     private readonly dissensus: DissensusService,
     private readonly ripeness: RipenessService,
     private readonly normalizer: IntentNormalizerService,
+    private readonly episodes: EpisodeService,
   ) {}
 
   async deliberate(intention: Intention, context?: { knowledge?: Knowledge[] }): Promise<Result<DeliberationResult, DomainError>> {
@@ -74,13 +81,16 @@ export class DeliberationService {
     let reasoning: string;
 
     if (this.llm.isAvailable()) {
-      // LLM deliberation
+      // Fetch past episodes for experiential learning
+      const pastEpisodes = await this.fetchRelevantEpisodes(intention);
+
+      // LLM deliberation with episode context
       const llmResult = await this.llm.call<{ options: DeliberationOption[]; selected: number; reasoning: string }>({
         operationType: LlmOperationType.DELIBERATION,
         priority: LlmPriority.HIGH,
         maxTokens: 1024,
         systemPrompt: SYSTEM_PROMPT,
-        userMessage: this.buildUserMessage(intention, context?.knowledge || []),
+        userMessage: this.buildUserMessage(intention, context?.knowledge || [], pastEpisodes),
         tools: [DELIBERATE_TOOL],
         forceTool: 'deliberate',
       });
@@ -168,11 +178,49 @@ export class DeliberationService {
     return ok({ deliberation, action_to_take: option.description, safety_passed: true });
   }
 
-  private buildUserMessage(intention: Intention, knowledge: Knowledge[]): string {
+  /**
+   * Fetch episodes relevant to this intention — both direct and semantically similar.
+   * Prioritizes failures to learn from mistakes.
+   */
+  private async fetchRelevantEpisodes(intention: Intention): Promise<Episode[]> {
+    // Direct: episodes for this intention
+    const direct = await this.episodes.findByIntention(intention.intention_id);
+    const directEps = direct.isOk() ? direct.value : [];
+
+    // Recent: last 10 episodes across all intentions (for pattern matching)
+    const recent = await this.episodes.findRecent(10);
+    const recentEps = recent.isOk() ? recent.value : [];
+
+    // Merge, deduplicate, prioritize failures
+    const seen = new Set<string>();
+    const all: Episode[] = [];
+    for (const ep of [...directEps, ...recentEps]) {
+      if (!seen.has(ep.episode_id)) {
+        seen.add(ep.episode_id);
+        all.push(ep);
+      }
+    }
+
+    // Sort: failures first (most valuable for learning), then by recency
+    return all.sort((a, b) => {
+      if (a.outcome === 'failure' && b.outcome !== 'failure') return -1;
+      if (b.outcome === 'failure' && a.outcome !== 'failure') return 1;
+      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+    }).slice(0, 8);
+  }
+
+  private buildUserMessage(intention: Intention, knowledge: Knowledge[], episodes: Episode[] = []): string {
     const knowledgeContext = knowledge.length > 0
       ? `\n\nRelevant knowledge:\n${knowledge.slice(0, 15).map((k) => `- [${k.knowledge_id}] ${k.content}`).join('\n')}`
       : '';
 
-    return `Intention to advance:\n"${intention.description}"\n\nKind: ${intention.kind}\nSuccess criteria: ${intention.success_criteria}\nCurrent progress: ${intention.progress.estimated_completion * 100}%\nBlockers: ${intention.progress.blockers.join(', ') || 'none'}${knowledgeContext}`;
+    const episodeContext = episodes.length > 0
+      ? `\n\nPast episodes (learn from these):\n${episodes.map((ep) => {
+          const lessonsStr = (ep.lessons || []).map((l: any) => `    - [${l.kind}] ${l.content}`).join('\n');
+          return `- [${ep.outcome.toUpperCase()}] ${ep.summary || ep.intention_id}${lessonsStr ? '\n' + lessonsStr : ''}`;
+        }).join('\n')}`
+      : '';
+
+    return `Intention to advance:\n"${intention.description}"\n\nKind: ${intention.kind}\nSuccess criteria: ${intention.success_criteria}\nCurrent progress: ${intention.progress.estimated_completion * 100}%\nBlockers: ${intention.progress.blockers.join(', ') || 'none'}${knowledgeContext}${episodeContext}`;
   }
 }

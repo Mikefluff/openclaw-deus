@@ -57,4 +57,27 @@ export class KnowledgeGapService {
       { threshold },
     );
   }
+
+  /**
+   * Triage open gaps: close stale, track stats.
+   * (Proposed by DiagnosisService — cognitive self-modification)
+   */
+  async triageGaps(staleDays = 14): Promise<Result<{ closed_stale: number; remaining: number }, DomainError>> {
+    // Close gaps older than staleDays with no linked intentions
+    const staleResult = await this.db.execute(
+      `UPDATE knowledge_gap SET status = 'stale_closed' WHERE status = 'open' AND discovered_at < time::now() - $days AND array::len(blocks_intentions) = 0`,
+      { days: `${staleDays}d` },
+    );
+
+    const closedStale = staleResult.isOk() ? (Array.isArray(staleResult.value) ? (staleResult.value as any[]).length : 0) : 0;
+
+    const remaining = await this.findOpen();
+    const remainingCount = remaining.isOk() ? remaining.value.length : 0;
+
+    if (closedStale > 0) {
+      this.logger.log(`Gap triage: closed ${closedStale} stale gaps, ${remainingCount} remaining`);
+    }
+
+    return ok({ closed_stale: closedStale, remaining: remainingCount });
+  }
 }
