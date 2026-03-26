@@ -23,6 +23,7 @@ import { AffectiveStateService } from '../kernel/affect/affective-state.service'
 import { ConceptSpaceService } from '../kernel/space/concept-space.service';
 import { ModalityDiscoveryService } from '../kernel/sensory/modality-discovery.service';
 import { SurrealService } from '../database/surreal.service';
+import { EnergyService } from '../kernel/energy.service';
 import { VirtualWorld } from './virtual-world';
 
 function pick<T>(arr: T[]): T { return arr[Math.floor(Math.random() * arr.length)]; }
@@ -39,6 +40,7 @@ async function main() {
   const conceptSpace = app.get(ConceptSpaceService);
   const modalities = app.get(ModalityDiscoveryService);
   const db = app.get(SurrealService);
+  const energy = app.get(EnergyService);
 
   const world = new VirtualWorld();
 
@@ -50,23 +52,40 @@ async function main() {
   let totalMs = 0;
   let teacherCalls = { mama: 0, specialist: 0, alone: 0 };
   let totalReflectionCycles = 0;
+  let sleepCount = 0;
   let lastReportTraces = 0;
 
   for (let tick = 0; tick < TOTAL_TICKS; tick++) {
+    // === ENERGY: tick + check if needs sleep ===
+    energy.tick();
+
+    if (energy.needsSleep()) {
+      // SLEEP: recover energy + consolidation
+      const { cycles_awake } = energy.sleep();
+      sleepCount++;
+      // During sleep: trace forgetting accelerates, schemas consolidate
+      // (kernel idle loop handles this naturally when running)
+      await new Promise(r => setTimeout(r, 200)); // brief consolidation window
+      continue; // skip this world tick — sleeping
+    }
+
     // === WORLD TICK: generate multi-modal events ===
     const events = world.tick();
     if (events.length === 0) continue;
 
     // === PROCESS world events (passive perception) ===
     for (const event of events) {
+      if (!energy.spend(energy.cost.trace_create, 'perceive')) break; // too tired to process
       const start = Date.now();
       await pipeline.processMessage(event.content);
       totalMs += Date.now() - start;
     }
 
-    // === CHILD ACTS (active exploration) ===
-    // Curiosity-driven: choose action based on what's least known
-    if (Math.random() < 0.4 && world.getObjectNames().length > 0) {
+    // === CHILD ACTS (active exploration — costs energy) ===
+    // Only explore if has energy. Tired child repeats familiar actions.
+    const canExplore = energy.canAffordExploration();
+    if (canExplore && Math.random() < 0.4 && world.getObjectNames().length > 0) {
+      energy.spend(energy.cost.exploration_action, 'explore');
       const objects = world.getObjectNames();
       const actions = world.getAvailableActions();
       const targetObj = pick(objects);
@@ -88,8 +107,9 @@ async function main() {
     const needsTeacher = decideTeacher(affectState, tick, modalities.getModalityCount());
     teacherCalls[needsTeacher]++;
 
-    // If teacher needed, send a teaching event through pipeline
-    if (needsTeacher === 'mama' || needsTeacher === 'specialist') {
+    // If teacher needed AND has energy for LLM
+    if ((needsTeacher === 'mama' || needsTeacher === 'specialist') && energy.canAffordLlm()) {
+      energy.spend(energy.cost.llm_call, `teacher:${needsTeacher}`);
       const worldState = world.getState();
       const obj = worldState.objects.length > 0
         ? worldState.objects[Math.floor(Math.random() * worldState.objects.length)]
@@ -105,6 +125,11 @@ async function main() {
         totalMs += Date.now() - start;
       }
     }
+
+    // === ENERGY ← AFFECT: reward energizes, pain drains ===
+    const affectNow = affect.getSnapshot();
+    if (affectNow.valence > 0.1) energy.reward(affectNow.valence);
+    if (affectNow.pain.intensity > 0.2) energy.pain(affectNow.pain.intensity);
 
     // === REFLECTION: wait until kernel settles ===
     // Not a fixed pause — wait until the mind calms down.
@@ -137,7 +162,9 @@ async function main() {
       console.log(`  Traces: ${traces} (+${traces - lastReportTraces}) | Commits: ${commits} | Dims: ${dims} | Modalities: ${mods}`);
       console.log(`  Affect: mode=${affectState.mode} val=${affectState.valence} arousal=${affectState.arousal} loss=${affectState.loss}`);
       console.log(`  Teacher: mama=${teacherCalls.mama} specialist=${teacherCalls.specialist} alone=${teacherCalls.alone}`);
-      console.log(`  Reflection: ${totalReflectionCycles} total cycles (avg ${(totalReflectionCycles / Math.max(1, tick + 1)).toFixed(1)}/tick)`);
+      const energyState = energy.getState();
+      console.log(`  Energy: ${energyState.current}/${energyState.max} fatigue=${energyState.fatigue_level} sleeps=${sleepCount}`);
+      console.log(`  Reflection: ${totalReflectionCycles} total (avg ${(totalReflectionCycles / Math.max(1, tick + 1)).toFixed(1)}/tick)`);
       console.log(`  Avg: ${Math.round(totalMs / Math.max(1, tick + 1))}ms/tick`);
 
       // Abstractions
