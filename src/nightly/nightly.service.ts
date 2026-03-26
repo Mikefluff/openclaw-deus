@@ -20,6 +20,7 @@ import { MetricsService } from '../metrics/metrics.service';
 import { RecursiveImproveService } from '../metrics/recursive-improve.service';
 import { CausalGraphService } from '../cognitive/causal-graph.service';
 import { MetaLearningService } from '../cognitive/meta-learning.service';
+import { NarrativeService } from '../kernel/narrative/narrative.service';
 
 @Injectable()
 export class NightlyService {
@@ -44,6 +45,7 @@ export class NightlyService {
     @Inject(forwardRef(() => RecursiveImproveService)) private readonly recursiveImprove: RecursiveImproveService,
     private readonly causalGraph: CausalGraphService,
     private readonly metaLearning: MetaLearningService,
+    private readonly narrative: NarrativeService,
   ) {}
 
   async run(now?: Date): Promise<Result<NightlyRunResult, DomainError>> {
@@ -141,7 +143,11 @@ export class NightlyService {
     // === Phase 7: Rebuild world model ===
     await runStage('world_model_rebuild', () => this.worldModel.build());
 
-    // === Phase 8: Meta-learning + Recursive self-improvement ===
+    // === Phase 8: Narrative compaction + synthesis ===
+    await runStage('narrative_compact', () => this.narrative.compact());
+    await runStage('narrative_synthesis', () => this.narrative.narrate());
+
+    // === Phase 9: Meta-learning + Recursive self-improvement ===
     await runStage('meta_learning', () => this.metaLearning.analyze());
     await runStage('cognitive_metrics', () => this.metrics.snapshot());
     await runStage('recursive_improve', () => this.recursiveImprove.run());

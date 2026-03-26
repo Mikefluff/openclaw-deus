@@ -8,6 +8,7 @@ import { AffectiveAgent } from './agents/affective.agent';
 import { PriorityAgent } from './agents/priority.agent';
 import { StrategicAgent } from './agents/strategic.agent';
 import { AffectiveStateService } from './affect/affective-state.service';
+import { NarrativeService } from './narrative/narrative.service';
 import { IntentionModule } from '../intention/intention.module';
 import { KnowledgeModule } from '../knowledge/knowledge.module';
 import { DeliberationModule } from '../deliberation/deliberation.module';
@@ -29,6 +30,7 @@ import { PolicyModule } from '../policy/policy.module';
     CommitKernelService,
     KernelLoopService,
     AffectiveStateService,
+    NarrativeService,
     SensoryAgent,
     PredictiveAgent,
     AffectiveAgent,
@@ -40,6 +42,7 @@ import { PolicyModule } from '../policy/policy.module';
     CommitKernelService,
     KernelLoopService,
     AffectiveStateService,
+    NarrativeService,
   ],
 })
 export class KernelModule implements OnModuleInit {

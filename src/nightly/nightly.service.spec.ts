@@ -18,6 +18,7 @@ import { MetricsService } from '../metrics/metrics.service';
 import { RecursiveImproveService } from '../metrics/recursive-improve.service';
 import { CausalGraphService } from '../cognitive/causal-graph.service';
 import { MetaLearningService } from '../cognitive/meta-learning.service';
+import { NarrativeService } from '../kernel/narrative/narrative.service';
 import { mockEventsService } from '../__mocks__/events.mock';
 import { mockCognitiveConfig } from '../__mocks__/cognitive-config.mock';
 import { ok, err } from 'neverthrow';
@@ -50,6 +51,7 @@ describe('NightlyService', () => {
         { provide: RecursiveImproveService, useValue: { run: mockOk({}) } },
         { provide: CausalGraphService, useValue: { build: jest.fn().mockResolvedValue({ isOk: () => true, isErr: () => false, value: { nodes: [], edges: [] } }), getTopVOIBeliefs: jest.fn().mockReturnValue([]) } },
         { provide: MetaLearningService, useValue: { analyze: jest.fn().mockResolvedValue({ isOk: () => true, value: {} }) } },
+        { provide: NarrativeService, useValue: { compact: jest.fn().mockResolvedValue({ isOk: () => true, value: { compacted: 0, frames_created: 0 } }), narrate: jest.fn().mockResolvedValue({ isOk: () => true, value: {} }) } },
       ],
     }).compile();
 
@@ -60,15 +62,15 @@ describe('NightlyService', () => {
     const result = await service.run();
     expect(result.isOk()).toBe(true);
     const run = result._unsafeUnwrap();
-    expect(run.stages.length).toBe(16);
-    expect(run.summary.total_stages).toBe(16);
+    expect(run.stages.length).toBe(18);
+    expect(run.summary.total_stages).toBe(18);
   });
 
   it('should report passed/failed in summary', async () => {
     const result = await service.run();
     const run = result._unsafeUnwrap();
     const summary = run.summary as any;
-    expect(summary.passed + summary.failed).toBe(16);
+    expect(summary.passed + summary.failed).toBe(18);
     expect(summary.passed).toBeGreaterThanOrEqual(10);
   });
 
@@ -94,13 +96,14 @@ describe('NightlyService', () => {
         { provide: RecursiveImproveService, useValue: { run: mockOk({}) } },
         { provide: CausalGraphService, useValue: { build: jest.fn().mockResolvedValue({ isOk: () => true, isErr: () => false, value: { nodes: [], edges: [] } }), getTopVOIBeliefs: jest.fn().mockReturnValue([]) } },
         { provide: MetaLearningService, useValue: { analyze: jest.fn().mockResolvedValue({ isOk: () => true, value: {} }) } },
+        { provide: NarrativeService, useValue: { compact: jest.fn().mockResolvedValue({ isOk: () => true, value: { compacted: 0, frames_created: 0 } }), narrate: jest.fn().mockResolvedValue({ isOk: () => true, value: {} }) } },
       ],
     }).compile();
 
     const svc = module.get(NightlyService);
     const result = await svc.run();
     expect(result.isOk()).toBe(true);
-    expect(result._unsafeUnwrap().stages.length).toBe(16);
+    expect(result._unsafeUnwrap().stages.length).toBe(18);
   });
 
   it('should set timestamps', async () => {
