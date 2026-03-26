@@ -64,6 +64,13 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
   private phenomenalState: PhenomenalState | null = null;
   private guard: RecursionGuard = { consecutive_self_model_commits: 0, uncertainty_trend: [], orthogonal_signal_deficit: 0 };
 
+  // LLM consultation tracking
+  private idleCyclesSinceLastLlm = 0;
+
+  // Learning mode: proactive domain study during idle
+  private learningDomain: string | null = null;
+  private learningCycleCount = 0;
+
   // Promise resolvers for external callers waiting on results
   private pendingResolvers: Array<{ resolve: (output: KernelOutput) => void; eventId: number }> = [];
   private eventIdCounter = 0;
@@ -136,6 +143,28 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
     this.eventQueue.push({ type: 'episode_outcome', content: `Pain: ${source}`, payload: { intensity }, timestamp: Date.now() });
     this.wakeUp();
   }
+
+  /**
+   * Enter learning mode: system proactively studies a domain during idle.
+   * Uses LLM to ask itself questions, identify gaps, deepen knowledge.
+   * Like "sit down and study this subject."
+   */
+  startLearning(domain: string): void {
+    this.learningDomain = domain;
+    this.learningCycleCount = 0;
+    this.logger.log(`Learning mode: studying "${domain}"`);
+    this.wakeUp();
+  }
+
+  stopLearning(): void {
+    this.logger.log(`Learning mode stopped after ${this.learningCycleCount} cycles on "${this.learningDomain}"`);
+    this.learningDomain = null;
+    this.learningCycleCount = 0;
+  }
+
+  isLearning(): boolean { return this.learningDomain !== null; }
+  getLearningDomain(): string | null { return this.learningDomain; }
+  getLearningProgress(): number { return this.learningCycleCount; }
 
   injectReward(amount: number): void {
     this.affect.reward(amount);
@@ -211,7 +240,13 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
 
       const context = await this.buildContext(cycle, cycleCommitsAll, this.phenomenalState, isReflection);
 
-      // Input: external event on iter 0, self-reflection on iter 1+
+      // CRITICAL DISTINCTION:
+      // iter 0 (perception): LLM allowed — processing external input
+      // iter 1+ (reflection): NO LLM — pure internal dynamics
+      if (isReflection) {
+        context.llm_budget = { remaining: 0, used: 0, total: 0 };
+      }
+
       const input = isReflection
         ? this.buildReflectionInput(cycleCommitsAll.slice(-3), context.time_sense, this.phenomenalState)
         : event.content;
@@ -302,31 +337,137 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Idle reflection: the brain thinking between external events.
-   * Lighter processing — no LLM, just trace dynamics and affect.
+   * Idle reflection: PURE INTERNAL processing. No LLM.
+   *
+   * The inner dialogue is autonomous — trace dynamics, spreading activation,
+   * affect model, fast-path agents only. LLM is an EXTERNAL expert,
+   * called only when internal processing is insufficient.
+   *
+   * Exception: when arousal is high AND internal resolution is failing
+   * (pain chronic, prediction errors unresolved), call LLM as "psychologist" —
+   * one consultation, then back to internal processing.
    */
   private async idleReflection(cycle: number): Promise<void> {
-    // Only reflect if there's something in awareness
     const activeTraces = await this.traceGraph.getActiveTraces(5);
     if (activeTraces.isErr() || activeTraces.value.length === 0) return;
 
-    // Run only fast-path agents (no LLM budget for idle)
-    const context = await this.buildContext(cycle, this.allCommits.slice(-5), this.phenomenalState, true);
-    context.llm_budget = { remaining: 0, used: 0, total: 0 }; // no LLM during idle
+    const affect = this.affect.getSnapshot();
 
-    const signals = await this.runAgents('[Idle reflection — what remains in awareness?]', context, cycle);
+    // Three idle modes:
+    // 1. Learning mode: proactive LLM study of domain
+    // 2. Expert consultation: LLM when high arousal + chronic pain
+    // 3. Pure internal: no LLM, autonomous processing
+
+    const needsExpert = !this.learningDomain
+      && affect.arousal > 0.7
+      && (affect.pain.chronic || affect.hormones.cortisol > 0.6)
+      && this.idleCyclesSinceLastLlm > 10;
+
+    const isLearning = this.learningDomain !== null
+      && this.idleCyclesSinceLastLlm > 3; // don't spam LLM, study every ~3 cycles
+
+    const context = await this.buildContext(cycle, this.allCommits.slice(-5), this.phenomenalState, true);
+
+    let input: string;
+
+    if (isLearning) {
+      // LEARNING MODE: proactive domain study
+      context.llm_budget = { remaining: 2, used: 0, total: 2 };
+      this.idleCyclesSinceLastLlm = 0;
+      this.learningCycleCount++;
+      input = this.buildLearningInput(this.learningDomain!);
+      this.logger.log(`Learning: cycle ${this.learningCycleCount} on "${this.learningDomain}"`);
+    } else if (needsExpert) {
+      // EXPERT CONSULTATION: break internal loop
+      context.llm_budget = { remaining: 1, used: 0, total: 1 };
+      this.idleCyclesSinceLastLlm = 0;
+      input = this.buildExpertConsultationInput();
+      this.logger.log(`Idle: consulting LLM expert (arousal=${affect.arousal.toFixed(2)})`);
+    } else {
+      // PURE INTERNAL: no LLM
+      context.llm_budget = { remaining: 0, used: 0, total: 0 };
+      this.idleCyclesSinceLastLlm++;
+      input = '[Idle — pure internal reflection]';
+    }
+
+    const signals = await this.runAgents(input, context, cycle);
 
     if (signals.length > 0) {
       const commitResult = await this.commitKernel.processCycle(signals);
       if (commitResult.isOk() && commitResult.value.length > 0) {
         this.allCommits.push(...commitResult.value);
         const timeSense = await this.commitKernel.computeTimeSense();
-        this.affect.processCommits(commitResult.value, timeSense);
+        const { configDeltas } = this.affect.processCommits(commitResult.value, timeSense);
+        for (const [key, delta] of configDeltas) {
+          this.config.adjust(key, delta, 'affect:idle');
+        }
       }
     }
 
-    // Forgetting happens during idle too
     await this.traceGraph.forget();
+  }
+
+  /**
+   * Build input for LLM "expert consultation" — system describes its own state
+   * and asks for guidance. Like seeing a psychologist when stuck.
+   */
+  private buildExpertConsultationInput(): string {
+    const affect = this.affect.getSnapshot();
+    const parts = ['[Expert consultation — system requesting external guidance]'];
+    parts.push(`Current state: mode=${affect.mode}, valence=${affect.valence}, arousal=${affect.arousal}`);
+    parts.push(`Pain: ${affect.pain.source} (intensity=${affect.pain.intensity.toFixed(2)}, ${affect.pain.chronic ? 'CHRONIC' : 'acute'})`);
+    parts.push(`Cortisol: ${affect.hormones.cortisol.toFixed(2)}, Dopamine: ${affect.hormones.dopamine.toFixed(2)}`);
+
+    if (this.phenomenalState) {
+      if (this.phenomenalState.dominant_traces.length > 0) {
+        parts.push(`Dominant in awareness: ${this.phenomenalState.dominant_traces.slice(0, 3).map(t => t.content.slice(0, 60)).join('; ')}`);
+      }
+      if (this.phenomenalState.top_conflicts.length > 0) {
+        parts.push(`Active conflicts: ${this.phenomenalState.top_conflicts.map(c => `${c.trace_a} ↔ ${c.trace_b}`).join('; ')}`);
+      }
+      if (this.phenomenalState.prediction_error_hotspots.length > 0) {
+        parts.push(`Prediction errors: ${this.phenomenalState.prediction_error_hotspots.map(h => `${h.domain}(${h.error.toFixed(2)})`).join(', ')}`);
+      }
+    }
+
+    parts.push('What should I focus on? What am I missing? How do I resolve this tension?');
+    return parts.join('\n');
+  }
+
+  /**
+   * Build learning input: system proactively asks about a domain.
+   * Uses knowledge gaps + current knowledge to form questions.
+   */
+  private buildLearningInput(domain: string): string {
+    const parts = [`[Learning mode — studying "${domain}"]`];
+    parts.push(`Cycle ${this.learningCycleCount} of domain study.`);
+
+    if (this.phenomenalState?.dominant_traces.length) {
+      const domainTraces = this.phenomenalState.dominant_traces
+        .filter(t => t.content.toLowerCase().includes(domain.toLowerCase()));
+      if (domainTraces.length > 0) {
+        parts.push(`Already know: ${domainTraces.map(t => t.content.slice(0, 60)).join('; ')}`);
+      }
+    }
+
+    // Progressive learning: different questions each cycle
+    const phase = this.learningCycleCount % 4;
+    switch (phase) {
+      case 0:
+        parts.push(`What are the fundamental concepts of ${domain}? What must I understand first?`);
+        break;
+      case 1:
+        parts.push(`What are the common patterns and best practices in ${domain}?`);
+        break;
+      case 2:
+        parts.push(`What are the risks, pitfalls, and failure modes in ${domain}?`);
+        break;
+      case 3:
+        parts.push(`How does ${domain} connect to what I already know? What gaps remain?`);
+        break;
+    }
+
+    return parts.join('\n');
   }
 
   /**
@@ -338,7 +479,10 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
     const affect = this.affect.getSnapshot();
     const hasEvents = this.eventQueue.length > 0;
 
-    if (hasEvents) return 0; // immediate if events pending
+    if (hasEvents) return 0;
+
+    // Learning mode: steady rhythm (500ms between study cycles)
+    if (this.learningDomain) return 500;
 
     // Arousal 0→2000ms, 1→50ms
     const baseSleep = 2000 - affect.arousal * 1950;
