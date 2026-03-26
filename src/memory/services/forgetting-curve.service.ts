@@ -52,6 +52,7 @@ export class ForgettingCurveService {
         content,
         confidence.point AS initial_strength,
         array::len(evidence) AS retrieval_count,
+        updated_at,
         (time::millis(time::now()) - time::millis(updated_at)) / 86400000 AS days_since
       FROM knowledge
       WHERE status = 'active'

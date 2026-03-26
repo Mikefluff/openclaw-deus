@@ -352,19 +352,20 @@ export class ConceptSpaceService {
     for (const dim of this.dimensions) {
       if (dim.label) continue; // already named
 
-      // Find traces at extremes of this dimension
-      const positive = await this.db.query<Trace>(
-        `SELECT content FROM trace WHERE archived = false AND array::len(position) > $dimId
-         ORDER BY position[$dimId] DESC LIMIT 3`,
+      // Find traces at extremes of this dimension (sort in app code — SurrealDB 3.0 can't ORDER BY array index)
+      const allTraces = await this.db.query<Trace>(
+        `SELECT trace_id, content, position FROM trace WHERE archived = false AND array::len(position) > $dimId LIMIT 50`,
         { dimId: dim.id },
       );
-      const negative = await this.db.query<Trace>(
-        `SELECT content FROM trace WHERE archived = false AND array::len(position) > $dimId
-         ORDER BY position[$dimId] ASC LIMIT 3`,
-        { dimId: dim.id },
-      );
+      if (allTraces.isErr() || allTraces.value.length < 4) continue;
 
-      if (positive.isErr() || negative.isErr()) continue;
+      const sorted = allTraces.value
+        .filter(t => t.position && t.position.length > dim.id)
+        .sort((a, b) => (b.position[dim.id] || 0) - (a.position[dim.id] || 0));
+
+      const positive = { value: sorted.slice(0, 3) };
+      const negative = { value: sorted.slice(-3).reverse() };
+
       if (positive.value.length < 2 || negative.value.length < 2) continue;
 
       // Extract shared words at each pole

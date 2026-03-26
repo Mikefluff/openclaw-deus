@@ -164,7 +164,7 @@ export class KnowledgeService {
     const vectorResult = await this.db.query<Knowledge>(
       `SELECT *, vector::similarity::cosine(embedding, $vec) AS score
        FROM knowledge
-       WHERE embedding != NONE AND status = 'active'
+       WHERE embedding IS NOT NONE AND status = 'active'
        ORDER BY score DESC LIMIT 20`,
       { vec: queryEmb },
     );

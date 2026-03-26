@@ -38,7 +38,7 @@ export class CalibrationService {
     const predictions = await this.db.query<{
       confidence: number;
       outcome: boolean;
-    }>('SELECT confidence, outcome, created_at FROM prediction WHERE outcome != NONE ORDER BY created_at DESC LIMIT 500');
+    }>('SELECT confidence, outcome, created_at FROM prediction WHERE outcome IS NOT NONE ORDER BY created_at DESC LIMIT 500');
 
     if (predictions.isErr()) return err(predictions.error);
     const data = predictions.value;

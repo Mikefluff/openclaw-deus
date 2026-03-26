@@ -199,7 +199,7 @@ export class TemporalCognitionService {
       outcome: string;
       intention_id: string;
     }>(
-      `SELECT duration_ms, outcome, intention_id
+      `SELECT duration_ms, outcome, intention_id, created_at
        FROM episode
        WHERE duration_ms > 0
        ORDER BY created_at DESC

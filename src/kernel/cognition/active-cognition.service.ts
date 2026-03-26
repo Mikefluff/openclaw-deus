@@ -41,9 +41,8 @@ export class ActiveCognitionService {
 
     // Get episodes ordered by importance (failures first — learn from mistakes)
     const episodes = await this.db.query<any>(
-      `SELECT episode_id, summary, outcome, intention_id, lessons
-       FROM episode ORDER BY
-         IF outcome = 'failure' THEN 0 ELSE IF outcome = 'partial_success' THEN 1 ELSE 2 END
+      `SELECT episode_id, summary, outcome, intention_id, lessons, created_at
+       FROM episode ORDER BY outcome ASC, created_at DESC
        LIMIT 20`,
     );
     if (episodes.isErr() || episodes.value.length === 0) return signals;

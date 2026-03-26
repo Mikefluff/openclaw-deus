@@ -74,7 +74,7 @@ export class SimilarityService {
 
     // Fallback
     const allLogs = await this.db.query<{ id: string; embedding: number[] }>(
-      'SELECT id, embedding FROM activity_log WHERE embedding != NONE LIMIT $limit',
+      'SELECT id, embedding FROM activity_log WHERE embedding IS NOT NONE LIMIT $limit',
       { limit: this.config.get('query.embeddings_fallback_limit') },
     );
     if (allLogs.isErr()) return err(allLogs.error);

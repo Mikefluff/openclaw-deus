@@ -21,7 +21,7 @@ export class ProcedureService {
   async extractFromEpisodes(): Promise<Result<Procedure[], DomainError>> {
     // Find successful episodes with lessons
     const episodes = await this.db.query<{ episode_id: string; summary: string; lessons: Array<{ content: string; kind: string }> }>(
-      `SELECT episode_id, summary, lessons FROM episode WHERE outcome IN ['success', 'partial_success'] AND array::len(lessons) > 0 ORDER BY created_at DESC LIMIT $limit`,
+      `SELECT episode_id, summary, lessons, created_at FROM episode WHERE outcome IN ['success', 'partial_success'] AND array::len(lessons) > 0 ORDER BY created_at DESC LIMIT $limit`,
       { limit: this.config.get('query.episode_limit') },
     );
     if (episodes.isErr()) return err(episodes.error);
