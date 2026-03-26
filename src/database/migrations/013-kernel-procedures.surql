@@ -6,7 +6,7 @@
 -- ═══════════════════════════════════════════
 
 DEFINE FUNCTION fn::spread_activation($source_tid: string, $spread_factor: float, $inhibit_factor: float, $hebbian_lr: float, $hebbian_decay: float, $cycle: int) {
-  LET $source = (SELECT weight FROM trace WHERE trace_id = $source_tid AND NOT archived LIMIT 1)[0];
+  LET $source = (SELECT weight FROM trace WHERE trace_id = $source_tid AND archived = false LIMIT 1)[0];
   IF $source = NONE { RETURN { activated: 0, inhibited: 0 }; };
   IF $source.weight < 0.1 { RETURN { activated: 0, inhibited: 0 }; };
 
@@ -21,7 +21,7 @@ DEFINE FUNCTION fn::spread_activation($source_tid: string, $spread_factor: float
       UPDATE trace SET
         weight = math::min([1.0, weight + $boost]),
         last_reactivated_cycle = $cycle
-      WHERE trace_id = $edge.target AND NOT archived;
+      WHERE trace_id = $edge.target AND archived = false;
 
       -- Hebbian: strengthen edge (co-activation)
       LET $target_w = (SELECT weight FROM trace WHERE trace_id = $edge.target LIMIT 1)[0].weight OR 0;
@@ -43,7 +43,7 @@ DEFINE FUNCTION fn::spread_activation($source_tid: string, $spread_factor: float
     UPDATE trace SET
       weight = math::max([0.0, weight - $suppress]),
       suppressed = IF weight - $suppress < 0.05 THEN true ELSE suppressed END
-    WHERE trace_id = $edge.target AND NOT archived;
+    WHERE trace_id = $edge.target AND archived = false;
 
     LET $inhibited = $inhibited + 1;
   };
@@ -59,11 +59,11 @@ DEFINE FUNCTION fn::forget_traces($base_decay: float, $archive_threshold: float)
   -- Decay freshness: emotional traces decay slower, frequently-reactivated decay slower
   UPDATE trace SET
     freshness = freshness * (1.0 - $base_decay / math::max([1.0, math::log2(1.0 + reactivation_count)]) * IF emotional_charge != 0 THEN 0.5 ELSE 1.0 END)
-  WHERE NOT archived AND NOT suppressed;
+  WHERE archived = false AND suppressed = false;
 
   -- Archive traces below threshold
   LET $archived = (UPDATE trace SET archived = true
-    WHERE NOT archived AND weight * freshness < $archive_threshold
+    WHERE archived = false AND weight * freshness < $archive_threshold
     RETURN BEFORE);
 
   RETURN { archived: array::len($archived) };

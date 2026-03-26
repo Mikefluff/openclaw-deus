@@ -452,7 +452,7 @@ export class KernelLoopService {
       const inhibits = await this.traceGraph['db'].query<{ a: string; b: string; w: number }>(
         `SELECT in.content AS a, out.content AS b, weight AS w
          FROM inhibits
-         WHERE in.trace_id IN (SELECT trace_id FROM trace WHERE NOT archived AND NOT suppressed AND weight > 0.3)
+         WHERE in.trace_id IN (SELECT trace_id FROM trace WHERE archived = false AND suppressed = false AND weight > 0.3)
          ORDER BY weight DESC LIMIT 5`,
       );
       if (inhibits.isErr()) return [];

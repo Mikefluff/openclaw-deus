@@ -166,7 +166,7 @@ export class TraceGraphService {
     // Recurse on heavily activated neighbors (depth-limited)
     if (result.isOk() && depth < 2) {
       const activated = await this.db.query<{ trace_id: string }>(
-        `SELECT trace_id FROM trace WHERE last_reactivated_cycle = $cycle AND weight > 0.3 AND NOT archived LIMIT 5`,
+        `SELECT trace_id FROM trace WHERE last_reactivated_cycle = $cycle AND weight > 0.3 AND archived = false LIMIT 5`,
         { cycle: this.cycle },
       );
       if (activated.isOk()) {
@@ -326,13 +326,13 @@ export class TraceGraphService {
 
   async getActiveTraces(limit = 20): Promise<Result<Trace[], DomainError>> {
     return this.db.query<Trace>(
-      `SELECT * FROM trace WHERE NOT archived AND NOT suppressed ORDER BY weight * freshness DESC LIMIT $limit`,
+      `SELECT * FROM trace WHERE archived = false AND suppressed = false ORDER BY weight DESC LIMIT $limit`,
       { limit },
     );
   }
 
   async getTraceCount(): Promise<number> {
-    const r = await this.db.query<{ c: number }>('SELECT count() AS c FROM trace WHERE NOT archived GROUP ALL');
+    const r = await this.db.query<{ c: number }>('SELECT count() AS c FROM trace WHERE archived = false GROUP ALL');
     return r.isOk() && r.value.length > 0 ? r.value[0].c : 0;
   }
 
@@ -343,7 +343,7 @@ export class TraceGraphService {
   async getActiveTraceIds(content: string, limit = 5): Promise<string[]> {
     // Find traces related to content
     const traces = await this.db.query<Trace>(
-      `SELECT trace_id FROM trace WHERE NOT archived AND NOT suppressed ORDER BY weight DESC LIMIT $limit`,
+      `SELECT trace_id FROM trace WHERE archived = false AND suppressed = false ORDER BY weight DESC LIMIT $limit`,
       { limit },
     );
     return traces.isOk() ? traces.value.map(t => t.trace_id) : [];
@@ -365,7 +365,7 @@ export class TraceGraphService {
   private async findTraceBySimilarity(content: string): Promise<Trace | null> {
     // Get recent active traces and compare by word overlap
     const recent = await this.db.query<Trace>(
-      `SELECT * FROM trace WHERE NOT archived ORDER BY last_reactivated_cycle DESC LIMIT 30`,
+      `SELECT * FROM trace WHERE archived = false ORDER BY last_reactivated_cycle DESC LIMIT 30`,
     );
     if (recent.isErr()) return null;
 

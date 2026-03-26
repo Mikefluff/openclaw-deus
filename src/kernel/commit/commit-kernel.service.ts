@@ -47,6 +47,11 @@ export class CommitKernelService {
     const escThreshold = this.config.get('kernel.escalation_threshold');
     const escalations = signals.filter(s => s.confidence > escThreshold);
 
+    this.logger.log(`ProcessCycle: ${signals.length} signals, ${clusters.length} clusters, ${escalations.length} escalations (threshold=${escThreshold})`);
+    for (const s of signals.slice(0, 5)) {
+      this.logger.log(`  Signal: ${s.agent_id} conf=${s.confidence} targets=[${s.targets.slice(0, 2).join(',')}] "${s.content.slice(0, 60)}"`);
+    }
+
     // 4. Create commits from convergent clusters
     for (const cluster of clusters) {
       const commit = this.buildCommit(cluster, signals, cycle, false);
@@ -71,18 +76,20 @@ export class CommitKernelService {
    * Apply a commit: persist to immutable log, update trace states.
    */
   private async applyCommit(commit: CommitDelta): Promise<Result<void, DomainError>> {
-    // Persist to immutable commit log
+    // Persist to immutable commit log (all numbers safe from NaN/undefined)
     const result = await this.db.create('commit_log', {
       commit_id: commit.commit_id,
-      cycle: commit.cycle,
-      source_agents: commit.source_agents,
-      convergence_score: commit.convergence_score,
-      is_escalation: commit.is_escalation,
-      novelty_cost: commit.novelty_cost,
-      prediction_error: commit.prediction_error,
-      maturity: commit.maturity,
-      urgency: commit.urgency,
-      changes: commit.changes,
+      cycle: commit.cycle || 0,
+      type: commit.type || 'perceptual',
+      source_agents: commit.source_agents || [],
+      convergence_score: Number(commit.convergence_score) || 0,
+      is_escalation: commit.is_escalation || false,
+      novelty_cost: Number(commit.novelty_cost) || 0,
+      prediction_error: Number(commit.prediction_error) || 0,
+      maturity: Number(commit.maturity) || 0,
+      urgency: Number(commit.urgency) || 0,
+      energy: Number(commit.energy) || 0,
+      changes: commit.changes || {},
     } as any);
 
     if (result.isErr()) {
@@ -236,10 +243,13 @@ export class CommitKernelService {
   }
 
   private computeEnergy(novelty: number, predError: number, urgency: number): number {
-    const wN = this.config.get('kernel.energy_w_novelty');
-    const wP = this.config.get('kernel.energy_w_pred_error');
-    const wU = this.config.get('kernel.energy_w_urgency');
-    return Math.round((novelty * wN + predError * wP + urgency * wU) * 1000) / 1000;
+    const n = Number(novelty) || 0;
+    const p = Number(predError) || 0;
+    const u = Number(urgency) || 0;
+    const wN = this.config.get('kernel.energy_w_novelty') || 0.4;
+    const wP = this.config.get('kernel.energy_w_pred_error') || 0.3;
+    const wU = this.config.get('kernel.energy_w_urgency') || 0.3;
+    return Math.round((n * wN + p * wP + u * wU) * 1000) / 1000;
   }
 
   private buildCommit(

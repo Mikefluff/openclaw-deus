@@ -34,7 +34,7 @@ export class CausalGraphService {
 
     // Policy decisions as action nodes
     const decisions = await this.db.query<{ id: string; action_type: string; decision: string; ripeness_score: number }>(
-      'SELECT id, action_type, decision, ripeness_score FROM policy_decision ORDER BY evaluated_at DESC LIMIT $limit',
+      'SELECT id, action_type, decision, ripeness_score, evaluated_at FROM policy_decision ORDER BY evaluated_at DESC LIMIT $limit',
       { limit: this.config.get('query.causal_decision_limit') },
     );
     if (decisions.isOk()) {
