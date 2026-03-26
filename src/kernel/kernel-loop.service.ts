@@ -332,7 +332,7 @@ export class KernelLoopService {
     return {
       cycle,
       dominant_traces: dominant,
-      top_conflicts: [], // TODO: detect from inhibits edges in trace graph
+      top_conflicts: await this.detectConflicts(),
       active_priorities: recentCommits.filter(c => c.type === 'priority').map(c => c.changes.actions_queued?.[0] || 'unknown'),
       self_world_tension: Math.round(selfWorldTension * 100) / 100,
       prediction_error_hotspots: predErrorHotspots,
@@ -437,6 +437,26 @@ export class KernelLoopService {
       affect: this.affect.getSnapshot(),
       commits,
     };
+  }
+
+  /**
+   * Detect active conflicts from inhibits edges in trace graph.
+   */
+  private async detectConflicts(): Promise<Array<{ trace_a: string; trace_b: string; tension: number }>> {
+    try {
+      const inhibits = await this.traceGraph['db'].query<{ a: string; b: string; w: number }>(
+        `SELECT in.content AS a, out.content AS b, weight AS w
+         FROM inhibits
+         WHERE in.trace_id IN (SELECT trace_id FROM trace WHERE NOT archived AND NOT suppressed AND weight > 0.3)
+         ORDER BY weight DESC LIMIT 5`,
+      );
+      if (inhibits.isErr()) return [];
+      return inhibits.value.map(i => ({
+        trace_a: (i.a || '').slice(0, 50),
+        trace_b: (i.b || '').slice(0, 50),
+        tension: i.w || 0,
+      }));
+    } catch { return []; }
   }
 
   private async buildContext(
