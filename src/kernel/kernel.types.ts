@@ -53,6 +53,10 @@ export interface Trace {
   cycle_distance?: number;      // computed: current_cycle - created_at_cycle
   reactivation_distance?: number; // computed: current_cycle - last_reactivated_cycle
 
+  // Concept space position (adaptive, grows with dimensions)
+  position: number[];           // N-dimensional, expands as dimensions are born
+  velocity: number[];           // momentum for smooth movement
+
   // State
   suppressed: boolean;
   archived: boolean;

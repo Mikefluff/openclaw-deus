@@ -4,6 +4,7 @@ import { DomainError } from '../../common/types/result.types';
 import { SurrealService } from '../../database/surreal.service';
 import { CognitiveConfigService } from '../../cognitive/cognitive-config.service';
 import { Trace, TraceRelation, Signal } from '../kernel.types';
+import { ConceptSpaceService } from '../space/concept-space.service';
 
 /**
  * TraceGraph: Learning memory substrate.
@@ -21,10 +22,17 @@ export class TraceGraphService {
   private cycle = 0;
   private traceIdCounter = 0;
 
+  private conceptSpace!: ConceptSpaceService;
+
   constructor(
     private readonly db: SurrealService,
     private readonly config: CognitiveConfigService,
   ) {}
+
+  /** Set concept space (avoids circular dependency in DI) */
+  setConceptSpace(cs: ConceptSpaceService): void {
+    this.conceptSpace = cs;
+  }
 
   getCycle(): number { return this.cycle; }
   tick(): number { return ++this.cycle; }
@@ -41,6 +49,11 @@ export class TraceGraphService {
     confidence?: number;
     emotional_charge?: number;
   }): Promise<Result<Trace, DomainError>> {
+    // Compute initial position in concept space
+    const position = this.conceptSpace
+      ? await this.conceptSpace.projectNewTrace(data.content)
+      : [];
+
     const trace: Omit<Trace, 'id'> = {
       trace_id: `T${Date.now()}_${this.traceIdCounter++}`,
       source_type: data.source_type,
@@ -55,6 +68,8 @@ export class TraceGraphService {
       last_reactivated_cycle: this.cycle,
       reactivation_history: [this.cycle],
       created_at_cycle: this.cycle,
+      position,
+      velocity: new Array(position.length).fill(0),
       suppressed: false,
       archived: false,
     };
@@ -98,8 +113,12 @@ export class TraceGraphService {
       }
     }
 
+    // CONFLICT DETECTION → DIMENSION BIRTH
+    if (this.conceptSpace && activatedTraces.length > 1) {
+      await this.detectAndResolveConflicts(activatedTraces);
+    }
+
     // Auto-create edges between traces created/activated in the same cycle (bootstrap)
-    // This ensures the graph has structure from the first message
     if (activatedTraces.length > 1) {
       for (let i = 0; i < activatedTraces.length; i++) {
         for (let j = i + 1; j < Math.min(activatedTraces.length, i + 4); j++) {
@@ -388,6 +407,32 @@ export class TraceGraphService {
     }
 
     return bestMatch;
+  }
+
+  /**
+   * Detect spatial conflicts between recently activated traces.
+   * If conflict found → birth new dimension.
+   */
+  private async detectAndResolveConflicts(activatedTraceIds: string[]): Promise<void> {
+    // Get the actual traces
+    const traces: Trace[] = [];
+    for (const tid of activatedTraceIds.slice(0, 10)) {
+      const t = await this.findById(tid);
+      if (t) traces.push(t);
+    }
+
+    // Check all pairs for conflicts
+    for (let i = 0; i < traces.length; i++) {
+      for (let j = i + 1; j < traces.length; j++) {
+        const conflict = this.conceptSpace.detectConflict(traces[i], traces[j]);
+        if (conflict) {
+          // BIRTH NEW DIMENSION
+          await this.conceptSpace.birthDimension(conflict, this.cycle);
+          conflict.resolved = true;
+          return; // one dimension birth per cycle max
+        }
+      }
+    }
   }
 
   /** Word-level Jaccard similarity (no external dependency) */

@@ -11,6 +11,7 @@ import { AffectiveStateService } from './affect/affective-state.service';
 import { NarrativeService } from './narrative/narrative.service';
 import { SubstrateBridgeService } from './substrate-bridge.service';
 import { ActiveCognitionService } from './cognition/active-cognition.service';
+import { ConceptSpaceService } from './space/concept-space.service';
 import { WorldModelModule } from '../world-model/world-model.module';
 import { IntentionModule } from '../intention/intention.module';
 import { KnowledgeModule } from '../knowledge/knowledge.module';
@@ -37,6 +38,7 @@ import { PolicyModule } from '../policy/policy.module';
     NarrativeService,
     SubstrateBridgeService,
     ActiveCognitionService,
+    ConceptSpaceService,
     SensoryAgent,
     PredictiveAgent,
     AffectiveAgent,
@@ -51,11 +53,14 @@ import { PolicyModule } from '../policy/policy.module';
     NarrativeService,
     SubstrateBridgeService,
     ActiveCognitionService,
+    ConceptSpaceService,
   ],
 })
 export class KernelModule implements OnModuleInit {
   constructor(
     private readonly kernelLoop: KernelLoopService,
+    private readonly traceGraph: TraceGraphService,
+    private readonly conceptSpace: ConceptSpaceService,
     private readonly sensory: SensoryAgent,
     private readonly predictive: PredictiveAgent,
     private readonly affective: AffectiveAgent,
@@ -63,7 +68,11 @@ export class KernelModule implements OnModuleInit {
     private readonly strategic: StrategicAgent,
   ) {}
 
-  onModuleInit() {
+  async onModuleInit() {
+    // Wire concept space to trace graph (avoids circular DI)
+    this.traceGraph.setConceptSpace(this.conceptSpace);
+    await this.conceptSpace.loadDimensions();
+
     // Register agents into the kernel swarm
     this.kernelLoop.registerAgent(this.sensory);
     this.kernelLoop.registerAgent(this.predictive);
