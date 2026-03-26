@@ -740,9 +740,9 @@ export class ConceptSpaceService {
     for (const trace of traces.value) {
       if (!trace.position || trace.position.length === 0) continue;
 
-      // Find nearest attractor
-      let nearestCentroid = trace.position; // if no clusters, don't move
-      let nearestDist = Infinity;
+      // Find nearest attractor (fall back to origin if no clusters)
+      let nearestCentroid = clusters.length === 0 ? trace.position.map(() => 0) : trace.position;
+      let nearestDist = clusters.length === 0 ? this.distance(trace.position, nearestCentroid) : Infinity;
       for (const cluster of clusters) {
         const dist = this.distance(trace.position, cluster.centroid);
         if (dist < nearestDist && dist > 0.01) { // don't attract to self

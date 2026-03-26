@@ -19,7 +19,6 @@ import { GraphLinkingService } from './graph-linking.service';
 import { CognitiveConfigService } from './cognitive-config.service';
 import { WorldModelService } from '../world-model/world-model.service';
 import { BeliefsService } from '../beliefs/beliefs.service';
-import { SimilarityProvider } from './similarity.provider';
 import { TemporalCognitionService } from './temporal-cognition.service';
 import { KernelLoopService } from '../kernel/kernel-loop.service';
 import { KernelOutput } from '../kernel/kernel.types';

@@ -208,6 +208,8 @@ export class AffectiveStateService implements OnModuleInit {
       dSigmoid[j] = this.lastHormones[j] * (1 - this.lastHormones[j]);
     }
 
+    // NOTE: W1 gradient is approximate — true gradient requires temporal credit assignment
+    // through config deltas. Using REINFORCE-style sign-based update as practical approximation.
     // Update W1: ∂Loss/∂W1[i][j] = ∂Loss/∂h_j × ∂h_j/∂logit_j × ∂logit_j/∂W1[i][j]
     //                                = dL_dH[j] × dSigmoid[j] × acc[i]
     for (let i = 0; i < N_ACCUMULATORS; i++) {

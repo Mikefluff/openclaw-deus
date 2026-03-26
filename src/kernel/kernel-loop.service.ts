@@ -11,6 +11,7 @@ import { CognitiveConfigService } from '../cognitive/cognitive-config.service';
 import { AffectiveStateService } from './affect/affective-state.service';
 import { SubstrateBridgeService } from './substrate-bridge.service';
 import { ActiveCognitionService } from './cognition/active-cognition.service';
+import { NarrativeService } from './narrative/narrative.service';
 
 /**
  * KernelLoop: Continuous event loop with external interrupts.
@@ -69,8 +70,8 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
   // LLM consultation + anti-rumination tracking
   private idleCyclesSinceLastLlm = 0;
   private idleCyclesWithoutProgress = 0;
-  private lastIdleTraceCount = 0;
-  private lastIdleErrorSum = 0;
+  private lastIdleTraceCount = Infinity;
+  private lastIdleErrorSum = Infinity;
 
   // Learning mode: proactive domain study during idle
   private learningDomain: string | null = null;
@@ -87,6 +88,7 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
     private readonly affect: AffectiveStateService,
     private readonly substrateBridge: SubstrateBridgeService,
     private readonly activeCognition: ActiveCognitionService,
+    private readonly narrative: NarrativeService,
   ) {}
 
   onModuleInit(): void {
@@ -362,6 +364,9 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
     // Apply commits → world model (actually update the picture of reality)
     await this.substrateBridge.applyCommitsToWorldModel(cycleCommitsAll);
 
+    // Narrative compaction: compress old commits into narrative frames
+    await this.narrative.compact();
+
     // Resolve pending callers
     const output = this.buildOutput(cycleCommitsAll);
     const resolver = this.pendingResolvers.shift();
@@ -406,7 +411,7 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
 
     // ADAPTIVE TEACHER: not fixed interval — triggered by accumulated error mass
     const domainErrors = this.learningDomain
-      ? this.allCommits.filter(c => c.prediction_error > 0.2).length
+      ? this.allCommits.slice(-this.learningCycleCount * 3).filter(c => c.prediction_error > 0.2).length
       : 0;
     const isLearning = this.learningDomain !== null
       && (domainErrors > 3 || this.idleCyclesSinceLastLlm > 5); // error mass OR consolidation gap
