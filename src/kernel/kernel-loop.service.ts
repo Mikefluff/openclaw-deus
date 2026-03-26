@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { Result, ok, err } from 'neverthrow';
 import { DomainError } from '../common/types/result.types';
 import {
@@ -8,25 +8,20 @@ import {
 import { TraceGraphService } from './memory/trace-graph.service';
 import { CommitKernelService } from './commit/commit-kernel.service';
 import { CognitiveConfigService } from '../cognitive/cognitive-config.service';
-import { AffectiveStateService, AffectiveSnapshot } from './affect/affective-state.service';
+import { AffectiveStateService } from './affect/affective-state.service';
 
 /**
- * KernelLoop: Self-recursive inner dialogue.
+ * KernelLoop: Continuous event loop with external interrupts.
  *
- * Input → agents signal → traces activate → convergence → commit
- *       → commit changes world → NEW signals → LOOP
- *       → until ENERGY drops below threshold (not counter)
+ * NOT call-and-return. A LIVING PROCESS:
+ * - Runs continuously in background
+ * - External events (messages) go into queue → interrupt current processing
+ * - Between events: self-reflects, consolidates, decays
+ * - Sleep duration modulated by arousal (high → tight loop, low → rest)
  *
- * Output = remainder after stabilization:
- *   what changed, what became clearer, what remains tense, what actions matured.
- *
- * Guardrails:
- * - No 2 consecutive self_model commits without new independent evidence
- * - Each iteration must reduce uncertainty OR increase explanatory power
- * - 3 cycles of only internal confirmations without orthogonal signals = suspected hallucination
+ * Like a real brain: always running. External stimuli INTERRUPT the stream,
+ * they don't CREATE it.
  */
-
-// All constants from CognitiveConfigService — no hardcoded magic numbers
 
 export interface CognitiveAgent {
   id: string;
@@ -44,12 +39,34 @@ export interface AgentContext {
   llm_budget: { remaining: number; used: number; total: number };
 }
 
+// Event types that can interrupt the loop
+interface KernelEvent {
+  type: 'message' | 'system' | 'episode_outcome';
+  content: string;
+  payload?: Record<string, unknown>;
+  timestamp: number; // monotonic
+}
+
 @Injectable()
-export class KernelLoopService {
+export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(KernelLoopService.name);
   private agents: CognitiveAgent[] = [];
-
   private llmCallsUsed = 0;
+
+  // Event queue: external interrupts
+  private eventQueue: KernelEvent[] = [];
+  private processing = false;
+  private running = false;
+  private loopHandle: ReturnType<typeof setTimeout> | null = null;
+
+  // State across cycles
+  private allCommits: CommitDelta[] = [];
+  private phenomenalState: PhenomenalState | null = null;
+  private guard: RecursionGuard = { consecutive_self_model_commits: 0, uncertainty_trend: [], orthogonal_signal_deficit: 0 };
+
+  // Promise resolvers for external callers waiting on results
+  private pendingResolvers: Array<{ resolve: (output: KernelOutput) => void; eventId: number }> = [];
+  private eventIdCounter = 0;
 
   constructor(
     private readonly traceGraph: TraceGraphService,
@@ -58,6 +75,18 @@ export class KernelLoopService {
     private readonly affect: AffectiveStateService,
   ) {}
 
+  onModuleInit(): void {
+    this.running = true;
+    this.scheduleNext(100); // start the loop
+    this.logger.log('Kernel event loop started');
+  }
+
+  onModuleDestroy(): void {
+    this.running = false;
+    if (this.loopHandle) clearTimeout(this.loopHandle);
+    this.logger.log('Kernel event loop stopped');
+  }
+
   registerAgent(agent: CognitiveAgent): void {
     this.agents.push(agent);
     this.agents.sort((a, b) => a.rank - b.rank);
@@ -65,151 +94,259 @@ export class KernelLoopService {
   }
 
   /**
-   * THINK: the core recursive loop.
-   * Not "process message" — "experience input and stabilize".
+   * Submit an external event for processing. Returns when the event has been processed
+   * and the kernel has stabilized.
    */
   async think(input: string): Promise<Result<KernelOutput, DomainError>> {
-    const allCommits: CommitDelta[] = [];
-    let totalSignals = 0;
-    let phenomenalState: PhenomenalState | null = null;
+    const eventId = this.eventIdCounter++;
 
-    // Reset LLM budget for this invocation
+    this.eventQueue.push({
+      type: 'message',
+      content: input,
+      timestamp: Date.now(),
+    });
+
+    // Wake up the loop immediately
+    if (this.loopHandle) clearTimeout(this.loopHandle);
+    this.scheduleNext(0);
+
+    // Wait for processing to complete
+    return new Promise<Result<KernelOutput, DomainError>>((resolve) => {
+      this.pendingResolvers.push({
+        resolve: (output) => resolve(ok(output)),
+        eventId,
+      });
+
+      // Timeout safety: don't wait forever
+      setTimeout(() => {
+        const idx = this.pendingResolvers.findIndex(r => r.eventId === eventId);
+        if (idx >= 0) {
+          this.pendingResolvers.splice(idx, 1);
+          resolve(ok(this.buildOutput(this.allCommits.slice(-10))));
+        }
+      }, 60000);
+    });
+  }
+
+  /**
+   * Inject pain/reward from outside (episode outcomes, operator frustration).
+   */
+  injectPain(source: string, intensity: number): void {
+    this.affect.inflictPain(source, intensity);
+    this.eventQueue.push({ type: 'episode_outcome', content: `Pain: ${source}`, payload: { intensity }, timestamp: Date.now() });
+    this.wakeUp();
+  }
+
+  injectReward(amount: number): void {
+    this.affect.reward(amount);
+    this.eventQueue.push({ type: 'episode_outcome', content: `Reward: ${amount}`, payload: { amount }, timestamp: Date.now() });
+    this.wakeUp();
+  }
+
+  // ═══════════════════════════════════════════
+  // THE LOOP
+  // ═══════════════════════════════════════════
+
+  private scheduleNext(delayMs: number): void {
+    this.loopHandle = setTimeout(() => this.tick().catch(e => this.logger.error(`Loop error: ${e}`)), delayMs);
+  }
+
+  private wakeUp(): void {
+    if (this.loopHandle) clearTimeout(this.loopHandle);
+    if (!this.processing) this.scheduleNext(0);
+  }
+
+  /**
+   * One tick of the event loop.
+   * Either: process an external event, OR self-reflect.
+   */
+  private async tick(): Promise<void> {
+    if (!this.running || this.processing) return;
+    this.processing = true;
+
+    try {
+      const cycle = this.traceGraph.tick();
+
+      // Check for external events
+      const event = this.eventQueue.shift();
+
+      if (event) {
+        // EXTERNAL EVENT: interrupt, process fully
+        await this.processExternalEvent(event, cycle);
+      } else {
+        // NO EVENT: self-reflect (idle thinking)
+        await this.idleReflection(cycle);
+      }
+    } finally {
+      this.processing = false;
+    }
+
+    // Schedule next tick: arousal modulates sleep duration
+    if (this.running) {
+      const sleepMs = this.computeSleepDuration();
+      this.scheduleNext(sleepMs);
+    }
+  }
+
+  /**
+   * Process an external event: run agents, produce commits, reflect until stable.
+   */
+  private async processExternalEvent(event: KernelEvent, startCycle: number): Promise<void> {
     this.llmCallsUsed = 0;
-    const llmBudget = this.config.get('kernel.llm_budget_per_think');
+    const cycleCommitsAll: CommitDelta[] = [];
+    const maxIterations = this.config.get('kernel.max_iterations');
+    const energyThreshold = this.config.get('kernel.energy_stable_threshold');
+    const hallucinationLimit = this.config.get('kernel.hallucination_cycles');
 
-    const guard: RecursionGuard = {
-      consecutive_self_model_commits: 0,
-      uncertainty_trend: [],
-      orthogonal_signal_deficit: 0,
-    };
+    // Reset guardrails for new event
+    this.guard = { consecutive_self_model_commits: 0, uncertainty_trend: [], orthogonal_signal_deficit: 0 };
+
+    this.logger.log(`Kernel: processing ${event.type} "${event.content.slice(0, 50)}..."`);
 
     let prevEnergy = Infinity;
-    const maxIterations = this.config.get('kernel.max_iterations');
-    const hallucinationLimit = this.config.get('kernel.hallucination_cycles');
-    const energyThreshold = this.config.get('kernel.energy_stable_threshold');
-
-    this.logger.log(`Kernel.think("${input.slice(0, 50)}...")`);
 
     for (let iteration = 0; iteration < maxIterations; iteration++) {
-      const cycle = this.traceGraph.tick();
+      const cycle = iteration === 0 ? startCycle : this.traceGraph.tick();
       const isReflection = iteration > 0;
 
-      // Build context (what system knows about itself right now)
-      const context = await this.buildContext(cycle, allCommits, phenomenalState, isReflection);
+      const context = await this.buildContext(cycle, cycleCommitsAll, this.phenomenalState, isReflection);
 
-      // What to process: raw input OR self-reflection
-      const iterationInput = isReflection
-        ? this.buildReflectionInput(allCommits.slice(-3), context.time_sense, phenomenalState)
-        : input;
+      // Input: external event on iter 0, self-reflection on iter 1+
+      const input = isReflection
+        ? this.buildReflectionInput(cycleCommitsAll.slice(-3), context.time_sense, this.phenomenalState)
+        : event.content;
 
-      // --- Run all agents in parallel ---
-      const signals = await this.runAgents(iterationInput, context, cycle);
-      totalSignals += signals.length;
+      // Run agents
+      const signals = await this.runAgents(input, context, cycle);
 
-      // --- Guardrail: check for hallucination loop ---
-      const hasOrthogonal = this.hasOrthogonalSignals(signals, allCommits);
-      if (isReflection && !hasOrthogonal) {
-        guard.orthogonal_signal_deficit++;
-        if (guard.orthogonal_signal_deficit >= hallucinationLimit) {
-          this.logger.warn(`Cycle ${cycle}: suspected hallucination loop — ${hallucinationLimit} cycles without orthogonal signals`);
-          break;
+      // Guardrail: hallucination check
+      if (isReflection) {
+        const hasOrtho = this.hasOrthogonalSignals(signals, cycleCommitsAll);
+        if (!hasOrtho) {
+          this.guard.orthogonal_signal_deficit++;
+          if (this.guard.orthogonal_signal_deficit >= hallucinationLimit) {
+            this.logger.warn(`Cycle ${cycle}: hallucination guard — stopping`);
+            break;
+          }
+        } else {
+          this.guard.orthogonal_signal_deficit = 0;
         }
-      } else {
-        guard.orthogonal_signal_deficit = 0;
       }
 
-      // --- Feed into commit kernel ---
+      // Commit kernel
       const commitResult = await this.commitKernel.processCycle(signals);
       if (commitResult.isErr()) break;
 
-      const cycleCommits = commitResult.value;
-
-      // --- Guardrail: no 2 consecutive self_model commits without new evidence ---
-      const filteredCommits = cycleCommits.filter(c => {
+      // Guardrail: self_model blocking
+      const filteredCommits = commitResult.value.filter(c => {
         if (c.type === 'self_model') {
-          guard.consecutive_self_model_commits++;
-          if (guard.consecutive_self_model_commits > 1) {
-            this.logger.warn(`Cycle ${cycle}: blocked consecutive self_model commit without new evidence`);
-            return false;
-          }
+          this.guard.consecutive_self_model_commits++;
+          if (this.guard.consecutive_self_model_commits > 1) return false;
         } else {
-          guard.consecutive_self_model_commits = 0;
+          this.guard.consecutive_self_model_commits = 0;
         }
         return true;
       });
 
-      allCommits.push(...filteredCommits);
+      cycleCommitsAll.push(...filteredCommits);
+      this.allCommits.push(...filteredCommits);
 
-      // --- Affect: learned model processes commits, returns config deltas ---
-      const currentTimeSense = await this.commitKernel.computeTimeSense();
-      const { configDeltas } = this.affect.processCommits(filteredCommits, currentTimeSense);
-
-      // Apply learned config modulations
+      // Affect processes commits
+      const timeSense = await this.commitKernel.computeTimeSense();
+      const { configDeltas } = this.affect.processCommits(filteredCommits, timeSense);
       for (const [key, delta] of configDeltas) {
-        this.config.adjust(key, delta, `affect:gradient_step_${this.affect.getSnapshot().loss.toFixed(3)}`);
+        this.config.adjust(key, delta, `affect:gradient`);
       }
 
-      // --- Compute stabilization energy ---
-      const stabilization = this.computeStabilization(filteredCommits, allCommits, prevEnergy);
+      // Stabilization
+      const stabilization = this.computeStabilization(filteredCommits, cycleCommitsAll, prevEnergy);
       prevEnergy = stabilization.energy;
 
-      // Track uncertainty trend
-      guard.uncertainty_trend.push(stabilization.energy);
-      if (guard.uncertainty_trend.length > 5) guard.uncertainty_trend.shift();
+      this.guard.uncertainty_trend.push(stabilization.energy);
+      if (this.guard.uncertainty_trend.length > 5) this.guard.uncertainty_trend.shift();
 
-      // --- Guardrail: uncertainty must decrease ---
-      if (guard.uncertainty_trend.length >= 3 && isReflection) {
-        const recent = guard.uncertainty_trend.slice(-3);
-        const increasing = recent[2] > recent[1] && recent[1] > recent[0];
-        if (increasing) {
-          this.logger.warn(`Cycle ${cycle}: uncertainty increasing over 3 cycles — stopping to prevent runaway`);
+      // Trace forgetting
+      await this.traceGraph.forget();
+
+      // Phenomenal state
+      this.phenomenalState = await this.capturePhenomenalState(cycle, cycleCommitsAll);
+
+      this.logger.log(`Cycle ${cycle}: ${signals.length} signals, ${filteredCommits.length} commits, energy=${stabilization.energy.toFixed(3)}`);
+
+      // No commits → stable
+      if (filteredCommits.length === 0) {
+        this.logger.log(`Cycle ${cycle}: converged (no commits)`);
+        break;
+      }
+
+      // Energy stable
+      if (stabilization.energy < energyThreshold) {
+        this.logger.log(`Cycle ${cycle}: converged (energy=${stabilization.energy.toFixed(3)})`);
+        break;
+      }
+
+      // Uncertainty increasing
+      if (this.guard.uncertainty_trend.length >= 3 && isReflection) {
+        const recent = this.guard.uncertainty_trend.slice(-3);
+        if (recent[2] > recent[1] && recent[1] > recent[0]) {
+          this.logger.warn(`Cycle ${cycle}: uncertainty increasing — stopping`);
           break;
         }
       }
+    }
 
-      // Apply trace forgetting
-      await this.traceGraph.forget();
+    // Resolve pending callers
+    const output = this.buildOutput(cycleCommitsAll);
+    const resolver = this.pendingResolvers.shift();
+    if (resolver) resolver.resolve(output);
+  }
 
-      // Capture phenomenal state (includes affective snapshot)
-      phenomenalState = await this.capturePhenomenalState(cycle, allCommits);
+  /**
+   * Idle reflection: the brain thinking between external events.
+   * Lighter processing — no LLM, just trace dynamics and affect.
+   */
+  private async idleReflection(cycle: number): Promise<void> {
+    // Only reflect if there's something in awareness
+    const activeTraces = await this.traceGraph.getActiveTraces(5);
+    if (activeTraces.isErr() || activeTraces.value.length === 0) return;
 
-      this.logger.log(
-        `Cycle ${cycle}: ${signals.length} signals, ${cycleCommits.length} commits, ` +
-        `energy=${stabilization.energy.toFixed(3)} (threshold=${energyThreshold})`,
-      );
+    // Run only fast-path agents (no LLM budget for idle)
+    const context = await this.buildContext(cycle, this.allCommits.slice(-5), this.phenomenalState, true);
+    context.llm_budget = { remaining: 0, used: 0, total: 0 }; // no LLM during idle
 
-      // If no commits survived filtering → stable
-      if (filteredCommits.length === 0) {
-        this.logger.log(`Cycle ${cycle}: no commits after filtering — converged`);
-        break;
-      }
+    const signals = await this.runAgents('[Idle reflection — what remains in awareness?]', context, cycle);
 
-      // --- Energy-based stop condition ---
-      if (stabilization.energy < energyThreshold) {
-        this.logger.log(`Cycle ${cycle}: STABLE after ${iteration + 1} iterations (energy=${stabilization.energy.toFixed(3)})`);
-        break;
+    if (signals.length > 0) {
+      const commitResult = await this.commitKernel.processCycle(signals);
+      if (commitResult.isOk() && commitResult.value.length > 0) {
+        this.allCommits.push(...commitResult.value);
+        const timeSense = await this.commitKernel.computeTimeSense();
+        this.affect.processCommits(commitResult.value, timeSense);
       }
     }
 
-    // Final time sense
-    const timeSense = await this.commitKernel.computeTimeSense();
-    if (!phenomenalState) {
-      phenomenalState = await this.capturePhenomenalState(this.traceGraph.getCycle(), allCommits);
-    }
+    // Forgetting happens during idle too
+    await this.traceGraph.forget();
+  }
 
-    // Build output: remainder after stabilization
-    const output = this.buildOutput(allCommits, timeSense, phenomenalState);
+  /**
+   * Sleep duration modulated by arousal.
+   * High arousal → short sleep (50ms, tight loop, active thinking)
+   * Low arousal → long sleep (2000ms, resting, minimal processing)
+   */
+  private computeSleepDuration(): number {
+    const affect = this.affect.getSnapshot();
+    const hasEvents = this.eventQueue.length > 0;
 
-    this.logger.log(
-      `Kernel: ${output.converged ? 'CONVERGED' : 'MAX_ITER'} — ` +
-      `${allCommits.length} commits, dilation=${timeSense.dilation}`,
-    );
+    if (hasEvents) return 0; // immediate if events pending
 
-    return ok(output);
+    // Arousal 0→2000ms, 1→50ms
+    const baseSleep = 2000 - affect.arousal * 1950;
+    return Math.max(50, Math.min(5000, baseSleep));
   }
 
   // ═══════════════════════════════════════════
-  // PRIVATE
+  // AGENT RUNNER
   // ═══════════════════════════════════════════
 
   private async runAgents(input: string, context: AgentContext, cycle: number): Promise<Signal[]> {
@@ -226,118 +363,110 @@ export class KernelLoopService {
       .filter(s => s.confidence >= 0.1)
       .map(s => ({ ...s, cycle }));
 
-    // Track LLM usage from slow-path signals
     this.llmCallsUsed += allSignals.filter(s => s.used_slow_path).length;
-
     return allSignals;
   }
 
-  /**
-   * Energy-based stabilization criterion.
-   * NOT a counter. Looks at:
-   * - convergence pressure drop
-   * - absence of new high-energy traces
-   * - small delta between consecutive commits
-   * - prediction error trend
-   * - no pending escalations
-   */
-  private computeStabilization(
-    cycleCommits: CommitDelta[],
-    allCommits: CommitDelta[],
-    prevEnergy: number,
-  ): StabilizationState {
+  // ═══════════════════════════════════════════
+  // STABILIZATION
+  // ═══════════════════════════════════════════
+
+  private computeStabilization(cycleCommits: CommitDelta[], allCommits: CommitDelta[], prevEnergy: number): StabilizationState {
     if (cycleCommits.length === 0) {
       return { convergence_pressure: 0, new_high_energy_traces: 0, commit_delta_magnitude: 0, prediction_error_trend: 0, pending_escalations: 0, energy: 0, stable: true };
     }
 
-    // Convergence pressure: total energy of this cycle's commits
     const convergencePressure = cycleCommits.reduce((s, c) => s + c.energy, 0) / cycleCommits.length;
-
-    // New high-energy traces
     const newHighEnergy = cycleCommits.filter(c => c.novelty_cost > 0.7).length;
-
-    // Delta between this and last commit
     const lastCommit = allCommits.length > 1 ? allCommits[allCommits.length - 2] : null;
-    const commitDelta = lastCommit
-      ? Math.abs(cycleCommits[0].energy - lastCommit.energy)
-      : cycleCommits[0].energy;
-
-    // Prediction error trend
+    const commitDelta = lastCommit ? Math.abs(cycleCommits[0].energy - lastCommit.energy) : cycleCommits[0].energy;
     const recentErrors = allCommits.slice(-5).map(c => c.prediction_error);
-    const predTrend = recentErrors.length > 1
-      ? recentErrors[recentErrors.length - 1] - recentErrors[0]
-      : 0;
-
-    // Pending escalations
+    const predTrend = recentErrors.length > 1 ? recentErrors[recentErrors.length - 1] - recentErrors[0] : 0;
     const escalations = cycleCommits.filter(c => c.is_escalation).length;
 
-    const wNovelty = this.config.get('kernel.energy_w_novelty');
-    const wPredErr = this.config.get('kernel.energy_w_pred_error');
-    const wUrgency = this.config.get('kernel.energy_w_urgency');
+    const wNovelty = this.config.get('kernel.energy_w_novelty') || 0.4;
+    const wPredErr = this.config.get('kernel.energy_w_pred_error') || 0.3;
+    const wUrgency = this.config.get('kernel.energy_w_urgency') || 0.3;
 
-    const energy = convergencePressure * wNovelty
-      + newHighEnergy * 0.2
-      + commitDelta * wPredErr
-      + Math.max(0, predTrend) * 0.15
-      + escalations * wUrgency;
+    const energy = convergencePressure * wNovelty + newHighEnergy * 0.2 + commitDelta * wPredErr + Math.max(0, predTrend) * 0.15 + escalations * wUrgency;
+    const threshold = this.config.get('kernel.energy_stable_threshold') || 0.1;
 
-    const threshold = this.config.get('kernel.energy_stable_threshold');
-
-    return {
-      convergence_pressure: convergencePressure,
-      new_high_energy_traces: newHighEnergy,
-      commit_delta_magnitude: commitDelta,
-      prediction_error_trend: predTrend,
-      pending_escalations: escalations,
-      energy: Math.round(energy * 1000) / 1000,
-      stable: energy < threshold,
-    };
+    return { convergence_pressure: convergencePressure, new_high_energy_traces: newHighEnergy, commit_delta_magnitude: commitDelta, prediction_error_trend: predTrend, pending_escalations: escalations, energy: Math.round(energy * 1000) / 1000, stable: energy < threshold };
   }
 
-  /**
-   * Check if signals contain NEW orthogonal information (not self-confirmation).
-   */
-  private hasOrthogonalSignals(signals: Signal[], previousCommits: CommitDelta[]): boolean {
-    const previousContents = new Set(previousCommits.map(c => c.changes.traces_activated).flat());
-    return signals.some(s =>
-      s.targets.some(t => !previousContents.has(t)) || s.novelty_cost > 0.5,
-    );
-  }
+  // ═══════════════════════════════════════════
+  // CONTEXT BUILDING
+  // ═══════════════════════════════════════════
 
-  /**
-   * Capture phenomenal state: what the system "experiences" right now.
-   */
-  private async capturePhenomenalState(cycle: number, commits: CommitDelta[]): Promise<PhenomenalState> {
-    const activeTraces = await this.traceGraph.getActiveTraces(10);
-    const dominant = activeTraces.isOk()
-      ? activeTraces.value.map(t => ({ trace_id: t.trace_id, content: t.content, weight: t.weight }))
-      : [];
-
-    const recentCommits = commits.slice(-5);
-    const avgNovelty = recentCommits.length > 0
-      ? recentCommits.reduce((s, c) => s + c.novelty_cost, 0) / recentCommits.length
-      : 0;
-    const avgUrgency = recentCommits.length > 0
-      ? recentCommits.reduce((s, c) => s + c.urgency, 0) / recentCommits.length
-      : 0;
-
-    // Affective state: real hormonal snapshot, not keyword matching
-    const affectSnapshot = this.affect.getSnapshot();
-
+  private async buildContext(cycle: number, commits: CommitDelta[], phenomenalState: PhenomenalState | null, isReflection: boolean): Promise<AgentContext> {
     const timeSense = await this.commitKernel.computeTimeSense();
-
-    // Self-world tension: cortisol + pain as proxy for model disagreement
-    const selfWorldTension = (affectSnapshot.hormones.cortisol + affectSnapshot.pain.intensity) / 2;
-
-    // Prediction error hotspots from recent commits
-    const predErrorHotspots = recentCommits
-      .filter(c => c.prediction_error > 0.2)
-      .map(c => ({ domain: c.source_agents.join('+'), error: c.prediction_error }));
+    const activeTraces = await this.traceGraph.getActiveTraces(10);
 
     return {
       cycle,
-      dominant_traces: dominant,
-      top_conflicts: await this.detectConflicts(),
+      recent_commits: commits.slice(-5),
+      time_sense: timeSense,
+      active_traces: activeTraces.isOk() ? activeTraces.value.map(t => ({ trace_id: t.trace_id, content: t.content, weight: t.weight })) : [],
+      phenomenal_state: phenomenalState,
+      is_reflection: isReflection,
+      llm_budget: {
+        remaining: Math.max(0, (this.config.get('kernel.llm_budget_per_think') || 8) - this.llmCallsUsed),
+        used: this.llmCallsUsed,
+        total: this.config.get('kernel.llm_budget_per_think') || 8,
+      },
+    };
+  }
+
+  // ═══════════════════════════════════════════
+  // REFLECTION INPUT
+  // ═══════════════════════════════════════════
+
+  private buildReflectionInput(recentCommits: CommitDelta[], timeSense: TimeSense, phenomenalState: PhenomenalState | null): string {
+    if (recentCommits.length === 0) return '[Idle — nothing in recent awareness]';
+
+    const parts: string[] = ['[Self-reflection]'];
+    for (const c of recentCommits) {
+      parts.push(`- ${c.type} (${c.source_agents.join('+')}): novelty=${c.novelty_cost.toFixed(2)}, urgency=${c.urgency.toFixed(2)}`);
+    }
+
+    if (phenomenalState) {
+      const affect = this.affect.getSnapshot();
+      if (affect.pain.intensity > 0.3) parts.push(`[PAIN: ${affect.pain.source} (${affect.pain.intensity.toFixed(2)})]`);
+      if (affect.hormones.cortisol > 0.5) parts.push(`[STRESS: cortisol=${affect.hormones.cortisol.toFixed(2)}]`);
+      if (affect.hormones.dopamine > 0.5) parts.push(`[REWARD: dopamine=${affect.hormones.dopamine.toFixed(2)}]`);
+      parts.push(`[Mode: ${affect.mode}, valence=${affect.valence}, arousal=${affect.arousal}]`);
+      if (phenomenalState.dominant_traces.length > 0) {
+        parts.push(`[Awareness: ${phenomenalState.dominant_traces.slice(0, 3).map(t => t.content.slice(0, 40)).join('; ')}]`);
+      }
+    }
+
+    return parts.join('\n');
+  }
+
+  // ═══════════════════════════════════════════
+  // GUARDRAILS
+  // ═══════════════════════════════════════════
+
+  private hasOrthogonalSignals(signals: Signal[], previousCommits: CommitDelta[]): boolean {
+    const previousContents = new Set(previousCommits.map(c => c.changes.traces_activated).flat());
+    return signals.some(s => s.targets.some(t => !previousContents.has(t)) || s.novelty_cost > 0.5);
+  }
+
+  // ═══════════════════════════════════════════
+  // PHENOMENAL STATE
+  // ═══════════════════════════════════════════
+
+  private async capturePhenomenalState(cycle: number, commits: CommitDelta[]): Promise<PhenomenalState> {
+    const activeTraces = await this.traceGraph.getActiveTraces(10);
+    const dominant = activeTraces.isOk() ? activeTraces.value.map(t => ({ trace_id: t.trace_id, content: t.content, weight: t.weight })) : [];
+    const recentCommits = commits.slice(-5);
+    const affectSnapshot = this.affect.getSnapshot();
+    const timeSense = await this.commitKernel.computeTimeSense();
+    const selfWorldTension = (affectSnapshot.hormones.cortisol + affectSnapshot.pain.intensity) / 2;
+    const predErrorHotspots = recentCommits.filter(c => c.prediction_error > 0.2).map(c => ({ domain: c.source_agents.join('+'), error: c.prediction_error }));
+
+    return {
+      cycle, dominant_traces: dominant, top_conflicts: await this.detectConflicts(),
       active_priorities: recentCommits.filter(c => c.type === 'priority').map(c => c.changes.actions_queued?.[0] || 'unknown'),
       self_world_tension: Math.round(selfWorldTension * 100) / 100,
       prediction_error_hotspots: predErrorHotspots,
@@ -347,146 +476,41 @@ export class KernelLoopService {
     };
   }
 
-  /**
-   * Build reflection input: what the system tells ITSELF.
-   */
-  private buildReflectionInput(
-    recentCommits: CommitDelta[],
-    timeSense: TimeSense,
-    phenomenalState: PhenomenalState | null,
-  ): string {
-    if (recentCommits.length === 0) return '[nothing happened — stable]';
-
-    const parts: string[] = ['[Self-reflection on what just happened]'];
-
-    for (const c of recentCommits) {
-      parts.push(`- ${c.type} commit (${c.source_agents.join('+')}): novelty=${c.novelty_cost.toFixed(2)}, urgency=${c.urgency.toFixed(2)}`);
-    }
-
-    if (phenomenalState) {
-      const affect = this.affect.getSnapshot();
-
-      // Affective coloring of self-reflection
-      if (affect.pain.intensity > 0.3) {
-        parts.push(`[PAIN: ${affect.pain.source} (intensity=${affect.pain.intensity.toFixed(2)}, ${affect.pain.chronic ? 'CHRONIC' : 'acute'})]`);
-      }
-      if (affect.hormones.cortisol > 0.5) {
-        parts.push(`[STRESS: cortisol=${affect.hormones.cortisol.toFixed(2)} — being defensive, narrowing focus]`);
-      }
-      if (affect.hormones.dopamine > 0.5) {
-        parts.push(`[REWARD: dopamine=${affect.hormones.dopamine.toFixed(2)} — exploring, learning faster]`);
-      }
-      if (affect.hormones.norepinephrine > 0.5) {
-        parts.push(`[ALERT: norepinephrine=${affect.hormones.norepinephrine.toFixed(2)} — heightened sensitivity]`);
-      }
-      parts.push(`[Mode: ${affect.mode}, valence=${affect.valence.toFixed(2)}, arousal=${affect.arousal.toFixed(2)}]`);
-
-      if (phenomenalState.temporal_dilation > 1.5) parts.push('[Time stretching — deep processing, high novelty]');
-      if (phenomenalState.dominant_traces.length > 0) {
-        parts.push(`[Dominant in awareness: ${phenomenalState.dominant_traces.slice(0, 3).map(t => t.content.slice(0, 40)).join('; ')}]`);
-      }
-      if (phenomenalState.prediction_error_hotspots.length > 0) {
-        parts.push(`[Prediction errors: ${phenomenalState.prediction_error_hotspots.map(h => `${h.domain}(${h.error.toFixed(2)})`).join(', ')}]`);
-      }
-    }
-
-    return parts.join('\n');
+  private async detectConflicts(): Promise<Array<{ trace_a: string; trace_b: string; tension: number }>> {
+    try {
+      const inhibits = await this.traceGraph['db'].query<{ a: string; b: string; w: number }>(
+        `SELECT in.content AS a, out.content AS b, weight AS w FROM inhibits WHERE in.trace_id IN (SELECT trace_id FROM trace WHERE archived = false AND suppressed = false AND weight > 0.3) ORDER BY weight DESC LIMIT 5`,
+      );
+      if (inhibits.isErr()) return [];
+      return inhibits.value.map(i => ({ trace_a: (i.a || '').slice(0, 50), trace_b: (i.b || '').slice(0, 50), tension: i.w || 0 }));
+    } catch { return []; }
   }
 
-  /**
-   * Build output: the remainder after stabilization.
-   * NOT the full internal process — the RESULT.
-   */
-  private buildOutput(
-    commits: CommitDelta[],
-    timeSense: TimeSense,
-    phenomenalState: PhenomenalState,
-  ): KernelOutput {
+  // ═══════════════════════════════════════════
+  // OUTPUT
+  // ═══════════════════════════════════════════
+
+  private buildOutput(commits: CommitDelta[]): KernelOutput {
     const perceptual = commits.filter(c => c.type === 'perceptual');
     const interpretive = commits.filter(c => c.type === 'interpretive');
-    const priority = commits.filter(c => c.type === 'priority');
     const selfModel = commits.filter(c => c.type === 'self_model');
     const actions = commits.filter(c => c.type === 'action');
-
-    const whatChanged = [
-      ...perceptual.map(c => `Noticed: ${c.changes.traces_created.join(', ') || 'pattern'}`),
-      ...interpretive.map(c => `Understood: convergence from ${c.source_agents.join('+')}`)
-    ];
-
-    const whatClearer = selfModel.map(c => `Self-model update: ${c.changes.self_model_delta ? JSON.stringify(c.changes.self_model_delta).slice(0, 100) : 'identity shift'}`);
-
-    const actionsMatured = actions.flatMap(c => c.changes.actions_queued || []);
-
-    const unresolved = phenomenalState.dominant_traces
-      .filter(t => t.weight > 0.5)
-      .map(t => t.content.slice(0, 80));
-
-    const tensions = phenomenalState.top_conflicts.map(c => `${c.trace_a} ↔ ${c.trace_b}`);
+    const timeSense = { cycle: this.traceGraph.getCycle(), tempo: 0, novelty_rate: 0, prediction_error_rate: 0, trace_decay_velocity: 0, dilation: 1, rhythm_phase: 'active' as const };
 
     return {
       total_cycles: this.traceGraph.getCycle(),
       total_commits: commits.length,
-      converged: commits.length === 0 || (commits.length > 0 && commits[commits.length - 1].energy < this.config.get('kernel.energy_stable_threshold')),
-      convergence_reason: commits.length === 0 ? 'no signals'
-        : commits[commits.length - 1].energy < this.config.get('kernel.energy_stable_threshold') ? 'energy below threshold'
-        : 'max iterations',
-
-      what_changed: whatChanged,
-      what_became_clearer: whatClearer,
-      what_remains_tense: tensions,
-      actions_matured: actionsMatured,
-      unresolved,
-
+      converged: true,
+      convergence_reason: 'event processed',
+      what_changed: perceptual.map(c => `${c.source_agents.join('+')}: ${c.changes.traces_created.length} traces`),
+      what_became_clearer: selfModel.map(c => 'self-model update'),
+      what_remains_tense: this.phenomenalState?.top_conflicts.map(c => `${c.trace_a} ↔ ${c.trace_b}`) || [],
+      actions_matured: actions.flatMap(c => c.changes.actions_queued || []),
+      unresolved: this.phenomenalState?.dominant_traces.filter(t => t.weight > 0.5).map(t => t.content.slice(0, 80)) || [],
       time_sense: timeSense,
-      phenomenal_state: phenomenalState,
+      phenomenal_state: this.phenomenalState || { cycle: 0, dominant_traces: [], top_conflicts: [], active_priorities: [], self_world_tension: 0, prediction_error_hotspots: [], temporal_dilation: 1, felt_valence: 0, felt_urgency: 0 },
       affect: this.affect.getSnapshot(),
       commits,
-    };
-  }
-
-  /**
-   * Detect active conflicts from inhibits edges in trace graph.
-   */
-  private async detectConflicts(): Promise<Array<{ trace_a: string; trace_b: string; tension: number }>> {
-    try {
-      const inhibits = await this.traceGraph['db'].query<{ a: string; b: string; w: number }>(
-        `SELECT in.content AS a, out.content AS b, weight AS w
-         FROM inhibits
-         WHERE in.trace_id IN (SELECT trace_id FROM trace WHERE archived = false AND suppressed = false AND weight > 0.3)
-         ORDER BY weight DESC LIMIT 5`,
-      );
-      if (inhibits.isErr()) return [];
-      return inhibits.value.map(i => ({
-        trace_a: (i.a || '').slice(0, 50),
-        trace_b: (i.b || '').slice(0, 50),
-        tension: i.w || 0,
-      }));
-    } catch { return []; }
-  }
-
-  private async buildContext(
-    cycle: number,
-    commits: CommitDelta[],
-    phenomenalState: PhenomenalState | null,
-    isReflection: boolean,
-  ): Promise<AgentContext> {
-    const timeSense = await this.commitKernel.computeTimeSense();
-    const activeTraces = await this.traceGraph.getActiveTraces(10);
-
-    return {
-      cycle,
-      recent_commits: commits.slice(-5),
-      time_sense: timeSense,
-      active_traces: activeTraces.isOk()
-        ? activeTraces.value.map(t => ({ trace_id: t.trace_id, content: t.content, weight: t.weight }))
-        : [],
-      phenomenal_state: phenomenalState,
-      is_reflection: isReflection,
-      llm_budget: {
-        remaining: Math.max(0, this.config.get('kernel.llm_budget_per_think') - this.llmCallsUsed),
-        used: this.llmCallsUsed,
-        total: this.config.get('kernel.llm_budget_per_think'),
-      },
     };
   }
 }

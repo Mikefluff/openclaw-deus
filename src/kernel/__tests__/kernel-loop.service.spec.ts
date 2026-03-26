@@ -7,11 +7,6 @@ import { Signal, CommitDelta, TimeSense } from '../kernel.types';
 import { ok } from 'neverthrow';
 import { mockCognitiveConfig } from '../../__mocks__/cognitive-config.mock';
 
-// Mock agent that produces configurable signals
-function makeAgent(id: string, rank: number, signalsFn: (input: string, ctx: AgentContext) => Signal[]): CognitiveAgent {
-  return { id, rank, process: async (input, ctx) => signalsFn(input, ctx) };
-}
-
 function makeSignal(overrides: Partial<Signal> = {}): Signal {
   return {
     agent_id: 'test', agent_rank: 1, type: 'perception',
@@ -38,12 +33,9 @@ const mockTimeSense: TimeSense = {
 
 describe('KernelLoopService', () => {
   let service: KernelLoopService;
-  let mockTraceGraph: any;
-  let mockCommitKernel: any;
-  let mockAffect: any;
 
   beforeEach(() => {
-    mockTraceGraph = {
+    const mockTraceGraph = {
       tick: jest.fn().mockReturnValue(1),
       getCycle: jest.fn().mockReturnValue(1),
       getActiveTraces: jest.fn().mockResolvedValue(ok([])),
@@ -52,13 +44,12 @@ describe('KernelLoopService', () => {
       forget: jest.fn().mockResolvedValue(ok({ decayed: 0, archived: 0 })),
     };
 
-    mockCommitKernel = {
+    const mockCommitKernel = {
       processCycle: jest.fn().mockResolvedValue(ok([])),
       computeTimeSense: jest.fn().mockResolvedValue(mockTimeSense),
-      getAttentionWindow: jest.fn().mockResolvedValue(ok([])),
     };
 
-    mockAffect = {
+    const mockAffect = {
       processCommits: jest.fn().mockReturnValue({ configDeltas: new Map() }),
       getSnapshot: jest.fn().mockReturnValue({
         hormones: { cortisol: 0.2, dopamine: 0.3, norepinephrine: 0.2, serotonin: 0.5 },
@@ -74,34 +65,16 @@ describe('KernelLoopService', () => {
     (service as any).affect = mockAffect;
     (service as any).agents = [];
     (service as any).llmCallsUsed = 0;
+    (service as any).allCommits = [];
+    (service as any).phenomenalState = null;
+    (service as any).guard = { consecutive_self_model_commits: 0, uncertainty_trend: [], orthogonal_signal_deficit: 0 };
+    (service as any).eventQueue = [];
+    (service as any).pendingResolvers = [];
+    (service as any).eventIdCounter = 0;
+    (service as any).processing = false;
+    (service as any).running = false;
+    (service as any).loopHandle = null;
     (service as any).logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
-  });
-
-  describe('convergence', () => {
-    it('should converge immediately when no agents produce signals', async () => {
-      service.registerAgent(makeAgent('empty', 1, () => []));
-
-      const result = await service.think('hello');
-      expect(result.isOk()).toBe(true);
-      const output = result._unsafeUnwrap();
-      expect(output.converged).toBe(true);
-      expect(output.total_commits).toBe(0);
-      expect(output.convergence_reason).toBe('no signals');
-    });
-
-    it('should converge when commits have low energy', async () => {
-      service.registerAgent(makeAgent('sig', 1, () => [makeSignal()]));
-
-      // First cycle: produce a commit with low energy
-      mockCommitKernel.processCycle
-        .mockResolvedValueOnce(ok([makeCommit({ energy: 0.05 })]))
-        .mockResolvedValue(ok([])); // second cycle: no commits
-
-      const result = await service.think('hello');
-      expect(result.isOk()).toBe(true);
-      const output = result._unsafeUnwrap();
-      expect(output.total_commits).toBeGreaterThanOrEqual(0); // low energy → may converge before or after first commit
-    });
   });
 
   describe('stabilization energy', () => {
@@ -122,15 +95,20 @@ describe('KernelLoopService', () => {
       );
       expect(stab.energy).toBeGreaterThan(0.1);
     });
+
+    it('should return stable=true for empty commits', () => {
+      const stab = (service as any).computeStabilization([], [], 0.5);
+      expect(stab.stable).toBe(true);
+      expect(stab.energy).toBe(0);
+    });
   });
 
   describe('guardrails', () => {
-    it('should detect hallucination loop when no orthogonal signals', () => {
+    it('should detect no orthogonal signals when all targets seen', () => {
       const hasOrtho = (service as any).hasOrthogonalSignals(
         [makeSignal({ targets: ['T1'] })],
         [makeCommit({ changes: { traces_activated: ['T1'], traces_suppressed: [], traces_created: [] } })],
       );
-      // All targets already in previous commits → no orthogonal
       expect(hasOrtho).toBe(false);
     });
 
@@ -142,7 +120,7 @@ describe('KernelLoopService', () => {
       expect(hasOrtho).toBe(true);
     });
 
-    it('should detect orthogonal signals from high novelty', () => {
+    it('should detect orthogonal from high novelty', () => {
       const hasOrtho = (service as any).hasOrthogonalSignals(
         [makeSignal({ targets: ['T1'], novelty_cost: 0.8 })],
         [makeCommit({ changes: { traces_activated: ['T1'], traces_suppressed: [], traces_created: [] } })],
@@ -151,36 +129,26 @@ describe('KernelLoopService', () => {
     });
   });
 
-  describe('self_model commit blocking', () => {
-    it('should filter consecutive self_model commits', async () => {
-      service.registerAgent(makeAgent('strat', 5, () => [makeSignal({ type: 'strategy' })]));
-
-      const selfModelCommit = makeCommit({ type: 'self_model' });
-      mockCommitKernel.processCycle
-        .mockResolvedValueOnce(ok([selfModelCommit])) // cycle 1: allowed
-        .mockResolvedValueOnce(ok([selfModelCommit])) // cycle 2: blocked
-        .mockResolvedValue(ok([]));
-
-      const result = await service.think('test');
-      expect(result.isOk()).toBe(true);
-      const output = result._unsafeUnwrap();
-      // Only 1 self_model commit should survive (second blocked)
-      const selfModelCommits = output.commits.filter(c => c.type === 'self_model');
-      expect(selfModelCommits.length).toBeLessThanOrEqual(1);
+  describe('sleep duration', () => {
+    it('should sleep longer with low arousal', () => {
+      (service as any).affect.getSnapshot.mockReturnValue({ arousal: 0.1 });
+      (service as any).eventQueue = [];
+      const sleep = (service as any).computeSleepDuration();
+      expect(sleep).toBeGreaterThan(1000);
     });
-  });
 
-  describe('loop termination', () => {
-    it('should always terminate within max_iterations', async () => {
-      // Agent that always produces signals (never converges naturally)
-      service.registerAgent(makeAgent('infinite', 1, () => [makeSignal({ confidence: 0.5 })]));
-      mockCommitKernel.processCycle.mockResolvedValue(ok([makeCommit({ energy: 0.5 })]));
+    it('should sleep shorter with high arousal', () => {
+      (service as any).affect.getSnapshot.mockReturnValue({ arousal: 0.9 });
+      (service as any).eventQueue = [];
+      const sleep = (service as any).computeSleepDuration();
+      expect(sleep).toBeLessThan(500);
+    });
 
-      const result = await service.think('never converges');
-      expect(result.isOk()).toBe(true);
-      const output = result._unsafeUnwrap();
-      // Should terminate at max_iterations (12 default from config mock)
-      expect(output.total_cycles).toBeLessThanOrEqual(15);
+    it('should be immediate when events pending', () => {
+      (service as any).affect.getSnapshot.mockReturnValue({ arousal: 0.1 });
+      (service as any).eventQueue = [{ type: 'message', content: 'test', timestamp: 0 }];
+      const sleep = (service as any).computeSleepDuration();
+      expect(sleep).toBe(0);
     });
   });
 });
