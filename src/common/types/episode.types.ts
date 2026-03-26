@@ -17,6 +17,7 @@ export interface Episode {
   kind: EpisodeKind;
   summary: string;            // LLM-generated
   intention_id?: string;      // which intention this episode served
+  predecessor_episode_id?: string; // temporal chain: previous episode for same intention
   outcome: EpisodeOutcome;
   outcome_detail?: string;
   lessons: Lesson[];

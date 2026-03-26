@@ -5,6 +5,7 @@ import { LlmClientService, LlmError } from '../../llm/llm-client.service';
 import { LlmOperationType, LlmPriority } from '../../llm/types/llm.types';
 import { IntentionService } from '../intention.service';
 import { Intention, IntentionRecognitionResult } from '../../common/types/intention.types';
+import { SimilarityProvider } from '../../cognitive/similarity.provider';
 
 const SYSTEM_PROMPT = `You are the intention recognition module of a cognitive agent called DEUS.
 Your job is to understand what the human operator is trying to achieve — not just what they say they want,
@@ -82,6 +83,7 @@ export class IntentionRecognitionService {
   constructor(
     private readonly llm: LlmClientService,
     private readonly intentions: IntentionService,
+    private readonly similarity: SimilarityProvider,
   ) {}
 
   /**
@@ -128,8 +130,33 @@ export class IntentionRecognitionService {
   }
 
   private async applyRecognition(recognition: IntentionRecognitionResult): Promise<void> {
-    // Create new intentions
+    // Deduplicate: check if similar active intention already exists
+    const activeResult = await this.intentions.findActive();
+    const activeIntentions = activeResult.isOk() ? activeResult.value : [];
+
+    // Create new intentions (with dedup)
     for (const newInt of recognition.new_intentions) {
+      // Similarity check against existing active intentions
+      const duplicate = this.similarity.findBestWordMatch(
+        newInt.description,
+        activeIntentions.map((i) => ({ content: i.description, ...i })) as Array<{ content: string }>,
+        'similarity.belief_match', // reuse threshold (0.7)
+      );
+
+      if (duplicate) {
+        // Reinforce existing intention's priority instead of creating duplicate
+        const existing = duplicate as unknown as Intention;
+        this.logger.log(`Intention dedup: "${newInt.description.slice(0, 50)}" matches existing ${existing.intention_id}`);
+        await this.intentions.updateProgress(existing.intention_id, {
+          last_action: `Reinforced by new request: ${newInt.description.slice(0, 100)}`,
+        });
+        // Boost priority if new request has higher priority
+        if (newInt.priority > (existing.priority || 0)) {
+          await this.intentions.transition(existing.intention_id, existing.status, 'priority_boost', 'operator');
+        }
+        continue;
+      }
+
       await this.intentions.create({
         description: newInt.description,
         kind: newInt.kind,

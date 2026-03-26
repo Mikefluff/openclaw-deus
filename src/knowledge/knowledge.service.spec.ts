@@ -4,6 +4,7 @@ import { SurrealService } from '../database/surreal.service';
 import { EventsService } from '../events/events.service';
 import { EmbeddingsService } from '../embeddings/embeddings.service';
 import { SimilarityProvider } from '../cognitive/similarity.provider';
+import { BayesianUpdaterService } from '../cognitive/bayesian-updater.service';
 import { CognitiveConfigService } from '../cognitive/cognitive-config.service';
 import { mockEventsService } from '../__mocks__/events.mock';
 import { mockCognitiveConfig } from '../__mocks__/cognitive-config.mock';
@@ -27,6 +28,7 @@ describe('KnowledgeService', () => {
           embed: jest.fn().mockResolvedValue(ok(new Array(1536).fill(0))),
         }},
         { provide: SimilarityProvider, useValue: new SimilarityProvider(mockCognitiveConfig as CognitiveConfigService) },
+        { provide: BayesianUpdaterService, useValue: { computePrior: jest.fn().mockReturnValue(0.4), updateWithEvidence: jest.fn().mockReturnValue({ point: 0.65, lower: 0.5, upper: 0.8 }), reinforcementBoost: jest.fn().mockReturnValue(0.03) } },
       ],
     }).compile();
 

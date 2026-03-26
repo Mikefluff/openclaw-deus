@@ -23,6 +23,7 @@ const CACHE_TTL: Record<LlmOperationType, number> = {
   [LlmOperationType.OPERATOR_MODEL_UPDATE]: 2 * 3600_000,   // 2h
   [LlmOperationType.SELF_ASSESSMENT]: 24 * 3600_000,        // 24h
   [LlmOperationType.PROCEDURE_EXTRACTION]: 24 * 3600_000,   // 24h
+  [LlmOperationType.DIAGNOSIS]: 1 * 3600_000,               // 1h
 };
 
 @Injectable()

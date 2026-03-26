@@ -6,6 +6,7 @@ import { EventsService } from '../events/events.service';
 import { LlmClientService } from '../llm/llm-client.service';
 import { LlmOperationType, LlmPriority } from '../llm/types/llm.types';
 import { Episode, EpisodeOutcome, Lesson } from '../common/types/episode.types';
+import { GraphLinkingService } from '../cognitive/graph-linking.service';
 
 const SYSTEM_PROMPT = `You are the experience recording module of a cognitive agent.
 Given a completed task/interaction and its context, create a structured episode record.
@@ -53,6 +54,7 @@ export class EpisodeService {
     private readonly db: SurrealService,
     private readonly events: EventsService,
     private readonly llm: LlmClientService,
+    private readonly graphLinking: GraphLinkingService,
   ) {}
 
   async createFromCompletion(
@@ -98,11 +100,21 @@ export class EpisodeService {
       lessons = [];
     }
 
+    // Temporal chain: find predecessor episode for same intention
+    let predecessorId: string | undefined;
+    if (intentionId) {
+      const prev = await this.findByIntention(intentionId);
+      if (prev.isOk() && prev.value.length > 0) {
+        predecessorId = prev.value[0].episode_id; // most recent
+      }
+    }
+
     const episode: Record<string, unknown> = {
       episode_id: episodeId,
       kind: 'task_execution',
       summary,
       intention_id: intentionId,
+      predecessor_episode_id: predecessorId,
       outcome: finalOutcome,
       lessons,
       operator_satisfaction: satisfaction,
@@ -114,12 +126,8 @@ export class EpisodeService {
     const result = await this.db.create<Episode>('episode', episode as unknown as Episode);
     if (result.isOk()) {
       await this.events.emit('episode.created' as any, { episode_id: episodeId, outcome: finalOutcome, lessons_count: lessons.length });
-      // Create graph relation: episode serves intention
       if (intentionId) {
-        await this.db.execute(
-          `RELATE (SELECT id FROM episode WHERE episode_id = $eid LIMIT 1) -> serves -> (SELECT id FROM intention WHERE intention_id = $iid LIMIT 1)`,
-          { eid: episodeId, iid: intentionId },
-        );
+        await this.graphLinking.linkEpisodeToIntention(episodeId, intentionId);
       }
     }
     return result;
@@ -130,7 +138,7 @@ export class EpisodeService {
   }
 
   async findRecent(limit = 20): Promise<Result<Episode[], DomainError>> {
-    return this.db.query<Episode>(`SELECT * FROM episode ORDER BY created_at DESC LIMIT ${limit}`);
+    return this.db.query<Episode>('SELECT * FROM episode ORDER BY created_at DESC LIMIT $limit', { limit });
   }
 
   async getSuccessRate(domain?: string): Promise<Result<number, DomainError>> {

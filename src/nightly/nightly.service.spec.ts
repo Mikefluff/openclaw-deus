@@ -16,6 +16,8 @@ import { EventsService } from '../events/events.service';
 import { SurrealService } from '../database/surreal.service';
 import { MetricsService } from '../metrics/metrics.service';
 import { RecursiveImproveService } from '../metrics/recursive-improve.service';
+import { CausalGraphService } from '../cognitive/causal-graph.service';
+import { MetaLearningService } from '../cognitive/meta-learning.service';
 import { mockEventsService } from '../__mocks__/events.mock';
 import { mockCognitiveConfig } from '../__mocks__/cognitive-config.mock';
 import { ok, err } from 'neverthrow';
@@ -46,6 +48,8 @@ describe('NightlyService', () => {
         { provide: SurrealService, useValue: { create: mockOk({}) } },
         { provide: MetricsService, useValue: { snapshot: mockOk({}) } },
         { provide: RecursiveImproveService, useValue: { run: mockOk({}) } },
+        { provide: CausalGraphService, useValue: { build: jest.fn().mockResolvedValue({ isOk: () => true, isErr: () => false, value: { nodes: [], edges: [] } }), getTopVOIBeliefs: jest.fn().mockReturnValue([]) } },
+        { provide: MetaLearningService, useValue: { analyze: jest.fn().mockResolvedValue({ isOk: () => true, value: {} }) } },
       ],
     }).compile();
 
@@ -56,15 +60,15 @@ describe('NightlyService', () => {
     const result = await service.run();
     expect(result.isOk()).toBe(true);
     const run = result._unsafeUnwrap();
-    expect(run.stages.length).toBe(14);
-    expect(run.summary.total_stages).toBe(14);
+    expect(run.stages.length).toBe(16);
+    expect(run.summary.total_stages).toBe(16);
   });
 
   it('should report passed/failed in summary', async () => {
     const result = await service.run();
     const run = result._unsafeUnwrap();
     const summary = run.summary as any;
-    expect(summary.passed + summary.failed).toBe(14);
+    expect(summary.passed + summary.failed).toBe(16);
     expect(summary.passed).toBeGreaterThanOrEqual(10);
   });
 
@@ -88,13 +92,15 @@ describe('NightlyService', () => {
         { provide: SurrealService, useValue: { create: mockOk({}) } },
         { provide: MetricsService, useValue: { snapshot: mockOk({}) } },
         { provide: RecursiveImproveService, useValue: { run: mockOk({}) } },
+        { provide: CausalGraphService, useValue: { build: jest.fn().mockResolvedValue({ isOk: () => true, isErr: () => false, value: { nodes: [], edges: [] } }), getTopVOIBeliefs: jest.fn().mockReturnValue([]) } },
+        { provide: MetaLearningService, useValue: { analyze: jest.fn().mockResolvedValue({ isOk: () => true, value: {} }) } },
       ],
     }).compile();
 
     const svc = module.get(NightlyService);
     const result = await svc.run();
     expect(result.isOk()).toBe(true);
-    expect(result._unsafeUnwrap().stages.length).toBe(14);
+    expect(result._unsafeUnwrap().stages.length).toBe(16);
   });
 
   it('should set timestamps', async () => {
@@ -114,5 +120,7 @@ describe('NightlyService', () => {
     expect(names).toContain('knowledge_gap_triage');
     expect(names).toContain('cognitive_config_tuning');
     expect(names).toContain('world_model_rebuild');
+    expect(names).toContain('causal_analysis');
+    expect(names).toContain('meta_learning');
   });
 });

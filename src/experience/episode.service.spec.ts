@@ -3,6 +3,7 @@ import { EpisodeService } from './episode.service';
 import { SurrealService } from '../database/surreal.service';
 import { EventsService } from '../events/events.service';
 import { LlmClientService } from '../llm/llm-client.service';
+import { GraphLinkingService } from '../cognitive/graph-linking.service';
 import { mockEventsService } from '../__mocks__/events.mock';
 import { ok } from 'neverthrow';
 
@@ -20,6 +21,9 @@ describe('EpisodeService', () => {
         }},
         { provide: EventsService, useValue: mockEventsService },
         { provide: LlmClientService, useValue: { isAvailable: jest.fn().mockReturnValue(false) }},
+        { provide: GraphLinkingService, useValue: {
+          linkEpisodeToIntention: jest.fn().mockResolvedValue(ok(undefined)),
+        }},
       ],
     }).compile();
 

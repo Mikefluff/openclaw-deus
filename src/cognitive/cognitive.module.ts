@@ -9,6 +9,7 @@ import { CognitiveConfigController } from './cognitive-config.controller';
 import { CognitivePipelineService } from './cognitive-pipeline.service';
 import { CognitivePipelineController } from './cognitive-pipeline.controller';
 import { GraphLinkingService } from './graph-linking.service';
+import { MetaLearningService } from './meta-learning.service';
 import { IntentionModule } from '../intention/intention.module';
 import { KnowledgeModule } from '../knowledge/knowledge.module';
 import { DeliberationModule } from '../deliberation/deliberation.module';
@@ -38,6 +39,7 @@ import { WorldModelModule } from '../world-model/world-model.module';
     ImportanceScorerService,
     CognitivePipelineService,
     GraphLinkingService,
+    MetaLearningService,
   ],
   exports: [
     CognitiveConfigService,
@@ -48,6 +50,7 @@ import { WorldModelModule } from '../world-model/world-model.module';
     ImportanceScorerService,
     CognitivePipelineService,
     GraphLinkingService,
+    MetaLearningService,
   ],
 })
 export class CognitiveModule {}

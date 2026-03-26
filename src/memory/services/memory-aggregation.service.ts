@@ -89,6 +89,13 @@ export class MemoryAggregationService {
     return { section: 'System Events', line: description };
   }
 
+  async getDailyMemoriesSince(sinceDay: string): Promise<Result<DailyMemory[], DomainError>> {
+    return this.db.query<DailyMemory>(
+      'SELECT * FROM daily_memory WHERE day_key >= $since ORDER BY day_key',
+      { since: sinceDay },
+    );
+  }
+
   async getDailyMemory(dayKey: string): Promise<Result<DailyMemory | null, DomainError>> {
     const result = await this.db.query<DailyMemory>(
       'SELECT * FROM daily_memory WHERE day_key = $day LIMIT 1',

@@ -17,6 +17,8 @@ import { MemoryService } from '../memory/memory.service';
 import { GraphLinkingService } from './graph-linking.service';
 import { CognitiveConfigService } from './cognitive-config.service';
 import { WorldModelService } from '../world-model/world-model.service';
+import { BeliefsService } from '../beliefs/beliefs.service';
+import { SimilarityProvider } from './similarity.provider';
 
 /**
  * CognitivePipelineService: THE BRAIN's MAIN LOOP.
@@ -48,6 +50,7 @@ export class CognitivePipelineService {
     private readonly graphLinking: GraphLinkingService,
     private readonly config: CognitiveConfigService,
     private readonly worldModel: WorldModelService,
+    private readonly beliefsService: BeliefsService,
   ) {}
 
   /**
@@ -68,10 +71,13 @@ export class CognitivePipelineService {
     await this.sessionTracker.trackMessage(message);
     await this.memory.logInteraction(message);
 
-    // Step 1: Parallel — intention recognition + knowledge extraction
+    // Step 0.5: Active recall — proactively retrieve relevant context before processing
+    const priorContext = await this.activeRecall(message);
+
+    // Step 1: Parallel — intention recognition + knowledge extraction (with prior context)
     const [intentionResult, knowledgeResult] = await Promise.all([
       this.recognizeIntentions(message),
-      this.extractKnowledge(message),
+      this.extractKnowledge(priorContext ? `${message}\n\n[Prior knowledge context: ${priorContext}]` : message),
     ]);
 
     // Step 2: Process intention results → deliberate
@@ -223,6 +229,24 @@ export class CognitivePipelineService {
 
   private domainOverlap(text: string, domain: string): boolean {
     return text.toLowerCase().includes(domain.toLowerCase());
+  }
+
+  /**
+   * Active recall: proactively retrieve relevant knowledge and beliefs before processing.
+   * This makes extraction aware of what the system already knows, preventing redundant extraction
+   * and enabling reinforcement of existing knowledge.
+   */
+  private async activeRecall(message: string): Promise<string | null> {
+    try {
+      // Find similar knowledge to the incoming message
+      const similar = await this.knowledge.findSimilar(message, 0.5);
+      if (similar.isErr() || similar.value.length === 0) return null;
+
+      const topKnowledge = similar.value.slice(0, 5);
+      return topKnowledge.map((k: any) => `[${k.knowledge_id}] ${k.content}`).join('; ');
+    } catch {
+      return null;
+    }
   }
 
   /**

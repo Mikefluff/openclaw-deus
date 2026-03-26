@@ -3,25 +3,7 @@ import { Result, ok, err } from 'neverthrow';
 import { createHmac } from 'node:crypto';
 import { DomainError, ValidationError } from '../common/types/result.types';
 import { SurrealService } from '../database/surreal.service';
-
-export interface WebhookRegistration {
-  id?: string;
-  url: string;
-  events: string[];
-  secret: string;
-  active: boolean;
-  created_at: string;
-}
-
-export interface WebhookDelivery {
-  id?: string;
-  webhook_id: string;
-  event: string;
-  payload: Record<string, unknown>;
-  status: number;
-  response_body?: string;
-  delivered_at: string;
-}
+import { WebhookRegistration, WebhookDelivery } from '../common/types/events.types';
 
 @Injectable()
 export class WebhooksService {

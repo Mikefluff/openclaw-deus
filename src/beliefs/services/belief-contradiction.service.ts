@@ -128,6 +128,10 @@ export class BeliefContradictionService {
     return contradictions;
   }
 
+  /**
+   * Bayesian contradiction resolution: the belief with MORE/STRONGER evidence retains more confidence.
+   * Instead of flat penalty to both, we redistribute confidence based on evidence strength.
+   */
   resolveContradictions(contradictions: Contradiction[], beliefs: Belief[]): void {
     const now = new Date().toISOString();
     for (const contr of contradictions) {
@@ -136,11 +140,31 @@ export class BeliefContradictionService {
       const b2 = beliefs.find((b) => b.belief_id === contr.belief_2);
       if (!b1 || !b2) continue;
 
-      const penalty = this.config.get('contradiction.confidence_penalty');
-      b1.confidence *= penalty; b2.confidence *= penalty;
-      b1.status = 'review_needed'; b2.status = 'review_needed';
-      b1.drift_history.push({ timestamp: now, confidence: b1.confidence, reason: 'contradiction_detected', with: contr.belief_2 });
-      b2.drift_history.push({ timestamp: now, confidence: b2.confidence, reason: 'contradiction_detected', with: contr.belief_1 });
+      const basePenalty = this.config.get('contradiction.confidence_penalty');
+
+      // Evidence-weighted resolution: more evidence = less penalty
+      const ev1 = (b1.evidence_set || []).length;
+      const ev2 = (b2.evidence_set || []).length;
+      const totalEv = Math.max(1, ev1 + ev2);
+
+      // Belief with more evidence gets lighter penalty
+      const penalty1 = basePenalty + (1 - basePenalty) * (ev1 / totalEv) * 0.5; // closer to 1.0 = less penalty
+      const penalty2 = basePenalty + (1 - basePenalty) * (ev2 / totalEv) * 0.5;
+
+      b1.confidence *= penalty1;
+      b2.confidence *= penalty2;
+
+      // Only the weaker-evidenced belief goes to review
+      if (ev1 < ev2) {
+        b1.status = 'review_needed';
+      } else if (ev2 < ev1) {
+        b2.status = 'review_needed';
+      } else {
+        b1.status = 'review_needed'; b2.status = 'review_needed';
+      }
+
+      b1.drift_history.push({ timestamp: now, confidence: b1.confidence, reason: `bayesian_contradiction_resolution(ev=${ev1})`, with: contr.belief_2 } as any);
+      b2.drift_history.push({ timestamp: now, confidence: b2.confidence, reason: `bayesian_contradiction_resolution(ev=${ev2})`, with: contr.belief_1 } as any);
     }
   }
 

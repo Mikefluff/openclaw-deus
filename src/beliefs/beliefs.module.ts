@@ -6,8 +6,10 @@ import { BeliefExtractionService } from './services/belief-extraction.service';
 import { BeliefContradictionService } from './services/belief-contradiction.service';
 import { BeliefPromotionService } from './services/belief-promotion.service';
 import { LlmExtractionService } from './services/llm-extraction.service';
+import { MemoryModule } from '../memory/memory.module';
 
 @Module({
+  imports: [MemoryModule],
   providers: [
     BeliefsService,
     BeliefDecayService,

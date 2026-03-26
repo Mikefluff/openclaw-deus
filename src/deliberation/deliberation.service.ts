@@ -13,6 +13,7 @@ import { Intention } from '../common/types/intention.types';
 import { Knowledge } from '../common/types/knowledge.types';
 import { EpisodeService } from '../experience/episode.service';
 import { Episode } from '../common/types/episode.types';
+import { CausalGraphService } from '../cognitive/causal-graph.service';
 
 const SYSTEM_PROMPT = `You are the deliberation module of a cognitive agent called DEUS.
 Given an intention to advance, relevant knowledge, and PAST EPISODE HISTORY, generate 2-3 approaches.
@@ -71,6 +72,7 @@ export class DeliberationService {
     private readonly ripeness: RipenessService,
     private readonly normalizer: IntentNormalizerService,
     private readonly episodes: EpisodeService,
+    private readonly causalGraph: CausalGraphService,
   ) {}
 
   async deliberate(intention: Intention, context?: { knowledge?: Knowledge[] }): Promise<Result<DeliberationResult, DomainError>> {
@@ -81,16 +83,19 @@ export class DeliberationService {
     let reasoning: string;
 
     if (this.llm.isAvailable()) {
-      // Fetch past episodes for experiential learning
-      const pastEpisodes = await this.fetchRelevantEpisodes(intention);
+      // Fetch past episodes + causal prediction in parallel
+      const [pastEpisodes, causalPrediction] = await Promise.all([
+        this.fetchRelevantEpisodes(intention),
+        this.getCausalPrediction(intention.intention_id),
+      ]);
 
-      // LLM deliberation with episode context
+      // LLM deliberation with full cognitive context
       const llmResult = await this.llm.call<{ options: DeliberationOption[]; selected: number; reasoning: string }>({
         operationType: LlmOperationType.DELIBERATION,
         priority: LlmPriority.HIGH,
         maxTokens: 1024,
         systemPrompt: SYSTEM_PROMPT,
-        userMessage: this.buildUserMessage(intention, context?.knowledge || [], pastEpisodes),
+        userMessage: this.buildUserMessage(intention, context?.knowledge || [], pastEpisodes, causalPrediction),
         tools: [DELIBERATE_TOOL],
         forceTool: 'deliberate',
       });
@@ -209,7 +214,32 @@ export class DeliberationService {
     }).slice(0, 8);
   }
 
-  private buildUserMessage(intention: Intention, knowledge: Knowledge[], episodes: Episode[] = []): string {
+  /**
+   * Causal graph prediction: what's the probability of success given current belief state?
+   */
+  private async getCausalPrediction(intentionId: string): Promise<string | null> {
+    try {
+      const graph = await this.causalGraph.build();
+      if (graph.isErr() || graph.value.nodes.length === 0) return null;
+
+      const prediction = this.causalGraph.predictGoalSuccess(intentionId, graph.value);
+      const topVOI = this.causalGraph.getTopVOIBeliefs(graph.value, 3);
+
+      const parts: string[] = [];
+      parts.push(`Causal prediction: ${(prediction.success_probability * 100).toFixed(0)}% success probability`);
+      if (prediction.blockers.length > 0) {
+        parts.push(`Blockers: ${prediction.blockers.join(', ')}`);
+      }
+      if (topVOI.length > 0) {
+        parts.push(`Highest-value-of-information beliefs (what to learn next): ${topVOI.map(v => `${v.label} (VOI=${v.voi.toFixed(2)})`).join(', ')}`);
+      }
+      return parts.join('\n');
+    } catch {
+      return null;
+    }
+  }
+
+  private buildUserMessage(intention: Intention, knowledge: Knowledge[], episodes: Episode[] = [], causalPrediction?: string | null): string {
     const knowledgeContext = knowledge.length > 0
       ? `\n\nRelevant knowledge:\n${knowledge.slice(0, 15).map((k) => `- [${k.knowledge_id}] ${k.content}`).join('\n')}`
       : '';
@@ -221,6 +251,10 @@ export class DeliberationService {
         }).join('\n')}`
       : '';
 
-    return `Intention to advance:\n"${intention.description}"\n\nKind: ${intention.kind}\nSuccess criteria: ${intention.success_criteria}\nCurrent progress: ${intention.progress.estimated_completion * 100}%\nBlockers: ${intention.progress.blockers.join(', ') || 'none'}${knowledgeContext}${episodeContext}`;
+    const causalContext = causalPrediction
+      ? `\n\nCausal analysis:\n${causalPrediction}`
+      : '';
+
+    return `Intention to advance:\n"${intention.description}"\n\nKind: ${intention.kind}\nSuccess criteria: ${intention.success_criteria}\nCurrent progress: ${intention.progress.estimated_completion * 100}%\nBlockers: ${intention.progress.blockers.join(', ') || 'none'}${knowledgeContext}${episodeContext}${causalContext}`;
   }
 }

@@ -7,6 +7,7 @@ import { DissensusService } from '../policy/services/dissensus.service';
 import { RipenessService } from '../policy/services/ripeness.service';
 import { IntentNormalizerService } from '../policy/services/intent-normalizer.service';
 import { EpisodeService } from '../experience/episode.service';
+import { CausalGraphService } from '../cognitive/causal-graph.service';
 import { mockEventsService } from '../__mocks__/events.mock';
 import { ok } from 'neverthrow';
 import { Intention } from '../common/types/intention.types';
@@ -48,6 +49,7 @@ describe('DeliberationService', () => {
           findByIntention: jest.fn().mockResolvedValue(ok([])),
           findRecent: jest.fn().mockResolvedValue(ok([])),
         }},
+        { provide: CausalGraphService, useValue: { build: jest.fn().mockResolvedValue({ isOk: () => true, isErr: () => false, value: { nodes: [], edges: [] } }), predictGoalSuccess: jest.fn().mockReturnValue({ success_probability: 0.5, blockers: [] }), getTopVOIBeliefs: jest.fn().mockReturnValue([]) } },
       ],
     }).compile();
 

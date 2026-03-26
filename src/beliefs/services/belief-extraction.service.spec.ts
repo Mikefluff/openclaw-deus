@@ -2,9 +2,10 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { BeliefExtractionService } from './belief-extraction.service';
 import { BeliefsService } from '../beliefs.service';
 import { BeliefPromotionService } from './belief-promotion.service';
-import { SurrealService } from '../../database/surreal.service';
+import { MemoryAggregationService } from '../../memory/services/memory-aggregation.service';
 import { CognitiveConfigService } from '../../cognitive/cognitive-config.service';
 import { SimilarityProvider } from '../../cognitive/similarity.provider';
+import { BayesianUpdaterService } from '../../cognitive/bayesian-updater.service';
 import { mockCognitiveConfig } from '../../__mocks__/cognitive-config.mock';
 
 describe('BeliefExtractionService', () => {
@@ -16,9 +17,10 @@ describe('BeliefExtractionService', () => {
         BeliefExtractionService,
         { provide: BeliefsService, useValue: { findAll: jest.fn(), create: jest.fn() } },
         { provide: BeliefPromotionService, useValue: { addToReviewQueue: jest.fn() } },
-        { provide: SurrealService, useValue: { query: jest.fn() } },
+        { provide: MemoryAggregationService, useValue: { getDailyMemoriesSince: jest.fn() } },
         { provide: CognitiveConfigService, useValue: mockCognitiveConfig },
         { provide: SimilarityProvider, useValue: new SimilarityProvider(mockCognitiveConfig as CognitiveConfigService) },
+        { provide: BayesianUpdaterService, useValue: { computePrior: jest.fn().mockReturnValue(0.4), updateWithEvidence: jest.fn().mockReturnValue({ point: 0.65, lower: 0.5, upper: 0.8 }), reinforcementBoost: jest.fn().mockReturnValue(0.03) } },
       ],
     }).compile();
 

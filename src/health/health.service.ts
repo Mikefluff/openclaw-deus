@@ -4,15 +4,7 @@ import { DomainError } from '../common/types/result.types';
 import { SurrealService } from '../database/surreal.service';
 import { BeliefsService } from '../beliefs/beliefs.service';
 import { MemoryService } from '../memory/memory.service';
-
-export interface HealthSummary {
-  status: 'healthy' | 'degraded' | 'unhealthy';
-  timestamp: string;
-  database: { connected: boolean };
-  beliefs: { count: number; active: number };
-  memory: { recent_entries: number; latest_day: string | null };
-  introspection: { latest_date: string | null };
-}
+import { HealthSummary } from '../common/types/health.types';
 
 @Injectable()
 export class HealthService {

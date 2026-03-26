@@ -8,7 +8,8 @@ import { EventsService } from '../../events/events.service';
 import { CognitiveConfigService } from '../../cognitive/cognitive-config.service';
 import { BeliefsService } from '../beliefs.service';
 
-// SurrealQL native decay — parameterized rates from CognitiveConfig
+// SurrealQL native decay — evidence-weighted rates (Bayesian: more evidence = slower decay)
+// effective_rate = base_rate / log2(1 + max(1, evidence_count))
 const DECAY_QUERY = `
   UPDATE belief SET
     confidence = math::max(
@@ -20,7 +21,8 @@ const DECAY_QUERY = `
           ELSE IF decay_mode = 'fast' THEN $rate_fast
           ELSE 0
           END
-        ) * ((time::millis(time::now()) - time::millis(timestamp_updated)) / 86400000)
+        ) / math::log2(1 + math::max(1, array::len(evidence_set)))
+        * ((time::millis(time::now()) - time::millis(timestamp_updated)) / 86400000)
       )
     ),
     timestamp_updated = time::now()
@@ -63,7 +65,10 @@ export class BeliefDecayService {
     const repairResult = await this.db.batchUpdate(REPAIR_EXEMPT_QUERY);
     const restoredExempt = repairResult.isOk() ? repairResult.value : 0;
 
-    // Step 2: Apply exponential decay — SINGLE SurrealQL QUERY with config rates
+    // Step 2: Apply exponential decay — evidence-weighted rates (more evidence = slower decay)
+    // Base rates from config, but modulated by evidence count via Bayesian formula:
+    // effective_rate = base_rate / log2(1 + evidence_count)
+    // This is approximated in SurrealQL by using array::len(evidence_set)
     const decayResult = await this.db.batchUpdate(DECAY_QUERY, {
       rate_slow: this.config.get('decay.rate_slow'),
       rate_normal: this.config.get('decay.rate_normal'),

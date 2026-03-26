@@ -1,21 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { EventsGateway } from './events.gateway';
 import { WebhooksService } from './webhooks.service';
-
-export type DeusEvent =
-  | 'belief.created'
-  | 'belief.updated'
-  | 'belief.decayed'
-  | 'belief.promoted'
-  | 'belief.archived'
-  | 'contradiction.detected'
-  | 'memory.logged'
-  | 'memory.aggregated'
-  | 'introspection.completed'
-  | 'nightly.stage_completed'
-  | 'nightly.completed'
-  | 'policy.evaluated'
-  | 'world_model.refreshed';
+import { DeusEvent } from '../common/types/events.types';
 
 @Injectable()
 export class EventsService {

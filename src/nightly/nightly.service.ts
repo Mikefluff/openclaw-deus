@@ -18,6 +18,8 @@ import { WorldModelService } from '../world-model/world-model.service';
 import { EventsService } from '../events/events.service';
 import { MetricsService } from '../metrics/metrics.service';
 import { RecursiveImproveService } from '../metrics/recursive-improve.service';
+import { CausalGraphService } from '../cognitive/causal-graph.service';
+import { MetaLearningService } from '../cognitive/meta-learning.service';
 
 @Injectable()
 export class NightlyService {
@@ -40,6 +42,8 @@ export class NightlyService {
     private readonly db: SurrealService,
     @Inject(forwardRef(() => MetricsService)) private readonly metrics: MetricsService,
     @Inject(forwardRef(() => RecursiveImproveService)) private readonly recursiveImprove: RecursiveImproveService,
+    private readonly causalGraph: CausalGraphService,
+    private readonly metaLearning: MetaLearningService,
   ) {}
 
   async run(now?: Date): Promise<Result<NightlyRunResult, DomainError>> {
@@ -80,6 +84,17 @@ export class NightlyService {
 
     // === Phase 3: Full analysis ===
     await runStage('introspect', () => this.introspection.run('full'));
+
+    await runStage('causal_analysis', async () => {
+      const graph = await this.causalGraph.build();
+      if (graph.isErr()) return { error: graph.error.message };
+      const topVOI = this.causalGraph.getTopVOIBeliefs(graph.value, 5);
+      return {
+        nodes: graph.value.nodes.length,
+        edges: graph.value.edges.length,
+        learning_priorities: topVOI.map(v => ({ belief: v.label, voi: v.voi })),
+      };
+    });
 
     await runStage('decay_tune', () => this.decay.runDecayCycle());
 
@@ -126,7 +141,8 @@ export class NightlyService {
     // === Phase 7: Rebuild world model ===
     await runStage('world_model_rebuild', () => this.worldModel.build());
 
-    // === Phase 8: Recursive self-improvement ===
+    // === Phase 8: Meta-learning + Recursive self-improvement ===
+    await runStage('meta_learning', () => this.metaLearning.analyze());
     await runStage('cognitive_metrics', () => this.metrics.snapshot());
     await runStage('recursive_improve', () => this.recursiveImprove.run());
 

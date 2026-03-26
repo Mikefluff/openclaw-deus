@@ -3,30 +3,17 @@ import { Result, ok, err } from 'neverthrow';
 import { DomainError } from '../common/types/result.types';
 import { SurrealService } from '../database/surreal.service';
 import { GoalPrediction } from '../common/types/cognitive.types';
-
-interface CausalNode {
-  id: string;
-  type: 'belief' | 'action' | 'outcome';
-  label: string;
-  confidence: number;
-}
-
-interface CausalEdge {
-  from: string;
-  to: string;
-  weight: number; // 0-1 strength of causal link
-}
-
-export interface CausalGraph {
-  nodes: CausalNode[];
-  edges: CausalEdge[];
-}
+import { CausalNode, CausalEdge, CausalGraph } from '../common/types/cognitive-config.types';
+import { CognitiveConfigService } from './cognitive-config.service';
 
 @Injectable()
 export class CausalGraphService {
   private readonly logger = new Logger(CausalGraphService.name);
 
-  constructor(private readonly db: SurrealService) {}
+  constructor(
+    private readonly db: SurrealService,
+    private readonly config: CognitiveConfigService,
+  ) {}
 
   /**
    * Build causal graph from beliefs + policy decisions + outcomes.
@@ -47,7 +34,8 @@ export class CausalGraphService {
 
     // Policy decisions as action nodes
     const decisions = await this.db.query<{ id: string; action_type: string; decision: string; ripeness_score: number }>(
-      'SELECT id, action_type, decision, ripeness_score FROM policy_decision ORDER BY evaluated_at DESC LIMIT 100',
+      'SELECT id, action_type, decision, ripeness_score FROM policy_decision ORDER BY evaluated_at DESC LIMIT $limit',
+      { limit: this.config.get('query.causal_decision_limit') },
     );
     if (decisions.isOk()) {
       for (const d of decisions.value) {

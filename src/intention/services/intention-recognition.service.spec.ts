@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { IntentionRecognitionService } from './intention-recognition.service';
 import { IntentionService } from '../intention.service';
 import { LlmClientService } from '../../llm/llm-client.service';
+import { SimilarityProvider } from '../../cognitive/similarity.provider';
 import { ok } from 'neverthrow';
 
 describe('IntentionRecognitionService', () => {
@@ -18,6 +19,7 @@ describe('IntentionRecognitionService', () => {
           updateProgress: jest.fn().mockResolvedValue(ok({})),
         }},
         { provide: LlmClientService, useValue: { isAvailable: jest.fn().mockReturnValue(false) }},
+        { provide: SimilarityProvider, useValue: { findBestWordMatch: jest.fn().mockReturnValue(null), wordOverlap: jest.fn().mockReturnValue(0) } },
       ],
     }).compile();
 

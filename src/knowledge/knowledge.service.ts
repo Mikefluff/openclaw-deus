@@ -6,7 +6,8 @@ import { EventsService } from '../events/events.service';
 import { EmbeddingsService } from '../embeddings/embeddings.service';
 import { SimilarityProvider } from '../cognitive/similarity.provider';
 import { Knowledge, KnowledgeKind, KnowledgeStatus, Evidence } from '../common/types/knowledge.types';
-import { calibrated } from '../common/types/cognitive.types';
+import { calibrated, EvidenceQuality } from '../common/types/cognitive.types';
+import { BayesianUpdaterService } from '../cognitive/bayesian-updater.service';
 
 @Injectable()
 export class KnowledgeService {
@@ -18,6 +19,7 @@ export class KnowledgeService {
     private readonly events: EventsService,
     private readonly embeddings: EmbeddingsService,
     private readonly similarityProvider: SimilarityProvider,
+    private readonly bayesian: BayesianUpdaterService,
   ) {}
 
   async create(data: {
@@ -82,18 +84,22 @@ export class KnowledgeService {
     const k = existing.value;
     const evidence = [...(k.evidence || []), newEvidence];
     const conf = k.confidence as any;
-    const newConfidence = Math.min(1.0, (conf.point || conf) + 0.03 * (1 - (conf.point || conf)));
+    const currentPoint = conf.point ?? conf ?? 0.5;
+    const quality = (newEvidence.quality || 'strong_implication') as EvidenceQuality;
+
+    // Bayesian evidence-weighted update: stronger evidence → bigger boost, diminishing returns
+    const updated = this.bayesian.updateWithEvidence(currentPoint, quality, evidence.length);
 
     const result = await this.db.update<Knowledge>(k.id!, {
       evidence,
-      confidence: calibrated(newConfidence, 0.12 / Math.sqrt(1 + evidence.length)),
+      confidence: updated,
       last_reinforcement: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     } as any);
 
     // Knowledge → Belief promotion: when evidence accumulates, create review candidate
-    if (evidence.length >= 3 && newConfidence >= 0.7) {
-      await this.promoteToBeliefCandidate(k, evidence.length, newConfidence);
+    if (evidence.length >= 3 && updated.point >= 0.7) {
+      await this.promoteToBeliefCandidate(k, evidence.length, updated.point);
     }
 
     return result;

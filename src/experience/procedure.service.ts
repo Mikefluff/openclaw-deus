@@ -5,6 +5,7 @@ import { SurrealService } from '../database/surreal.service';
 import { Procedure } from '../common/types/episode.types';
 import { LlmClientService } from '../llm/llm-client.service';
 import { LlmOperationType, LlmPriority } from '../llm/types/llm.types';
+import { CognitiveConfigService } from '../cognitive/cognitive-config.service';
 
 @Injectable()
 export class ProcedureService {
@@ -14,12 +15,14 @@ export class ProcedureService {
   constructor(
     private readonly db: SurrealService,
     private readonly llm: LlmClientService,
+    private readonly config: CognitiveConfigService,
   ) {}
 
   async extractFromEpisodes(): Promise<Result<Procedure[], DomainError>> {
     // Find successful episodes with lessons
     const episodes = await this.db.query<{ episode_id: string; summary: string; lessons: Array<{ content: string; kind: string }> }>(
-      `SELECT episode_id, summary, lessons FROM episode WHERE outcome IN ['success', 'partial_success'] AND array::len(lessons) > 0 ORDER BY created_at DESC LIMIT 30`,
+      `SELECT episode_id, summary, lessons FROM episode WHERE outcome IN ['success', 'partial_success'] AND array::len(lessons) > 0 ORDER BY created_at DESC LIMIT $limit`,
+      { limit: this.config.get('query.episode_limit') },
     );
     if (episodes.isErr()) return err(episodes.error);
     if (episodes.value.length < 2) return ok([]);
@@ -81,8 +84,8 @@ export class ProcedureService {
 
   async findRelevant(description: string): Promise<Result<Procedure[], DomainError>> {
     return this.db.query<Procedure>(
-      `SELECT * FROM procedure WHERE description @@ $q OR when_to_use @@ $q ORDER BY success_rate DESC LIMIT 5`,
-      { q: description },
+      `SELECT * FROM procedure WHERE description @@ $q OR when_to_use @@ $q ORDER BY success_rate DESC LIMIT $limit`,
+      { q: description, limit: this.config.get('query.procedure_limit') },
     );
   }
 }

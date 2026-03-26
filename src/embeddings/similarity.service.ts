@@ -4,12 +4,8 @@ import { DomainError } from '../common/types/result.types';
 import { SurrealService } from '../database/surreal.service';
 import { EmbeddingsService } from './embeddings.service';
 import { SimilarityProvider } from '../cognitive/similarity.provider';
-
-export interface SimilarityMatch {
-  id: string;
-  belief_id: string;
-  score: number;
-}
+import { SimilarityMatch } from '../common/types/embeddings.types';
+import { CognitiveConfigService } from '../cognitive/cognitive-config.service';
 
 @Injectable()
 export class SimilarityService {
@@ -19,6 +15,7 @@ export class SimilarityService {
     private readonly embeddings: EmbeddingsService,
     private readonly db: SurrealService,
     private readonly sim: SimilarityProvider,
+    private readonly config: CognitiveConfigService,
   ) {}
 
   /** Find K nearest beliefs by embedding — uses MTREE vector index */
@@ -77,7 +74,8 @@ export class SimilarityService {
 
     // Fallback
     const allLogs = await this.db.query<{ id: string; embedding: number[] }>(
-      'SELECT id, embedding FROM activity_log WHERE embedding != NONE LIMIT 500',
+      'SELECT id, embedding FROM activity_log WHERE embedding != NONE LIMIT $limit',
+      { limit: this.config.get('query.embeddings_fallback_limit') },
     );
     if (allLogs.isErr()) return err(allLogs.error);
 

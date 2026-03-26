@@ -1,11 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Result, ok, err } from 'neverthrow';
 import { DomainError } from '../../common/types/result.types';
-import { SurrealService } from '../../database/surreal.service';
 import { Belief, ExtractionCandidate, ExtractionStats } from '../../common/types/belief.types';
 import { EXTRACTION_PATTERNS, hasExtractionSignal } from '../../common/constants/extraction.constants';
 import { CognitiveConfigService } from '../../cognitive/cognitive-config.service';
 import { SimilarityProvider } from '../../cognitive/similarity.provider';
+import { BayesianUpdaterService } from '../../cognitive/bayesian-updater.service';
+import { MemoryAggregationService } from '../../memory/services/memory-aggregation.service';
 import { BeliefsService } from '../beliefs.service';
 import { BeliefPromotionService } from './belief-promotion.service';
 
@@ -16,22 +17,15 @@ export class BeliefExtractionService {
   constructor(
     private readonly beliefs: BeliefsService,
     private readonly promotion: BeliefPromotionService,
-    private readonly db: SurrealService,
+    private readonly memoryAggregation: MemoryAggregationService,
     private readonly config: CognitiveConfigService,
     private readonly similarity: SimilarityProvider,
+    private readonly bayesian: BayesianUpdaterService,
   ) {}
 
   async extractFromMemory(sinceDay?: string): Promise<Result<ExtractionStats, DomainError>> {
-    // Get recent memory entries to extract from
-    const dayCondition = sinceDay
-      ? `WHERE day_key >= $since`
-      : `WHERE day_key >= $since`;
     const since = sinceDay || this.daysAgo(7);
-
-    const entries = await this.db.query<{ day_key: string; sections: Record<string, string[]> }>(
-      `SELECT day_key, sections FROM daily_memory ${dayCondition} ORDER BY day_key`,
-      { since },
-    );
+    const entries = await this.memoryAggregation.getDailyMemoriesSince(since);
 
     if (entries.isErr()) return err(entries.error);
     if (entries.value.length === 0) {
@@ -56,8 +50,10 @@ export class BeliefExtractionService {
         const existing = this.findExistingBelief(beliefs, candidate.content);
 
         if (existing) {
-          // Reinforce existing belief
-          existing.confidence = Math.min(1.0, existing.confidence + this.config.get('promotion.confidence_boost'));
+          // Bayesian reinforcement: evidence-weighted boost instead of fixed increment
+          const evidenceQuality = candidate.autoPromote ? 'strong_implication' as const : 'behavioral_pattern' as const;
+          const boost = this.bayesian.reinforcementBoost(existing.confidence, evidenceQuality);
+          existing.confidence = Math.min(1.0, existing.confidence + boost);
           existing.timestamp_updated = new Date().toISOString();
           existing.drift_history.push({
             timestamp: new Date().toISOString(),
@@ -125,7 +121,11 @@ export class BeliefExtractionService {
           if (!matchedContent || matchedContent.length < 5) continue;
 
           const hasStrongSignal = hasExtractionSignal(matchedContent);
-          const confidence = hasStrongSignal ? 0.8 : 0.6;
+          // Bayesian prior based on evidence quality, not hardcoded
+          const evidenceQuality = hasStrongSignal ? 'strong_implication' as const : 'weak_inference' as const;
+          const prior = this.bayesian.computePrior('operational', 1);
+          const updated = this.bayesian.updateWithEvidence(prior, evidenceQuality, 1);
+          const confidence = updated.point;
 
           candidates.push({
             content: matchedContent,

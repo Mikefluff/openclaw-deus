@@ -3,14 +3,7 @@ import { Result, ok, err } from 'neverthrow';
 import { DomainError } from '../common/types/result.types';
 import { SurrealService } from '../database/surreal.service';
 import { EventsService } from './events.service';
-
-export interface BeliefEvent {
-  id?: string;
-  belief_id: string;
-  event_type: 'created' | 'updated' | 'decayed' | 'promoted' | 'archived' | 'contradiction_flagged';
-  payload: Record<string, unknown>;
-  occurred_at: string;
-}
+import { BeliefEvent } from '../common/types/events.types';
 
 @Injectable()
 export class BeliefEventsService {
