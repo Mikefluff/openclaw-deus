@@ -140,9 +140,14 @@ export class KernelLoopService {
 
       allCommits.push(...filteredCommits);
 
-      // --- Affect: hormones process commits, modulate config ---
+      // --- Affect: learned model processes commits, returns config deltas ---
       const currentTimeSense = await this.commitKernel.computeTimeSense();
-      this.affect.processCommits(filteredCommits, currentTimeSense);
+      const { configDeltas } = this.affect.processCommits(filteredCommits, currentTimeSense);
+
+      // Apply learned config modulations
+      for (const [key, delta] of configDeltas) {
+        this.config.adjust(key, delta, `affect:gradient_step_${this.affect.getSnapshot().loss.toFixed(3)}`);
+      }
 
       // --- Compute stabilization energy ---
       const stabilization = this.computeStabilization(filteredCommits, allCommits, prevEnergy);
