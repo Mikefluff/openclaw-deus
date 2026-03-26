@@ -44,3 +44,43 @@ export interface SpatialCluster {
   radius: number;
   shared_words: string[];
 }
+
+// ═══════════════════════════════════════════
+// UNIFIED WORLD MODEL (concept space IS the world model)
+// ═══════════════════════════════════════════
+
+export interface WorldSnapshot {
+  dimensions: Dimension[];
+  dimension_count: number;
+  trace_count: number;
+  regions: SpatialCluster[];       // discovered categories
+  self_region: SpatialCluster | null; // traces about self
+  gradient_field: GradientField;    // current affect field
+  trajectories: Trajectory[];       // known cause-effect paths
+
+  // Derived from spatial state
+  confidence: number;               // coverage of space
+  coherence: number;                // cluster quality
+  gaps: SpatialGap[];              // empty regions
+}
+
+export interface Trajectory {
+  from_trace_id: string;
+  to_trace_id: string;
+  from_position: number[];
+  to_position: number[];
+  action: string;
+  confidence: number;
+  traversal_count: number;
+}
+
+export interface GradientField {
+  attractors: Array<{ position: number[]; strength: number; source: string }>;
+  repellers: Array<{ position: number[]; strength: number; source: string }>;
+}
+
+export interface SpatialGap {
+  position: number[];
+  expected_by: string;             // which dimension structure predicts traces here
+  severity: number;
+}

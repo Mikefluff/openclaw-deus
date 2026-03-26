@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SurrealService } from '../../database/surreal.service';
 import { CognitiveConfigService } from '../../cognitive/cognitive-config.service';
-import { Dimension, SpatialConflict, SpatialMovement, SpatialCluster } from './concept-space.types';
+import { Dimension, SpatialConflict, SpatialMovement, SpatialCluster, WorldSnapshot, GradientField, Trajectory, SpatialGap } from './concept-space.types';
 import { Trace } from '../kernel.types';
 
 /**
@@ -468,6 +468,273 @@ export class ConceptSpaceService {
       }
     }
     return shared;
+  }
+
+  // ═══════════════════════════════════════════
+  // WORLD SNAPSHOT (concept space IS the world model)
+  // ═══════════════════════════════════════════
+
+  /**
+   * The world model IS the concept space state.
+   * No SQL queries for beliefs/knowledge counts — spatial state IS reality.
+   */
+  async snapshot(): Promise<WorldSnapshot> {
+    const regions = await this.findClusters(2, 1.5);
+    const selfRegion = await this.getSelfRegion();
+    const gradientField = await this.computeGradientField();
+    const trajectories = await this.getTrajectories();
+    const traceCount = await this.getTraceCount();
+
+    // Confidence = how populated is the space
+    const dimPopulation = this.dimensions.length > 0 ? Math.min(1, traceCount / (this.dimensions.length * 5)) : 0;
+    const confidence = Math.min(1, this.dimensions.length * 0.15 + dimPopulation * 0.5);
+
+    // Coherence = cluster quality (tight clusters, clear separation)
+    const coherence = regions.length > 0
+      ? regions.reduce((s, r) => s + (1 / (1 + r.radius)), 0) / regions.length
+      : 0;
+
+    // Gaps = dimensions with few traces at their extremes
+    const gaps: SpatialGap[] = [];
+    for (const dim of this.dimensions) {
+      if (dim.positive_exemplars.length < 2) {
+        gaps.push({ position: this.extremePosition(dim.id, +1), expected_by: `dim_${dim.id}_positive`, severity: 0.5 });
+      }
+      if (dim.negative_exemplars.length < 2) {
+        gaps.push({ position: this.extremePosition(dim.id, -1), expected_by: `dim_${dim.id}_negative`, severity: 0.5 });
+      }
+    }
+
+    return {
+      dimensions: [...this.dimensions],
+      dimension_count: this.dimensions.length,
+      trace_count: traceCount,
+      regions,
+      self_region: selfRegion,
+      gradient_field: gradientField,
+      trajectories,
+      confidence: Math.round(confidence * 1000) / 1000,
+      coherence: Math.round(coherence * 1000) / 1000,
+      gaps,
+    };
+  }
+
+  // ═══════════════════════════════════════════
+  // SELF MODEL (traces about self in same space)
+  // ═══════════════════════════════════════════
+
+  async getSelfRegion(): Promise<SpatialCluster | null> {
+    const selfTraces = await this.db.query<Trace>(
+      `SELECT * FROM trace WHERE source_type = 'self' AND archived = false`,
+    );
+    if (selfTraces.isErr() || selfTraces.value.length === 0) return null;
+
+    const positions = selfTraces.value.map(t => t.position || []);
+    const centroid = this.computeCentroid(positions);
+    const maxDist = Math.max(0, ...selfTraces.value.map(t => this.distance(t.position || [], centroid)));
+
+    return {
+      centroid,
+      traces: selfTraces.value.map(t => t.trace_id),
+      radius: maxDist,
+      shared_words: this.sharedWords(selfTraces.value.map(t => t.content)),
+    };
+  }
+
+  /**
+   * Create a self-trace. Positioned near relevant knowledge in concept space.
+   */
+  async createSelfTrace(content: string, confidence: number): Promise<void> {
+    const position = await this.projectNewTrace(content);
+    await this.db.create('trace', {
+      trace_id: `TS${Date.now()}`,
+      source_type: 'self',
+      content: `[SELF] ${content}`,
+      weight: confidence * 0.8,
+      initial_weight: confidence * 0.8,
+      freshness: 1.0,
+      confidence,
+      emotional_charge: 0.15, // self-knowledge is mildly positive
+      reactivation_count: 0,
+      last_reactivated_cycle: 0,
+      reactivation_history: [],
+      created_at_cycle: 0,
+      position,
+      velocity: new Array(position.length).fill(0),
+      suppressed: false,
+      archived: false,
+    } as any);
+  }
+
+  // ═══════════════════════════════════════════
+  // TRAJECTORIES (prediction in space)
+  // ═══════════════════════════════════════════
+
+  async recordTrajectory(fromTraceId: string, toTraceId: string, action: string): Promise<void> {
+    const fromTrace = await this.db.query<Trace>('SELECT position FROM trace WHERE trace_id = $tid LIMIT 1', { tid: fromTraceId });
+    const toTrace = await this.db.query<Trace>('SELECT position FROM trace WHERE trace_id = $tid LIMIT 1', { tid: toTraceId });
+
+    if (fromTrace.isErr() || toTrace.isErr()) return;
+    const fromPos = fromTrace.value[0]?.position || [];
+    const toPos = toTrace.value[0]?.position || [];
+
+    await this.db.create('trajectory', {
+      from_trace_id: fromTraceId,
+      to_trace_id: toTraceId,
+      from_position: fromPos,
+      to_position: toPos,
+      action,
+      confidence: 0.5,
+      traversal_count: 1,
+    } as any);
+  }
+
+  async predict(currentPosition: number[], action: string): Promise<number[] | null> {
+    // Find trajectories starting near current position with matching action
+    const trajectories = await this.getTrajectories();
+    let bestMatch: Trajectory | null = null;
+    let bestDist = Infinity;
+
+    for (const t of trajectories) {
+      if (t.action !== action) continue;
+      const dist = this.distance(currentPosition, t.from_position);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestMatch = t;
+      }
+    }
+
+    if (!bestMatch || bestDist > 3.0) return null;
+    return bestMatch.to_position;
+  }
+
+  private async getTrajectories(): Promise<Trajectory[]> {
+    const result = await this.db.query<Trajectory>('SELECT * FROM trajectory ORDER BY traversal_count DESC LIMIT 20');
+    return result.isOk() ? result.value : [];
+  }
+
+  // ═══════════════════════════════════════════
+  // GRADIENT FIELD (desire from affect)
+  // ═══════════════════════════════════════════
+
+  async computeGradientField(): Promise<GradientField> {
+    const attractors: GradientField['attractors'] = [];
+    const repellers: GradientField['repellers'] = [];
+
+    // Success episodes → attractors (positions where good things happened)
+    const successEpisodes = await this.db.query<Trace>(
+      `SELECT position, weight FROM trace WHERE source_type = 'episode' AND emotional_charge > 0.1 AND archived = false LIMIT 10`,
+    );
+    if (successEpisodes.isOk()) {
+      for (const t of successEpisodes.value) {
+        if (t.position && t.position.length > 0) {
+          attractors.push({ position: t.position, strength: t.weight * t.emotional_charge, source: 'success_episode' });
+        }
+      }
+    }
+
+    // Failed episodes → repellers
+    const failedEpisodes = await this.db.query<Trace>(
+      `SELECT position, weight FROM trace WHERE source_type = 'episode' AND emotional_charge < -0.1 AND archived = false LIMIT 10`,
+    );
+    if (failedEpisodes.isOk()) {
+      for (const t of failedEpisodes.value) {
+        if (t.position && t.position.length > 0) {
+          repellers.push({ position: t.position, strength: t.weight * Math.abs(t.emotional_charge), source: 'failed_episode' });
+        }
+      }
+    }
+
+    // High-VOI regions → mild attractors (curiosity)
+    // Knowledge gaps → attractors (wanting to fill them)
+    const gaps = await this.db.query<any>(
+      `SELECT description FROM knowledge_gap WHERE status = 'open' AND impact > 0.5 LIMIT 5`,
+    );
+    if (gaps.isOk()) {
+      for (const g of gaps.value) {
+        const pos = await this.projectNewTrace(g.description || '');
+        if (pos.length > 0) {
+          attractors.push({ position: pos, strength: 0.3, source: 'curiosity' });
+        }
+      }
+    }
+
+    return { attractors, repellers };
+  }
+
+  /**
+   * Compute desire vector at a position: sum of attract/repel forces.
+   */
+  desireVector(position: number[], field: GradientField): number[] {
+    const len = position.length;
+    if (len === 0) return [];
+
+    const vector = new Array(len).fill(0);
+
+    for (const a of field.attractors) {
+      for (let d = 0; d < len; d++) {
+        const diff = (a.position[d] ?? 0) - (position[d] ?? 0);
+        const dist = this.distance(position, a.position);
+        const pull = a.strength / (1 + dist);
+        vector[d] += diff * pull * 0.1;
+      }
+    }
+
+    for (const r of field.repellers) {
+      for (let d = 0; d < len; d++) {
+        const diff = (position[d] ?? 0) - (r.position[d] ?? 0);
+        const dist = this.distance(position, r.position);
+        const push = r.strength / (1 + dist);
+        vector[d] += diff * push * 0.1;
+      }
+    }
+
+    return vector;
+  }
+
+  // ═══════════════════════════════════════════
+  // SPATIAL MEMORY DRIFT (forgetting = drift toward origin)
+  // ═══════════════════════════════════════════
+
+  /**
+   * All traces drift toward origin. Well-anchored traces barely move.
+   * Weak traces fade into [0,0,...,0] = "nothing / unknown".
+   */
+  async drift(driftRate = 0.01): Promise<void> {
+    const traces = await this.db.query<Trace>(
+      `SELECT trace_id, position, weight, reactivation_count, emotional_charge FROM trace WHERE archived = false AND array::len(position) > 0 LIMIT 200`,
+    );
+    if (traces.isErr()) return;
+
+    for (const trace of traces.value) {
+      if (!trace.position || trace.position.length === 0) continue;
+
+      // Drift rate modulated by anchoring
+      const anchoring = Math.log2(2 + (trace.reactivation_count || 0)) * (1 + Math.abs(trace.emotional_charge || 0));
+      const effectiveDrift = driftRate / anchoring;
+
+      const newPos = trace.position.map(p => p * (1 - effectiveDrift));
+
+      await this.db.execute(
+        `UPDATE trace SET position = $pos WHERE trace_id = $tid`,
+        { pos: newPos, tid: trace.trace_id },
+      );
+    }
+  }
+
+  // ═══════════════════════════════════════════
+  // HELPERS
+  // ═══════════════════════════════════════════
+
+  private extremePosition(dimId: number, direction: number): number[] {
+    const pos = new Array(this.dimensions.length).fill(0);
+    if (dimId < pos.length) pos[dimId] = direction;
+    return pos;
+  }
+
+  private async getTraceCount(): Promise<number> {
+    const r = await this.db.query<{ c: number }>('SELECT count() AS c FROM trace WHERE archived = false GROUP ALL');
+    return r.isOk() && r.value.length > 0 ? r.value[0].c : 0;
   }
 
   /**

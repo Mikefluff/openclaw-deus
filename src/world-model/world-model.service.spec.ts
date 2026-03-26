@@ -10,6 +10,7 @@ import { EpisodeService } from '../experience/episode.service';
 import { SurrealService } from '../database/surreal.service';
 import { CognitiveConfigService } from '../cognitive/cognitive-config.service';
 import { TemporalCognitionService } from '../cognitive/temporal-cognition.service';
+import { ConceptSpaceService } from '../kernel/space/concept-space.service';
 import { mockCognitiveConfig } from '../__mocks__/cognitive-config.mock';
 import { ok } from 'neverthrow';
 import { Belief } from '../common/types/belief.types';
@@ -80,6 +81,7 @@ describe('WorldModelService', () => {
         } },
         { provide: CognitiveConfigService, useValue: mockCognitiveConfig },
         { provide: TemporalCognitionService, useValue: { perceive: jest.fn().mockResolvedValue({ isOk: () => true, value: { cognitive_age: 10, tempo: 3, dilation: 1, phase: 'active' } }), subjectiveDurationSince: jest.fn().mockResolvedValue({ isOk: () => true, value: { felt_hours: 1, clock_hours: 1, dilation_ratio: 1 } }) } },
+        { provide: ConceptSpaceService, useValue: { getDimensionCount: jest.fn().mockReturnValue(0) } },
       ],
     }).compile();
 
