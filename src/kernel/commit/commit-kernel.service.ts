@@ -175,49 +175,6 @@ export class CommitKernelService {
     };
   }
 
-  /**
-   * Subjective duration of a trace: how "long ago" it FEELS.
-   * Not clock time — cognitive distance.
-   */
-  subjectiveAge(trace: { created_at_cycle: number; reactivation_count: number; weight: number; freshness: number }): {
-    cognitive_distance: number;  // cycles since creation
-    felt_distance: string;      // "just now" | "recent" | "a while ago" | "long ago" | "ancient"
-    reason: string;
-  } {
-    const cycle = this.traceGraph.getCycle();
-    const cycleDist = cycle - trace.created_at_cycle;
-
-    // Adjust by reactivation: frequently reactivated = feels closer
-    const reactivationFactor = 1 / Math.log2(2 + trace.reactivation_count);
-    // Adjust by weight: high weight = feels closer
-    const weightFactor = 1 - trace.weight * 0.5;
-    // Adjust by freshness: low freshness = feels older
-    const freshnessFactor = 1 + (1 - trace.freshness) * 0.5;
-
-    const feltDistance = cycleDist * reactivationFactor * weightFactor * freshnessFactor;
-
-    let label: string;
-    let reason: string;
-    if (feltDistance < 2) {
-      label = 'just now';
-      reason = 'high activation, very recent';
-    } else if (feltDistance < 10) {
-      label = 'recent';
-      reason = trace.reactivation_count > 3 ? 'frequently recalled' : 'still fresh';
-    } else if (feltDistance < 50) {
-      label = 'a while ago';
-      reason = trace.freshness < 0.5 ? 'fading from memory' : 'moderately distant';
-    } else if (feltDistance < 200) {
-      label = 'long ago';
-      reason = 'significant cognitive distance';
-    } else {
-      label = 'ancient';
-      reason = 'deep memory, rarely accessed';
-    }
-
-    return { cognitive_distance: Math.round(feltDistance), felt_distance: label, reason };
-  }
-
   getCommitCount(): number { return this.commitCount; }
 
   /**

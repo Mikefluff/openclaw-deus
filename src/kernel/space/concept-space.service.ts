@@ -16,8 +16,6 @@ import { Trace } from '../kernel.types';
  */
 
 const NEGATION_WORDS = ['не', 'нет', 'без', 'никогда', 'not', 'no', 'without', 'never', 'unlike'];
-const CONFLICT_RADIUS = 2.0;
-const SEPARATION_THRESHOLD = 0.5;
 
 @Injectable()
 export class ConceptSpaceService {
@@ -102,16 +100,18 @@ export class ConceptSpaceService {
     const dist = this.distance(posA, posB);
 
     // Same region? (within conflict radius)
-    if (dist > CONFLICT_RADIUS && posA.length > 0) return null;
+    const conflictRadius = this.config.get('kernel.conflict_radius');
+    if (dist > conflictRadius && posA.length > 0) return null;
 
     // Opposing content?
     if (!this.hasOpposition(traceA.content, traceB.content)) return null;
 
     // Already separated by existing dimension?
+    const separationThreshold = this.config.get('kernel.separation_threshold');
     for (const dim of this.dimensions) {
       const aVal = posA[dim.id] ?? 0;
       const bVal = posB[dim.id] ?? 0;
-      if (Math.abs(aVal - bVal) > SEPARATION_THRESHOLD) return null;
+      if (Math.abs(aVal - bVal) > separationThreshold) return null;
     }
 
     return {

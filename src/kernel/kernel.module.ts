@@ -59,7 +59,6 @@ import { PolicyModule } from '../policy/policy.module';
 export class KernelModule implements OnModuleInit {
   constructor(
     private readonly kernelLoop: KernelLoopService,
-    private readonly traceGraph: TraceGraphService,
     private readonly conceptSpace: ConceptSpaceService,
     private readonly sensory: SensoryAgent,
     private readonly predictive: PredictiveAgent,
@@ -69,8 +68,6 @@ export class KernelModule implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
-    // Wire concept space to trace graph (avoids circular DI)
-    this.traceGraph.setConceptSpace(this.conceptSpace);
     await this.conceptSpace.loadDimensions();
 
     // Register agents into the kernel swarm

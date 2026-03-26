@@ -133,6 +133,10 @@ const DEFAULTS: Record<string, Omit<CognitiveParam, 'key'>> = {
 
   // --- Kernel: LLM budget per think() ---
   'kernel.llm_budget_per_think': { value: 8, description: 'Max LLM calls per think() invocation', min: 1, max: 30, tunable: true },
+
+  // --- Kernel: concept space ---
+  'kernel.conflict_radius': { value: 2.0, description: 'Max distance for conflict detection', min: 0.5, max: 10, tunable: true },
+  'kernel.separation_threshold': { value: 0.5, description: 'Min separation along dimension to resolve conflict', min: 0.1, max: 3, tunable: true },
 };
 
 @Injectable()

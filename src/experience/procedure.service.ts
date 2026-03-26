@@ -57,6 +57,19 @@ export class ProcedureService {
 
     if (result.isErr()) return ok([]);
 
+    // Compute success rate from source episodes
+    const totalEpisodes = episodes.value.length;
+    const successEpisodes = await this.db.query<{ c: number }>(
+      `SELECT count() AS c FROM episode WHERE outcome = 'success' AND episode_id IN $eids GROUP ALL`,
+      { eids: episodes.value.map((e) => e.episode_id) },
+    );
+    const successCount = successEpisodes.isOk() && successEpisodes.value.length > 0
+      ? successEpisodes.value[0].c
+      : 0;
+    const computedSuccessRate = totalEpisodes > 0
+      ? Math.round((successCount / totalEpisodes) * 100) / 100
+      : 0.5;
+
     const created: Procedure[] = [];
     for (const proc of result.value.data.procedures) {
       const procId = `PROC${String(this.nextId++).padStart(3, '0')}`;
@@ -66,7 +79,7 @@ export class ProcedureService {
         steps: proc.steps,
         when_to_use: proc.when_to_use,
         when_not_to_use: proc.when_not_to_use,
-        success_rate: 0.8,
+        success_rate: computedSuccessRate,
         episode_ids: episodes.value.map((e) => e.episode_id),
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),

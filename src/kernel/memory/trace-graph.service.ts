@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { Result, ok, err } from 'neverthrow';
 import { DomainError } from '../../common/types/result.types';
 import { SurrealService } from '../../database/surreal.service';
@@ -22,17 +22,12 @@ export class TraceGraphService {
   private cycle = 0;
   private traceIdCounter = 0;
 
-  private conceptSpace!: ConceptSpaceService;
-
   constructor(
     private readonly db: SurrealService,
     private readonly config: CognitiveConfigService,
+    @Inject(forwardRef(() => ConceptSpaceService))
+    private readonly conceptSpace: ConceptSpaceService,
   ) {}
-
-  /** Set concept space (avoids circular dependency in DI) */
-  setConceptSpace(cs: ConceptSpaceService): void {
-    this.conceptSpace = cs;
-  }
 
   getCycle(): number { return this.cycle; }
   tick(): number { return ++this.cycle; }
@@ -362,17 +357,14 @@ export class TraceGraphService {
     return r.isOk() && r.value.length > 0 ? r.value[0].c : 0;
   }
 
+
   /**
-   * Get active trace IDs for signal targeting.
-   * Agents should call this to populate signal.targets.
+   * Query active inhibition edges for conflict detection.
    */
-  async getActiveTraceIds(content: string, limit = 5): Promise<string[]> {
-    // Find traces related to content
-    const traces = await this.db.query<Trace>(
-      `SELECT trace_id FROM trace WHERE archived = false AND suppressed = false ORDER BY weight DESC LIMIT $limit`,
-      { limit },
+  async queryInhibits(): Promise<Result<Array<{ a: string; b: string; w: number }>, DomainError>> {
+    return this.db.query<{ a: string; b: string; w: number }>(
+      `SELECT in.content AS a, out.content AS b, weight AS w FROM inhibits WHERE in.trace_id IN (SELECT trace_id FROM trace WHERE archived = false AND suppressed = false AND weight > 0.3) ORDER BY weight DESC LIMIT 5`,
     );
-    return traces.isOk() ? traces.value.map(t => t.trace_id) : [];
   }
 
   // ═══════════════════════════════════════════

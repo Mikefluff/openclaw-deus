@@ -50,6 +50,7 @@ export class AffectiveAgent implements CognitiveAgent {
       content: `Affect: mode=${affect.mode}, valence=${affect.valence}, arousal=${affect.arousal}, pain=${affect.pain.intensity}`,
       payload: {
         importance: importanceScore.score,
+        importance_factors: importanceScore.factors,
         charge: affect.valence,
         hormones: affect.hormones,
         pain: affect.pain,

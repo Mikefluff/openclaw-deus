@@ -669,9 +669,7 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
 
   private async detectConflicts(): Promise<Array<{ trace_a: string; trace_b: string; tension: number }>> {
     try {
-      const inhibits = await this.traceGraph['db'].query<{ a: string; b: string; w: number }>(
-        `SELECT in.content AS a, out.content AS b, weight AS w FROM inhibits WHERE in.trace_id IN (SELECT trace_id FROM trace WHERE archived = false AND suppressed = false AND weight > 0.3) ORDER BY weight DESC LIMIT 5`,
-      );
+      const inhibits = await this.traceGraph.queryInhibits();
       if (inhibits.isErr()) return [];
       return inhibits.value.map(i => ({ trace_a: (i.a || '').slice(0, 50), trace_b: (i.b || '').slice(0, 50), tension: i.w || 0 }));
     } catch { return []; }

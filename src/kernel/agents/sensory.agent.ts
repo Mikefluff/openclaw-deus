@@ -3,7 +3,6 @@ import { Signal } from '../kernel.types';
 import { CognitiveAgent, AgentContext } from '../kernel-loop.service';
 import { IntentionRecognitionService } from '../../intention/services/intention-recognition.service';
 import { KnowledgeExtractionService } from '../../knowledge/services/knowledge-extraction.service';
-import { KnowledgeService } from '../../knowledge/knowledge.service';
 
 /**
  * SensoryAgent (rank 1): "What changed? What is new?"
@@ -26,7 +25,6 @@ export class SensoryAgent implements CognitiveAgent {
   constructor(
     private readonly intentionRecognition: IntentionRecognitionService,
     private readonly knowledgeExtraction: KnowledgeExtractionService,
-    private readonly knowledge: KnowledgeService,
   ) {}
 
   async process(input: string, context: AgentContext): Promise<Signal[]> {
@@ -233,11 +231,5 @@ export class SensoryAgent implements CognitiveAgent {
     } catch (e) {
       this.logger.warn(`Slow-path extraction failed: ${e}`);
     }
-  }
-
-  private async assessNovelty(input: string): Promise<number> {
-    const similar = await this.knowledge.findSimilar(input, 0.5);
-    if (similar.isErr() || similar.value.length === 0) return 0.9;
-    return Math.max(0.1, 1 - similar.value.length * 0.15);
   }
 }
