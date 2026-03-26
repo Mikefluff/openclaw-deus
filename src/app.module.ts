@@ -25,6 +25,7 @@ import { OperatorModelModule } from './operator-model/operator-model.module';
 import { DeliberationModule } from './deliberation/deliberation.module';
 import { ExperienceModule } from './experience/experience.module';
 import { MetricsModule } from './metrics/metrics.module';
+import { KernelModule } from './kernel/kernel.module';
 
 @Module({
   imports: [
@@ -57,6 +58,7 @@ import { MetricsModule } from './metrics/metrics.module';
     DeliberationModule,
     ExperienceModule,
     MetricsModule,
+    KernelModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
