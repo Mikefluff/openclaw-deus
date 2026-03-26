@@ -36,6 +36,9 @@ export class SensoryAgent implements CognitiveAgent {
     const novelty = await this.assessNovelty(input);
     const isNovel = novelty > 0.6;
 
+    // Target active traces so convergence detection can find agreement
+    const targets = context.active_traces.slice(0, 3).map(t => t.trace_id);
+
     signals.push({
       agent_id: this.id,
       agent_rank: this.rank,
@@ -45,12 +48,12 @@ export class SensoryAgent implements CognitiveAgent {
       confidence: 0.8,
       novelty_cost: isNovel ? 0.3 : 0.05,
       used_slow_path: false,
-      targets: [],
+      targets,
       cycle: context.cycle,
     });
 
-    // SLOW PATH: if novel enough, do full LLM extraction
-    if (isNovel || input.length > 100) {
+    // SLOW PATH: if novel enough AND budget allows, do full LLM extraction
+    if ((isNovel || input.length > 100) && context.llm_budget.remaining > 0) {
       try {
         // Intention recognition (substrate service)
         const intentResult = await this.intentionRecognition.recognizeFromMessage(input);

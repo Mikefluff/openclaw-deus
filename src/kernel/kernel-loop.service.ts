@@ -7,6 +7,7 @@ import {
 } from './kernel.types';
 import { TraceGraphService } from './memory/trace-graph.service';
 import { CommitKernelService } from './commit/commit-kernel.service';
+import { CognitiveConfigService } from '../cognitive/cognitive-config.service';
 
 /**
  * KernelLoop: Self-recursive inner dialogue.
@@ -24,9 +25,7 @@ import { CommitKernelService } from './commit/commit-kernel.service';
  * - 3 cycles of only internal confirmations without orthogonal signals = suspected hallucination
  */
 
-const MAX_ITERATIONS = 12;           // hard ceiling
-const ENERGY_STABLE_THRESHOLD = 0.1; // below this = converged
-const HALLUCINATION_CYCLES = 3;      // cycles without orthogonal signals → stop
+// All constants from CognitiveConfigService — no hardcoded magic numbers
 
 export interface CognitiveAgent {
   id: string;
@@ -40,7 +39,8 @@ export interface AgentContext {
   time_sense: TimeSense;
   active_traces: Array<{ trace_id: string; content: string; weight: number }>;
   phenomenal_state: PhenomenalState | null;
-  is_reflection: boolean;       // true on iteration 1+: system is reflecting on itself
+  is_reflection: boolean;
+  llm_budget: { remaining: number; used: number; total: number };
 }
 
 @Injectable()
@@ -48,9 +48,12 @@ export class KernelLoopService {
   private readonly logger = new Logger(KernelLoopService.name);
   private agents: CognitiveAgent[] = [];
 
+  private llmCallsUsed = 0;
+
   constructor(
     private readonly traceGraph: TraceGraphService,
     private readonly commitKernel: CommitKernelService,
+    private readonly config: CognitiveConfigService,
   ) {}
 
   registerAgent(agent: CognitiveAgent): void {
@@ -68,19 +71,24 @@ export class KernelLoopService {
     let totalSignals = 0;
     let phenomenalState: PhenomenalState | null = null;
 
-    // Recursion guardrails
+    // Reset LLM budget for this invocation
+    this.llmCallsUsed = 0;
+    const llmBudget = this.config.get('kernel.llm_budget_per_think');
+
     const guard: RecursionGuard = {
       consecutive_self_model_commits: 0,
       uncertainty_trend: [],
       orthogonal_signal_deficit: 0,
     };
 
-    // Energy tracking for stabilization
     let prevEnergy = Infinity;
+    const maxIterations = this.config.get('kernel.max_iterations');
+    const hallucinationLimit = this.config.get('kernel.hallucination_cycles');
+    const energyThreshold = this.config.get('kernel.energy_stable_threshold');
 
     this.logger.log(`Kernel.think("${input.slice(0, 50)}...")`);
 
-    for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
+    for (let iteration = 0; iteration < maxIterations; iteration++) {
       const cycle = this.traceGraph.tick();
       const isReflection = iteration > 0;
 
@@ -100,8 +108,8 @@ export class KernelLoopService {
       const hasOrthogonal = this.hasOrthogonalSignals(signals, allCommits);
       if (isReflection && !hasOrthogonal) {
         guard.orthogonal_signal_deficit++;
-        if (guard.orthogonal_signal_deficit >= HALLUCINATION_CYCLES) {
-          this.logger.warn(`Cycle ${cycle}: suspected hallucination loop — ${HALLUCINATION_CYCLES} cycles without orthogonal signals`);
+        if (guard.orthogonal_signal_deficit >= hallucinationLimit) {
+          this.logger.warn(`Cycle ${cycle}: suspected hallucination loop — ${hallucinationLimit} cycles without orthogonal signals`);
           break;
         }
       } else {
@@ -115,22 +123,23 @@ export class KernelLoopService {
       const cycleCommits = commitResult.value;
 
       // --- Guardrail: no 2 consecutive self_model commits without new evidence ---
-      for (const c of cycleCommits) {
+      const filteredCommits = cycleCommits.filter(c => {
         if (c.type === 'self_model') {
           guard.consecutive_self_model_commits++;
           if (guard.consecutive_self_model_commits > 1) {
-            this.logger.warn(`Cycle ${cycle}: blocked second consecutive self_model commit without new evidence`);
-            cycleCommits.splice(cycleCommits.indexOf(c), 1);
+            this.logger.warn(`Cycle ${cycle}: blocked consecutive self_model commit without new evidence`);
+            return false;
           }
         } else {
           guard.consecutive_self_model_commits = 0;
         }
-      }
+        return true;
+      });
 
-      allCommits.push(...cycleCommits);
+      allCommits.push(...filteredCommits);
 
       // --- Compute stabilization energy ---
-      const stabilization = this.computeStabilization(cycleCommits, allCommits, prevEnergy);
+      const stabilization = this.computeStabilization(filteredCommits, allCommits, prevEnergy);
       prevEnergy = stabilization.energy;
 
       // Track uncertainty trend
@@ -155,11 +164,17 @@ export class KernelLoopService {
 
       this.logger.log(
         `Cycle ${cycle}: ${signals.length} signals, ${cycleCommits.length} commits, ` +
-        `energy=${stabilization.energy.toFixed(3)} (threshold=${ENERGY_STABLE_THRESHOLD})`,
+        `energy=${stabilization.energy.toFixed(3)} (threshold=${energyThreshold})`,
       );
 
+      // If no commits survived filtering → stable
+      if (filteredCommits.length === 0) {
+        this.logger.log(`Cycle ${cycle}: no commits after filtering — converged`);
+        break;
+      }
+
       // --- Energy-based stop condition ---
-      if (stabilization.stable) {
+      if (stabilization.energy < energyThreshold) {
         this.logger.log(`Cycle ${cycle}: STABLE after ${iteration + 1} iterations (energy=${stabilization.energy.toFixed(3)})`);
         break;
       }
@@ -240,12 +255,17 @@ export class KernelLoopService {
     // Pending escalations
     const escalations = cycleCommits.filter(c => c.is_escalation).length;
 
-    // Composite energy
-    const energy = convergencePressure * 0.3
+    const wNovelty = this.config.get('kernel.energy_w_novelty');
+    const wPredErr = this.config.get('kernel.energy_w_pred_error');
+    const wUrgency = this.config.get('kernel.energy_w_urgency');
+
+    const energy = convergencePressure * wNovelty
       + newHighEnergy * 0.2
-      + commitDelta * 0.2
+      + commitDelta * wPredErr
       + Math.max(0, predTrend) * 0.15
-      + escalations * 0.15;
+      + escalations * wUrgency;
+
+    const threshold = this.config.get('kernel.energy_stable_threshold');
 
     return {
       convergence_pressure: convergencePressure,
@@ -254,7 +274,7 @@ export class KernelLoopService {
       prediction_error_trend: predTrend,
       pending_escalations: escalations,
       energy: Math.round(energy * 1000) / 1000,
-      stable: energy < ENERGY_STABLE_THRESHOLD,
+      stable: energy < threshold,
     };
   }
 
@@ -366,9 +386,9 @@ export class KernelLoopService {
     return {
       total_cycles: this.traceGraph.getCycle(),
       total_commits: commits.length,
-      converged: commits.length > 0 && commits[commits.length - 1].energy < ENERGY_STABLE_THRESHOLD,
+      converged: commits.length === 0 || (commits.length > 0 && commits[commits.length - 1].energy < this.config.get('kernel.energy_stable_threshold')),
       convergence_reason: commits.length === 0 ? 'no signals'
-        : commits[commits.length - 1].energy < ENERGY_STABLE_THRESHOLD ? 'energy below threshold'
+        : commits[commits.length - 1].energy < this.config.get('kernel.energy_stable_threshold') ? 'energy below threshold'
         : 'max iterations',
 
       what_changed: whatChanged,
@@ -401,6 +421,11 @@ export class KernelLoopService {
         : [],
       phenomenal_state: phenomenalState,
       is_reflection: isReflection,
+      llm_budget: {
+        remaining: Math.max(0, this.config.get('kernel.llm_budget_per_think') - this.llmCallsUsed),
+        used: this.llmCallsUsed,
+        total: this.config.get('kernel.llm_budget_per_think'),
+      },
     };
   }
 }

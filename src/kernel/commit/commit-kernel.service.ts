@@ -4,22 +4,18 @@ import { DomainError } from '../../common/types/result.types';
 import { SurrealService } from '../../database/surreal.service';
 import { CommitDelta, CommitType, Signal, TimeSense } from '../kernel.types';
 import { TraceGraphService } from '../memory/trace-graph.service';
+import { CognitiveConfigService } from '../../cognitive/cognitive-config.service';
 
 /**
  * CommitKernel: The attention bottleneck.
  *
  * Does NOT see raw events. Receives only:
  * - Convergent signals (2+ agents agree on same traces)
- * - Escalations (single agent urgency > 0.9)
+ * - Escalations (single agent urgency > threshold)
  *
  * Each commit atomically updates the world state and is logged immutably.
  * Commits are what the system "notices" — everything else is unconscious.
  */
-
-const CONVERGENCE_THRESHOLD = 0.4;   // 2/5 agents = 0.4
-const ESCALATION_THRESHOLD = 0.9;
-const ATTENTION_WINDOW = 20;          // last N commits in working memory
-
 @Injectable()
 export class CommitKernelService {
   private readonly logger = new Logger(CommitKernelService.name);
@@ -28,6 +24,7 @@ export class CommitKernelService {
   constructor(
     private readonly db: SurrealService,
     private readonly traceGraph: TraceGraphService,
+    private readonly config: CognitiveConfigService,
   ) {}
 
   /**
@@ -44,10 +41,11 @@ export class CommitKernelService {
     if (activated.isErr()) return err(activated.error);
 
     // 2. Find convergent clusters
-    const clusters = await this.traceGraph.findConvergentClusters(signals, CONVERGENCE_THRESHOLD);
+    const clusters = await this.traceGraph.findConvergentClusters(signals);
 
     // 3. Check for escalations (single agent, high urgency)
-    const escalations = signals.filter(s => s.confidence > ESCALATION_THRESHOLD);
+    const escThreshold = this.config.get('kernel.escalation_threshold');
+    const escalations = signals.filter(s => s.confidence > escThreshold);
 
     // 4. Create commits from convergent clusters
     for (const cluster of clusters) {
@@ -107,9 +105,10 @@ export class CommitKernelService {
    * Get recent commits (attention window = working memory).
    */
   async getAttentionWindow(): Promise<Result<CommitDelta[], DomainError>> {
+    const window = this.config.get('kernel.attention_window');
     return this.db.query<CommitDelta>(
       `SELECT * FROM commit_log ORDER BY cycle DESC LIMIT $limit`,
-      { limit: ATTENTION_WINDOW },
+      { limit: window },
     );
   }
 
@@ -147,10 +146,11 @@ export class CommitKernelService {
       ? 1 - (activeTraces.value.reduce((s, t) => s + t.freshness, 0) / activeTraces.value.length)
       : 0;
 
-    // Dilation: emergent time perception
-    // High novelty + high prediction error = time stretches (feels slow)
-    // Low novelty + low prediction error = time compresses (feels fast)
-    const dilation = 0.5 + noveltyRate * 0.7 + predErrorRate * 0.5 - (1 - tempo) * 0.2;
+    // Dilation: emergent time perception (learnable weights)
+    const wNov = this.config.get('kernel.dilation_novelty_w');
+    const wPred = this.config.get('kernel.dilation_pred_error_w');
+    const wTempo = this.config.get('kernel.dilation_tempo_w');
+    const dilation = 0.5 + noveltyRate * wNov + predErrorRate * wPred - (1 - tempo) * wTempo;
 
     // Rhythm phase: based on recent commit density pattern
     const phase = tempo > 0.5 ? 'active'
@@ -236,7 +236,10 @@ export class CommitKernelService {
   }
 
   private computeEnergy(novelty: number, predError: number, urgency: number): number {
-    return Math.round((novelty * 0.4 + predError * 0.3 + urgency * 0.3) * 1000) / 1000;
+    const wN = this.config.get('kernel.energy_w_novelty');
+    const wP = this.config.get('kernel.energy_w_pred_error');
+    const wU = this.config.get('kernel.energy_w_urgency');
+    return Math.round((novelty * wN + predError * wP + urgency * wU) * 1000) / 1000;
   }
 
   private buildCommit(

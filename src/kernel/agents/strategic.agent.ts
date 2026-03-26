@@ -31,8 +31,8 @@ export class StrategicAgent implements CognitiveAgent {
   async process(input: string, context: AgentContext): Promise<Signal[]> {
     const signals: Signal[] = [];
 
-    // Only deliberate on first cycle (not reflection) and when there are active intentions
-    if (context.is_reflection && context.cycle > 2) return signals;
+    // Only deliberate when: not deep reflection, budget available, and active intentions exist
+    if ((context.is_reflection && context.cycle > 2) || context.llm_budget.remaining <= 0) return signals;
 
     // Find intentions that need deliberation
     const activeResult = await this.intentions.findActive();
@@ -67,9 +67,9 @@ export class StrategicAgent implements CognitiveAgent {
             options_count: delib.deliberation.options.length,
           },
           confidence: delib.safety_passed ? 0.8 : 0.5,
-          novelty_cost: 0.8, // slow-path always expensive
+          novelty_cost: 0.8,
           used_slow_path: true,
-          targets: [],
+          targets: context.active_traces.slice(0, 3).map(t => t.trace_id),
           cycle: context.cycle,
         });
       }

@@ -51,7 +51,7 @@ export class PriorityAgent implements CognitiveAgent {
       confidence: 0.7,
       novelty_cost: 0.1,
       used_slow_path: false,
-      targets: [],
+      targets: context.active_traces.slice(0, 3).map(t => t.trace_id),
       cycle: context.cycle,
     });
 

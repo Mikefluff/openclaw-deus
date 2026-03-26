@@ -101,6 +101,38 @@ const DEFAULTS: Record<string, Omit<CognitiveParam, 'key'>> = {
   'query.procedure_limit': { value: 5, description: 'Limit for procedure search results', min: 1, max: 20, tunable: false },
   'query.causal_decision_limit': { value: 100, description: 'Limit for policy decisions in causal graph', min: 10, max: 500, tunable: false },
   'query.embeddings_fallback_limit': { value: 500, description: 'Limit for brute-force embedding fallback', min: 50, max: 2000, tunable: false },
+
+  // --- Kernel: spreading activation ---
+  'kernel.activation_boost': { value: 0.15, description: 'Weight boost when trace reactivated', min: 0.01, max: 0.5, tunable: true },
+  'kernel.spread_factor': { value: 0.3, description: 'Activation spread to neighbors', min: 0.05, max: 0.8, tunable: true },
+  'kernel.inhibition_factor': { value: 0.2, description: 'Inhibition spread to opponents', min: 0.05, max: 0.6, tunable: true },
+  'kernel.freshness_decay': { value: 0.02, description: 'Freshness decay per cycle', min: 0.001, max: 0.1, tunable: true },
+  'kernel.archive_threshold': { value: 0.01, description: 'weight*freshness below this → archive', min: 0.001, max: 0.1, tunable: true },
+
+  // --- Kernel: commit & stabilization ---
+  'kernel.convergence_threshold': { value: 0.4, description: 'Min convergence score for commit', min: 0.1, max: 0.9, tunable: true },
+  'kernel.escalation_threshold': { value: 0.9, description: 'Single-agent urgency for escalation commit', min: 0.7, max: 1.0, tunable: true },
+  'kernel.energy_stable_threshold': { value: 0.1, description: 'Energy below this = converged', min: 0.01, max: 0.5, tunable: true },
+  'kernel.max_iterations': { value: 12, description: 'Hard ceiling on kernel cycles', min: 3, max: 50, tunable: true },
+  'kernel.hallucination_cycles': { value: 3, description: 'Cycles without orthogonal signals → stop', min: 1, max: 10, tunable: true },
+  'kernel.energy_w_novelty': { value: 0.4, description: 'Novelty weight in energy computation', min: 0.1, max: 0.8, tunable: true },
+  'kernel.energy_w_pred_error': { value: 0.3, description: 'Prediction error weight in energy', min: 0.1, max: 0.8, tunable: true },
+  'kernel.energy_w_urgency': { value: 0.3, description: 'Urgency weight in energy', min: 0.1, max: 0.8, tunable: true },
+  'kernel.attention_window': { value: 20, description: 'Commits in working memory', min: 5, max: 100, tunable: true },
+
+  // --- Kernel: graph learning ---
+  'kernel.hebbian_learning_rate': { value: 0.05, description: 'Hebbian co-activation learning rate', min: 0.001, max: 0.2, tunable: true },
+  'kernel.hebbian_decay_rate': { value: 0.02, description: 'Anti-Hebbian decay for inactive edges', min: 0.001, max: 0.1, tunable: true },
+  'kernel.reinforcement_rate': { value: 0.1, description: 'Outcome reinforcement strength', min: 0.01, max: 0.5, tunable: true },
+  'kernel.pred_error_backprop_rate': { value: 0.08, description: 'Prediction error backprop through edges', min: 0.01, max: 0.3, tunable: true },
+
+  // --- Kernel: time-sense ---
+  'kernel.dilation_novelty_w': { value: 0.7, description: 'Novelty weight in time dilation', min: 0.1, max: 2.0, tunable: true },
+  'kernel.dilation_pred_error_w': { value: 0.5, description: 'Pred error weight in time dilation', min: 0.1, max: 2.0, tunable: true },
+  'kernel.dilation_tempo_w': { value: 0.2, description: 'Tempo weight in time dilation', min: 0.0, max: 1.0, tunable: true },
+
+  // --- Kernel: LLM budget per think() ---
+  'kernel.llm_budget_per_think': { value: 8, description: 'Max LLM calls per think() invocation', min: 1, max: 30, tunable: true },
 };
 
 @Injectable()
