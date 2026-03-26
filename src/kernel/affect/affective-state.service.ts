@@ -72,7 +72,7 @@ export class AffectiveStateService implements OnModuleInit {
   private readonly logger = new Logger(AffectiveStateService.name);
 
   // Raw accumulators (running state)
-  private acc = new Array(N_ACCUMULATORS); // [pred_error, tension, pain, convergence, reward, novelty, stability]
+  private acc: number[] = new Array(N_ACCUMULATORS).fill(0); // [pred_error, tension, pain, convergence, reward, novelty, stability]
   private painCyclesUnresolved = 0;
   private lastPainSource = 'none';
   private lastLoss = 0;
@@ -85,10 +85,10 @@ export class AffectiveStateService implements OnModuleInit {
   private stepCount = 0;
 
   // Cached forward pass (for backward pass)
-  private lastHormones = new Array(N_HORMONES);
-  private lastHormoneLogits = new Array(N_HORMONES);
-  private lastConfigDeltas = new Array(N_CONFIG_TARGETS);
-  private lastModeProbs = new Array(N_MODES);
+  private lastHormones: number[] = new Array(N_HORMONES).fill(0.5);
+  private lastHormoneLogits: number[] = new Array(N_HORMONES).fill(0);
+  private lastConfigDeltas: number[] = new Array(N_CONFIG_TARGETS).fill(0);
+  private lastModeProbs: number[] = new Array(N_MODES).fill(0.25);
 
   constructor(private readonly db: SurrealService) {}
 
@@ -153,7 +153,7 @@ export class AffectiveStateService implements OnModuleInit {
     }
 
     // Mode: hormones × W_mode → softmax → probabilities
-    const modeLogits = new Array(N_MODES);
+    const modeLogits = new Array(N_MODES).fill(0) as number[];
     for (let j = 0; j < N_MODES; j++) {
       let sum = 0;
       for (let i = 0; i < N_HORMONES; i++) {
@@ -190,7 +190,7 @@ export class AffectiveStateService implements OnModuleInit {
     // pathways that reduce it (convergence, reward) and weaken those that increase it (error, pain)
 
     // ∂loss/∂hormone_j ≈ sign based on which accumulators this hormone is connected to
-    const dL_dH = new Array(N_HORMONES);
+    const dL_dH = new Array(N_HORMONES).fill(0) as number[];
     for (let j = 0; j < N_HORMONES; j++) {
       let grad = 0;
       for (let i = 0; i < N_ACCUMULATORS; i++) {
@@ -203,7 +203,7 @@ export class AffectiveStateService implements OnModuleInit {
     }
 
     // ∂sigmoid/∂logit = sigmoid * (1 - sigmoid)
-    const dSigmoid = new Array(N_HORMONES);
+    const dSigmoid = new Array(N_HORMONES).fill(0) as number[];
     for (let j = 0; j < N_HORMONES; j++) {
       dSigmoid[j] = this.lastHormones[j] * (1 - this.lastHormones[j]);
     }

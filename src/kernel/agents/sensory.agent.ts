@@ -43,13 +43,17 @@ export class SensoryAgent implements CognitiveAgent {
     // Change detection: what in the input is NEW vs already in active traces
     const { novelty, changed, unchanged } = this.detectChanges(input, context);
 
+    // Bootstrap: if no active traces exist, this is a completely new context → high confidence (escalation)
+    const isBootstrap = context.active_traces.length === 0;
+    const confidence = isBootstrap ? 0.95 : 0.8;
+
     signals.push({
       agent_id: this.id,
       agent_rank: this.rank,
       type: 'perception',
       content: `Input: novelty=${novelty.toFixed(2)}, ${changed.length} new aspects, ${unchanged.length} reinforcements`,
-      payload: { raw_input: input.slice(0, 500), novelty, changed, unchanged, is_novel: novelty > 0.6 },
-      confidence: 0.8,
+      payload: { raw_input: input.slice(0, 500), novelty, changed, unchanged, is_novel: novelty > 0.6, bootstrap: isBootstrap },
+      confidence,
       novelty_cost: novelty > 0.6 ? 0.3 : 0.05,
       used_slow_path: false,
       targets,

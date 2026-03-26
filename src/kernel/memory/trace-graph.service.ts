@@ -98,6 +98,17 @@ export class TraceGraphService {
       }
     }
 
+    // Auto-create edges between traces created/activated in the same cycle (bootstrap)
+    // This ensures the graph has structure from the first message
+    if (activatedTraces.length > 1) {
+      for (let i = 0; i < activatedTraces.length; i++) {
+        for (let j = i + 1; j < Math.min(activatedTraces.length, i + 4); j++) {
+          // Co-occurrence in same cycle → weak activates edge (Hebbian will strengthen if relevant)
+          await this.link(activatedTraces[i], activatedTraces[j], 'activates', 0.2);
+        }
+      }
+    }
+
     // Run spreading activation + Hebbian learning on activated traces
     for (const traceId of activatedTraces) {
       await this.spreadActivation(traceId);

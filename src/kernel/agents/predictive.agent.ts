@@ -32,6 +32,7 @@ export class PredictiveAgent implements CognitiveAgent {
   async process(input: string, context: AgentContext): Promise<Signal[]> {
     const signals: Signal[] = [];
 
+    // PredictiveAgent targets: traces IT predicted (not mechanical top-3)
     // Check prediction errors from previous cycle's predictions
     for (const trace of context.active_traces) {
       const predicted = this.lastPredictions.get(trace.trace_id);
@@ -47,7 +48,7 @@ export class PredictiveAgent implements CognitiveAgent {
             confidence: 0.8,
             novelty_cost: error, // prediction error IS novelty cost
             used_slow_path: false,
-            targets: [trace.trace_id],
+            targets: [trace.trace_id], // targets only traces with prediction errors
             cycle: context.cycle,
           });
         }

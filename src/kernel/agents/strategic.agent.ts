@@ -69,7 +69,11 @@ export class StrategicAgent implements CognitiveAgent {
           confidence: delib.safety_passed ? 0.8 : 0.5,
           novelty_cost: 0.8,
           used_slow_path: true,
-          targets: context.active_traces.slice(0, 3).map(t => t.trace_id),
+          // Target traces mentioning the intention (domain-specific, not mechanical top-3)
+          targets: context.active_traces
+            .filter(t => t.content.toLowerCase().includes(topIntention.description.slice(0, 20).toLowerCase()))
+            .slice(0, 3)
+            .map(t => t.trace_id),
           cycle: context.cycle,
         });
       }

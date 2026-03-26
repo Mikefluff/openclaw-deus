@@ -222,9 +222,14 @@ export class KernelLoopService {
       ),
     );
 
-    return signalArrays.flat()
+    const allSignals = signalArrays.flat()
       .filter(s => s.confidence >= 0.1)
       .map(s => ({ ...s, cycle }));
+
+    // Track LLM usage from slow-path signals
+    this.llmCallsUsed += allSignals.filter(s => s.used_slow_path).length;
+
+    return allSignals;
   }
 
   /**

@@ -25,13 +25,17 @@ export class PriorityAgent implements CognitiveAgent {
 
   async process(input: string, context: AgentContext): Promise<Signal[]> {
     const signals: Signal[] = [];
-    const targets = context.active_traces.slice(0, 3).map(t => t.trace_id);
 
     const activeResult = await this.intentions.findActive();
     if (activeResult.isErr()) return signals;
     const active = activeResult.value;
-
     if (active.length === 0) return signals;
+
+    // Target traces related to current top intention (not mechanical top-3)
+    const topDesc = active[0]?.description?.toLowerCase().slice(0, 20) || '';
+    const targets = topDesc
+      ? context.active_traces.filter(t => t.content.toLowerCase().includes(topDesc)).slice(0, 3).map(t => t.trace_id)
+      : context.active_traces.slice(0, 2).map(t => t.trace_id);
 
     // Top priority
     const top = active[0];
