@@ -62,6 +62,8 @@ The kernel is a continuous event loop:
 | [AFFECT.md](docs/AFFECT.md) | Gradient descent hormones, 5 drives, energy coupling |
 | [AGENCY.md](docs/AGENCY.md) | WorldBridge, action selection, help requesting |
 | [TRAINING.md](docs/TRAINING.md) | Virtual world, energy budget, running training |
+| [LIGHT-CONE.md](docs/LIGHT-CONE.md) | Multi-frequency processing, hot memory, write batching |
+| [ROADMAP.md](docs/ROADMAP.md) | Development strategy, 5 phases, success criteria |
 
 ## Numbers
 

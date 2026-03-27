@@ -101,3 +101,19 @@ Affect, energy, and attention are not sequential steps. They modulate ALL operat
 - **Affect** modulates: activation spread width, trace emotional charge, config parameters
 - **Energy** gates: LLM calls, trace creation depth, exploration vs exploitation
 - **Attention** selects: which modalities get deep vs shallow processing
+
+## Light Cone: Multi-Frequency Processing
+
+See [LIGHT-CONE.md](LIGHT-CONE.md) for details.
+
+Not everything runs at the same speed. Local = fast, global = slow:
+
+| Layer | Frequency | What | Where |
+|-------|-----------|------|-------|
+| FAST | every tick | trace dynamics, affect, energy | in-memory |
+| MEDIUM | ×5 | spreading activation | in-memory |
+| SLOW | ×50 | DB sync, agency, reflection | DB |
+| GLOBAL | ×200 | clustering, dimension naming | DB |
+| DEEP | ×1000 | narrative, world model rebuild | DB |
+
+Consciousness never stops. But DB operations happen on a slower cadence.
