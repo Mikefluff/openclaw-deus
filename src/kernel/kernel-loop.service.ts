@@ -14,6 +14,8 @@ import { ActiveCognitionService } from './cognition/active-cognition.service';
 import { NarrativeService } from './narrative/narrative.service';
 import { RawStreamService } from './sensory/raw-stream.service';
 import { AgentAction, WorldBridge, ActionConsequence } from './agency.types';
+import { LightConeService } from './light-cone.service';
+import { ConceptSpaceService } from './space/concept-space.service';
 import { EnergyService } from './energy.service';
 
 /**
@@ -97,6 +99,8 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
     private readonly narrative: NarrativeService,
     private readonly rawStream: RawStreamService,
     private readonly energy: EnergyService,
+    private readonly lightCone: LightConeService,
+    private readonly conceptSpace: ConceptSpaceService,
   ) {}
 
   onModuleInit(): void {
@@ -231,32 +235,97 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * One tick of the event loop.
-   * Either: process an external event, OR self-reflect.
+   * One tick of the event loop — light cone aware.
+   *
+   * FAST layer: always runs, in-memory only (~0.01ms)
+   * External events: interrupt, full processing (DB + LLM)
+   * MEDIUM/SLOW/GLOBAL/DEEP: on their own cadence, async
+   *
+   * Consciousness is ALWAYS running. But not everything
+   * at the same frequency. Local = fast. Global = slow.
    */
   private async tick(): Promise<void> {
     if (!this.running || this.processing) return;
     this.processing = true;
 
     try {
-      const cycle = this.traceGraph.tick();
+      // FAST: always runs, in-memory only
+      const schedule = this.lightCone.fastTick();
       this.energy.tick();
 
-      // Check for external events
+      // Check for external events (INTERRUPT — full processing)
       const event = this.eventQueue.shift();
 
       if (event) {
-        // EXTERNAL EVENT: interrupt, process fully
+        const cycle = this.traceGraph.tick();
         await this.processExternalEvent(event, cycle);
       } else {
-        // NO EVENT: agency + reflection
+        // No external event: layered idle processing
 
-        // 1. AGENCY: should I ACT on the world?
-        const acted = await this.tryAct(cycle);
+        // MEDIUM cadence: spreading activation on hot traces
+        if (schedule.shouldMedium) {
+          this.lightCone.markMedium();
+          // Spread activation in-memory (no DB)
+          const hotTraces = this.lightCone.getHotTraces(10);
+          for (const ht of hotTraces) {
+            // Affect modulates in-memory: emotional traces activate more
+            if (Math.abs(ht.emotionalCharge) > 0.1) {
+              ht.weight = Math.min(1, ht.weight + 0.01);
+            }
+          }
+        }
 
-        // 2. If didn't act (or after acting): reflect
-        if (!acted) {
+        // SLOW cadence: DB sync + agency + reflection
+        if (schedule.shouldSlow) {
+          this.lightCone.markSlow();
+          const cycle = this.traceGraph.tick();
+
+          // Flush pending writes to DB
+          const { writes, edgeUpdates } = this.lightCone.flushWrites();
+          for (const w of writes) {
+            if (w.sql) await this.traceGraph['db'].execute(w.sql, w.vars);
+          }
+
+          // Batch edge weight updates
+          for (const eu of edgeUpdates) {
+            await this.traceGraph['db'].execute(
+              `UPDATE activates SET weight = math::clamp(weight + $dw, 0.01, 1.0) WHERE in.trace_id = $from AND out.trace_id = $to`,
+              { dw: eu.deltaWeight, from: eu.from, to: eu.to },
+            );
+          }
+
+          // Sync DB → hot memory
+          const activeTraces = await this.traceGraph.getActiveTraces(50);
+          if (activeTraces.isOk()) {
+            this.lightCone.loadFromDb(activeTraces.value.map(t => ({
+              traceId: t.trace_id, content: t.content,
+              weight: t.weight, emotionalCharge: t.emotional_charge,
+            })));
+          }
+
+          // Agency: try to act on world
+          await this.tryAct(cycle);
+
+          // Idle reflection (dreaming, curiosity, inference)
           await this.idleReflection(cycle);
+
+          // Forgetting
+          await this.traceGraph.forget();
+        }
+
+        // GLOBAL cadence: convergence, clustering, dimension naming
+        if (schedule.shouldGlobal) {
+          this.lightCone.markGlobal();
+          // These are expensive — run infrequently
+          await this.conceptSpace?.nameDimensions();
+          await this.substrateBridge.syncSubstrateToTraces(this.traceGraph.getCycle());
+        }
+
+        // DEEP cadence: narrative compaction, world model rebuild
+        if (schedule.shouldDeep) {
+          this.lightCone.markDeep();
+          await this.narrative.compact();
+          await this.substrateBridge.applyCommitsToWorldModel(this.allCommits.slice(-50));
         }
       }
     } finally {

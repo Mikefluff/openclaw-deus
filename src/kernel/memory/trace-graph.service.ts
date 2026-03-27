@@ -22,6 +22,10 @@ export class TraceGraphService {
   private cycle = 0;
   private traceIdCounter = 0;
 
+  // Per-cycle caches — invalidated on tick()
+  private activeTracesCache: { cycle: number; traces: Trace[] } | null = null;
+  private traceCountCache: { cycle: number; count: number } | null = null;
+
   constructor(
     private readonly db: SurrealService,
     private readonly config: CognitiveConfigService,
@@ -30,7 +34,11 @@ export class TraceGraphService {
   ) {}
 
   getCycle(): number { return this.cycle; }
-  tick(): number { return ++this.cycle; }
+  tick(): number {
+    this.activeTracesCache = null;
+    this.traceCountCache = null;
+    return ++this.cycle;
+  }
 
   // ═══════════════════════════════════════════
   // TRACE CRUD
@@ -346,15 +354,28 @@ export class TraceGraphService {
   // ═══════════════════════════════════════════
 
   async getActiveTraces(limit = 20): Promise<Result<Trace[], DomainError>> {
-    return this.db.query<Trace>(
+    // Cache full result set per cycle; slice to requested limit
+    if (this.activeTracesCache && this.activeTracesCache.cycle === this.cycle) {
+      return ok(this.activeTracesCache.traces.slice(0, limit));
+    }
+    const result = await this.db.query<Trace>(
       `SELECT * FROM trace WHERE archived = false AND suppressed = false ORDER BY weight DESC LIMIT $limit`,
-      { limit },
+      { limit: 50 }, // fetch a generous batch to serve various callers
     );
+    if (result.isOk()) {
+      this.activeTracesCache = { cycle: this.cycle, traces: result.value };
+    }
+    return result.isOk() ? ok(result.value.slice(0, limit)) : result;
   }
 
   async getTraceCount(): Promise<number> {
+    if (this.traceCountCache && this.traceCountCache.cycle === this.cycle) {
+      return this.traceCountCache.count;
+    }
     const r = await this.db.query<{ c: number }>('SELECT count() AS c FROM trace WHERE archived = false GROUP ALL');
-    return r.isOk() && r.value.length > 0 ? r.value[0].c : 0;
+    const count = r.isOk() && r.value.length > 0 ? r.value[0].c : 0;
+    this.traceCountCache = { cycle: this.cycle, count };
+    return count;
   }
 
 

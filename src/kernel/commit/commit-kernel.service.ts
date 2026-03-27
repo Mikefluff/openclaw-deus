@@ -229,7 +229,7 @@ export class CommitKernelService {
     const predError = predSignal?.payload?.prediction_error as number ?? 0;
 
     return {
-      commit_id: `C${cycle}_${this.commitCount}`,
+      commit_id: `C${cycle}_${this.commitCount}_${Date.now()}`,
       cycle,
       type: this.inferCommitType(relevantSignals),
       source_agents: cluster.agents,
@@ -250,7 +250,7 @@ export class CommitKernelService {
 
   private buildEscalationCommit(signal: Signal, cycle: number): CommitDelta {
     return {
-      commit_id: `C${cycle}_ESC_${this.commitCount}`,
+      commit_id: `C${cycle}_ESC_${this.commitCount}_${Date.now()}`,
       cycle,
       type: signal.type === 'affect' ? 'priority' : signal.type === 'strategy' ? 'action' : 'perceptual',
       source_agents: [signal.agent_id],

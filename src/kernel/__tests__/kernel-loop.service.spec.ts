@@ -86,6 +86,14 @@ describe('KernelLoopService', () => {
     };
     (service as any).narrative = { compact: jest.fn().mockResolvedValue({ isOk: () => true }) };
     (service as any).rawStream = { ingest: jest.fn().mockResolvedValue([]) };
+    (service as any).lightCone = {
+      fastTick: jest.fn().mockReturnValue({ shouldMedium: false, shouldSlow: false, shouldGlobal: false, shouldDeep: false }),
+      markMedium: jest.fn(), markSlow: jest.fn(), markGlobal: jest.fn(), markDeep: jest.fn(),
+      getHotTraces: jest.fn().mockReturnValue([]),
+      flushWrites: jest.fn().mockReturnValue({ writes: [], edgeUpdates: [] }),
+      loadFromDb: jest.fn(), activateHot: jest.fn(),
+    };
+    (service as any).conceptSpace = { nameDimensions: jest.fn().mockResolvedValue(undefined) };
     (service as any).logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
   });
 

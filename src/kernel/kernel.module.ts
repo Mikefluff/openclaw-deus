@@ -17,6 +17,7 @@ import { ModalityDiscoveryService } from './sensory/modality-discovery.service';
 import { RawStreamService } from './sensory/raw-stream.service';
 import { AttentionService } from './sensory/attention.service';
 import { EnergyService } from './energy.service';
+import { LightConeService } from './light-cone.service';
 import { WorldModelModule } from '../world-model/world-model.module';
 import { IntentionModule } from '../intention/intention.module';
 import { KnowledgeModule } from '../knowledge/knowledge.module';
@@ -49,6 +50,7 @@ import { PolicyModule } from '../policy/policy.module';
     RawStreamService,
     AttentionService,
     EnergyService,
+    LightConeService,
     SensoryAgent,
     PredictiveAgent,
     AffectiveAgent,
@@ -67,6 +69,7 @@ import { PolicyModule } from '../policy/policy.module';
     RawStreamService,
     ModalityDiscoveryService,
     EnergyService,
+    LightConeService,
   ],
 })
 export class KernelModule implements OnModuleInit {
