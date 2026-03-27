@@ -173,7 +173,13 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
   /**
    * Pump the kernel: process all queued events + one full light-cone tick.
    * For training: called once per world-tick, processes everything in queue.
-   * Much faster than think() because no stabilization loop per event.
+   *
+   * Fixes vs naive implementation:
+   * 1. Boost signal confidence so convergence/escalation actually triggers commits
+   * 2. Spend energy on trace creation + commits (metabolic pressure)
+   * 3. Run active cognition (schemas, inference) on SLOW cadence
+   * 4. Always process affect even without commits (base accumulator decay)
+   * 5. Force spatial conflict checks more aggressively
    */
   async pump(): Promise<void> {
     if (this.processing) return;
@@ -183,7 +189,7 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
       const schedule = this.lightCone.fastTick();
       this.energy.tick();
 
-      // Process ALL queued events in one batch (no stabilization between them)
+      // Process ALL queued events in one batch
       const events: KernelEvent[] = [];
       while (this.eventQueue.length > 0) {
         events.push(this.eventQueue.shift()!);
@@ -192,7 +198,12 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
       if (events.length > 0) {
         const cycle = this.traceGraph.tick();
 
-        // Ingest all events through raw stream (fast: modality + trace creation only)
+        // FIX 2: spend energy per event (metabolic pressure)
+        for (const _e of events) {
+          this.energy.spend(this.energy.cost.trace_create, 'pump:ingest');
+        }
+
+        // Ingest all events through raw stream
         const allSignals: Signal[] = [];
         for (const event of events) {
           const rawEvent = RawStreamService.stringToEvent(event.content, event.type);
@@ -200,24 +211,35 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
           allSignals.push(...signals);
         }
 
-        // Run fast-path agents only (no LLM)
+        // Run ALL agents (no LLM but all fast paths)
         const context = await this.buildContext(cycle, this.allCommits.slice(-5), this.phenomenalState, false);
-        context.llm_budget = { remaining: 0, used: 0, total: 0 }; // no LLM during pump
+        context.llm_budget = { remaining: 0, used: 0, total: 0 };
 
-        // Only sensory + predictive + affective (fast agents, no LLM)
-        const fastAgents = this.agents.filter(a => a.rank <= 3);
-        for (const agent of fastAgents) {
+        for (const agent of this.agents) {
           try {
             const signals = await agent.process(events.map(e => e.content).join('\n'), context);
             allSignals.push(...signals.filter(s => s.confidence >= 0.1).map(s => ({ ...s, cycle })));
           } catch {}
         }
 
-        // Single commit cycle for all events
+        // FIX 1: Boost signal confidence for training — child experiences directly,
+        // no need for multi-agent convergence on every mundane event.
+        // In real operation think() runs stabilization; in pump() we compensate
+        // by boosting confidence so commits actually happen.
+        for (const sig of allSignals) {
+          sig.confidence = Math.min(1, sig.confidence * 1.3);
+        }
+
+        // Commit cycle
         if (allSignals.length > 0) {
           const commitResult = await this.commitKernel.processCycle(allSignals);
           if (commitResult.isOk() && commitResult.value.length > 0) {
             this.allCommits.push(...commitResult.value);
+
+            // FIX 2: energy per commit
+            for (const _c of commitResult.value) {
+              this.energy.spend(this.energy.cost.commit, 'pump:commit');
+            }
 
             // Backprop prediction errors
             for (const commit of commitResult.value) {
@@ -228,7 +250,7 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
               }
             }
 
-            // Affect: process commits + apply config deltas
+            // Affect: process commits → accumulators → hormones → config deltas
             const timeSense = await this.commitKernel.computeTimeSense();
             const { configDeltas } = this.affect.processCommits(commitResult.value, timeSense);
             for (const [key, delta] of configDeltas) {
@@ -236,22 +258,41 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
             }
           }
         }
+
+        // FIX 4: always feed affect even without commits (novelty from events)
+        if (allSignals.length > 0 && this.allCommits.length === 0) {
+          // Synthesize a minimal commit from strongest signal to kickstart affect
+          const strongest = allSignals.reduce((a, b) => a.confidence > b.confidence ? a : b);
+          this.affect.processCommits([{
+            commit_id: 'synthetic', cycle, type: 'perceptual',
+            source_agents: [strongest.agent_id], convergence_score: 0.3,
+            is_escalation: false,
+            changes: { traces_activated: strongest.targets, traces_suppressed: [], traces_created: [] },
+            novelty_cost: strongest.novelty_cost, prediction_error: 0,
+            maturity: 0.3, urgency: strongest.confidence, energy: 0.1,
+          }], await this.commitKernel.computeTimeSense());
+        }
       }
 
-      // Light-cone layered processing (same as normal tick)
+      // Light-cone layered processing
       if (schedule.shouldMedium) {
         this.lightCone.markMedium();
         const hotTraces = this.lightCone.getHotTraces(10);
         const affectSnap = this.affect.getSnapshot();
         const spreadBoost = affectSnap.hormones.norepinephrine * 0.03;
+        const decayRate = 1 - affectSnap.hormones.serotonin * 0.01;
         for (const ht of hotTraces) {
           if (Math.abs(ht.emotionalCharge) > 0.1) ht.weight = Math.min(1, ht.weight + 0.01);
           if (spreadBoost > 0.005) ht.weight = Math.min(1, ht.weight + spreadBoost);
+          ht.weight *= decayRate;
         }
       }
 
       if (schedule.shouldSlow) {
         this.lightCone.markSlow();
+        const cycle = this.traceGraph.getCycle();
+
+        // Flush batched writes
         const { writes, edgeUpdates } = this.lightCone.flushWrites();
         for (const w of writes) {
           if (w.sql) await this.traceGraph['db'].execute(w.sql, w.vars);
@@ -262,8 +303,36 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
             { dw: eu.deltaWeight, from: eu.from, to: eu.to },
           );
         }
-        await this.tryAct(this.traceGraph.getCycle());
+
+        // Agency
+        await this.tryAct(cycle);
+
+        // FIX 3: Active cognition on SLOW cadence (schemas, inference, curiosity)
+        const [replaySignals, curiositySignals, inferenceSignals, schemaSignals] = await Promise.all([
+          this.activeCognition.replayEpisode(cycle),
+          this.activeCognition.generateCuriosity(cycle),
+          this.activeCognition.activeInference(cycle),
+          this.activeCognition.detectSchemas(cycle),
+        ]);
+        const cognitionSignals = [...replaySignals, ...curiositySignals, ...inferenceSignals, ...schemaSignals];
+        if (cognitionSignals.length > 0) {
+          const commitResult = await this.commitKernel.processCycle(cognitionSignals);
+          if (commitResult.isOk()) this.allCommits.push(...commitResult.value);
+        }
+
+        // Self-model from schemas
+        for (const sig of schemaSignals.slice(0, 2)) {
+          if (sig.confidence > 0.5) {
+            await this.conceptSpace.createSelfTrace(`Я заметил: ${sig.content.slice(0, 80)}`, sig.confidence * 0.6);
+          }
+        }
+
+        // FIX 2: energy for reflection
+        this.energy.spend(this.energy.cost.reflection_cycle, 'pump:reflection');
+
+        // Forgetting + spatial drift
         await this.traceGraph.forget();
+        await this.conceptSpace.drift();
       }
 
       if (schedule.shouldGlobal) {
