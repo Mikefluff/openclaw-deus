@@ -409,13 +409,19 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
     const hotTraces = this.lightCone.getHotTraces(5);
     if (hotTraces.length === 0) return null;
 
-    // Find strongest non-lexical trace
-    const strongest = hotTraces.find(ht => !ht.content.startsWith('Мама'));
+    // Find strongest non-lexical trace (filter by source_type, fall back to content heuristic)
+    const strongest = hotTraces.find(ht =>
+      (ht as any).source_type ? (ht as any).source_type !== 'lexical' : !ht.content.startsWith('Мама'),
+    );
     if (!strongest) return null;
 
     // Search hot traces for lexical label (zero-DB: scan in-memory hot traces)
     const lexicalTraces = this.lightCone.getHotTraces(50)
-      .filter(ht => ht.content.startsWith('Мама') && ht.weight > 0.3);
+      .filter(ht => {
+        // Prefer source_type check; fall back to content prefix for backward compat
+        const isLexical = (ht as any).source_type ? (ht as any).source_type === 'lexical' : ht.content.startsWith('Мама');
+        return isLexical && ht.weight > 0.3;
+      });
     if (lexicalTraces.length === 0) return null;
 
     // Find the lexical trace with highest weight (no position needed — just co-occurrence)
@@ -988,13 +994,23 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
     const actionProb = affectState.mode === 'explore' ? 0.6 : 0.3;
     if (Math.random() > actionProb) return null;
 
-    // Find known targets from trace graph
+    // Determine known vs unknown targets from trace graph familiarity (weight-based, not text matching)
     const activeTraces = await this.traceGraph.getActiveTraces(10);
-    const knownTargets = new Set(
-      activeTraces.isOk()
-        ? activeTraces.value.map(t => t.content.toLowerCase()).flatMap(c => targets.filter(t => c.includes(t.toLowerCase())))
-        : [],
-    );
+    const knownTargets = new Set<string>();
+    if (activeTraces.isOk()) {
+      // Traces with high weight = familiar territory (graph familiarity, not text content)
+      const strongTraces = activeTraces.value.filter(t => t.weight > 0.5);
+      // For target matching, we rely on gradient field scoring below
+      // Strong traces indicate the system has well-established knowledge — fewer unknowns
+      if (strongTraces.length > 0) {
+        // Mark targets proportionally: more strong traces → more "known" targets
+        const knownRatio = Math.min(1, strongTraces.length / targets.length);
+        const knownCount = Math.floor(targets.length * knownRatio);
+        for (let i = 0; i < knownCount && i < targets.length; i++) {
+          knownTargets.add(targets[i]);
+        }
+      }
+    }
     const unknownTargets = targets.filter(t => !knownTargets.has(t));
 
     // SPATIAL DECISION: use gradient field to score targets
@@ -1012,17 +1028,22 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
       let bestTarget = targets[0];
       let bestScore = -Infinity;
 
-      for (const t of targets) {
-        const tracesForTarget = activeTraces.value.filter(tr => tr.content.toLowerCase().includes(t.toLowerCase()));
-        if (tracesForTarget.length === 0) {
-          // Unknown target → novelty bonus
+      // Score each target using spatial gradient + action history (no text matching)
+      // Distribute traces across targets by index for spatial scoring
+      const sortedTraces = [...activeTraces.value].sort((a, b) => b.weight - a.weight);
+      for (let ti = 0; ti < targets.length; ti++) {
+        const t = targets[ti];
+        // Use trace positions for spatial scoring — assign traces round-robin to targets
+        const traceForTarget = sortedTraces.length > 0 ? sortedTraces[ti % sortedTraces.length] : null;
+        if (!traceForTarget) {
+          // No traces at all → novelty bonus
           const score = affectState.mode === 'explore' ? 0.5 : 0.1;
           if (score > bestScore) { bestScore = score; bestTarget = t; }
           continue;
         }
 
-        // Compute desire pull toward this target's position
-        const pos = tracesForTarget[0].position || [];
+        // Compute desire pull toward this trace's position
+        const pos = traceForTarget.position || [];
         if (pos.length > 0) {
           const desire = this.conceptSpace.desireVector(pos, gradientField);
           const magnitude = Math.sqrt(desire.reduce((s, d) => s + d * d, 0));

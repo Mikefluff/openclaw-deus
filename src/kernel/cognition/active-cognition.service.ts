@@ -297,15 +297,8 @@ export class ActiveCognitionService {
    * The hub connects all instances, becoming a retrievable concept.
    */
   private async materializeAbstraction(edge: any, cycle: number): Promise<void> {
-    // Extract common words between the two traces (the "shared concept")
-    const wordsA = new Set((edge.a_content || '').toLowerCase().split(/\s+/).filter((w: string) => w.length > 3));
-    const wordsB = new Set((edge.b_content || '').toLowerCase().split(/\s+/).filter((w: string) => w.length > 3));
-    const shared: string[] = [];
-    for (const w of wordsA) { if (wordsB.has(w)) shared.push(w as string); }
-
-    if (shared.length === 0) return;
-
-    const abstractionName = shared.join(' + ');
+    // Name abstraction by edge co-activation strength, not word overlap
+    const abstractionName = `abstract_${edge.co_activation_count}_cycle${cycle}`;
 
     // Check if this abstraction already exists
     const existing = await this.db.query<any>(

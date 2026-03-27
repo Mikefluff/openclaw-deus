@@ -209,40 +209,55 @@ export class DevelopmentalMetricsService {
       this.lastDimensionTick = tick;
     }
 
-    // Abstraction count: traces with [ABSTRACT] or [PROPERTY] in content
-    const abstractResult = await this.db.query<{ count: number }>(
-      `SELECT count() AS count FROM trace WHERE (content CONTAINS '[ABSTRACT]' OR content CONTAINS '[PROPERTY]') AND archived = false GROUP ALL`,
+    // Try batch stored procedure first (single DB round-trip)
+    const metricsResult = await this.db.query<any>(
+      `RETURN fn::cognitive_metrics()`,
     );
-    const abstractionCount = abstractResult.isOk() && abstractResult.value.length > 0
-      ? (abstractResult.value[0].count ?? 0) : 0;
 
-    // Schema complexity: max co-activation count across edges
-    const schemaResult = await this.db.query<{ max_weight: number }>(
-      `SELECT math::max(weight) AS max_weight FROM activates GROUP ALL`,
-    );
-    const schemaComplexity = schemaResult.isOk() && schemaResult.value.length > 0
-      ? (schemaResult.value[0].max_weight ?? 0) : 0;
+    let abstractionCount: number;
+    let schemaComplexity: number;
+    let retention: number;
+    let crossModal: number;
+
+    if (metricsResult.isOk() && metricsResult.value.length > 0 && metricsResult.value[0].abstraction_count !== undefined) {
+      const m = metricsResult.value[0];
+      abstractionCount = m.abstraction_count ?? 0;
+      schemaComplexity = m.schema_complexity ?? 0;
+      retention = m.total_traces > 0 ? (m.active_traces ?? 0) / m.total_traces : 1;
+      crossModal = m.cross_modal_binding ?? 0;
+    } else {
+      // Fallback: individual queries (stored procedure not yet deployed)
+      const abstractResult = await this.db.query<{ count: number }>(
+        `SELECT count() AS count FROM trace WHERE (content CONTAINS '[ABSTRACT]' OR content CONTAINS '[PROPERTY]') AND archived = false GROUP ALL`,
+      );
+      abstractionCount = abstractResult.isOk() && abstractResult.value.length > 0
+        ? (abstractResult.value[0].count ?? 0) : 0;
+
+      const schemaResult = await this.db.query<{ max_weight: number }>(
+        `SELECT math::max(weight) AS max_weight FROM activates GROUP ALL`,
+      );
+      schemaComplexity = schemaResult.isOk() && schemaResult.value.length > 0
+        ? (schemaResult.value[0].max_weight ?? 0) : 0;
+
+      const totalResult = await this.db.query<{ total: number; active: number }>(
+        `SELECT count() AS total, count(archived = false) AS active FROM trace GROUP ALL`,
+      );
+      retention = 1;
+      if (totalResult.isOk() && totalResult.value.length > 0) {
+        const { total, active } = totalResult.value[0];
+        retention = total > 0 ? active / total : 1;
+      }
+
+      const crossModalResult = await this.db.query<{ avg_w: number }>(
+        `SELECT math::mean(weight) AS avg_w FROM activates GROUP ALL`,
+      );
+      crossModal = crossModalResult.isOk() && crossModalResult.value.length > 0
+        ? (crossModalResult.value[0].avg_w ?? 0) : 0;
+    }
 
     // Concept space coverage: unique clusters / total dimensions
     const clusters = await this.conceptSpace.findClusters(2, 0.5);
     const coverage = dimCount > 0 ? Math.min(1, clusters.length / dimCount) : 0;
-
-    // Knowledge retention: active / total traces
-    const totalResult = await this.db.query<{ total: number; active: number }>(
-      `SELECT count() AS total, count(archived = false) AS active FROM trace GROUP ALL`,
-    );
-    let retention = 1;
-    if (totalResult.isOk() && totalResult.value.length > 0) {
-      const { total, active } = totalResult.value[0];
-      retention = total > 0 ? active / total : 1;
-    }
-
-    // Cross-modal binding: avg edge weight between traces from different modalities
-    const crossModalResult = await this.db.query<{ avg_w: number }>(
-      `SELECT math::mean(weight) AS avg_w FROM activates GROUP ALL`,
-    );
-    const crossModal = crossModalResult.isOk() && crossModalResult.value.length > 0
-      ? (crossModalResult.value[0].avg_w ?? 0) : 0;
 
     return {
       dimension_growth_rate: Math.round(rate * 1000) / 1000,
@@ -446,12 +461,46 @@ export class DevelopmentalMetricsService {
   // ═══════════════════════════════════════════
 
   private async computeWorldModel(): Promise<WorldModelQuality> {
-    // Object coverage: objects with traces / total known objects
-    const objectsResult = await this.db.query<{ count: number }>(
-      `SELECT count() AS count FROM trace WHERE source_type = 'event' AND archived = false GROUP ALL`,
+    // Try batch stored procedure first (single DB round-trip)
+    const wmResult = await this.db.query<any>(
+      `RETURN fn::world_model_metrics()`,
     );
-    const objectTraces = objectsResult.isOk() && objectsResult.value.length > 0
-      ? objectsResult.value[0].count ?? 0 : 0;
+
+    let objectTraces: number;
+    let abstractions: number;
+    let avgPredErr: number;
+
+    if (wmResult.isOk() && wmResult.value.length > 0 && wmResult.value[0].object_traces !== undefined) {
+      const m = wmResult.value[0];
+      objectTraces = m.object_traces ?? 0;
+      abstractions = m.vocabulary_size ?? 0;
+      const predErrors: number[] = m.prediction_errors ?? [];
+      avgPredErr = predErrors.length > 0
+        ? predErrors.reduce((s: number, e: number) => s + (e || 0), 0) / predErrors.length
+        : 0.5;
+    } else {
+      // Fallback: individual queries (stored procedure not yet deployed)
+      const objectsResult = await this.db.query<{ count: number }>(
+        `SELECT count() AS count FROM trace WHERE source_type = 'event' AND archived = false GROUP ALL`,
+      );
+      objectTraces = objectsResult.isOk() && objectsResult.value.length > 0
+        ? objectsResult.value[0].count ?? 0 : 0;
+
+      const abstractResult = await this.db.query<{ count: number }>(
+        `SELECT count() AS count FROM trace WHERE (content CONTAINS '[ABSTRACT]' OR content CONTAINS '[PROPERTY]') AND archived = false GROUP ALL`,
+      );
+      abstractions = abstractResult.isOk() && abstractResult.value.length > 0
+        ? abstractResult.value[0].count ?? 0 : 0;
+
+      const predRows = await this.db.query<{ prediction_error: number }>(
+        `SELECT prediction_error FROM commit_log WHERE prediction_error IS NOT NONE LIMIT 20`,
+      );
+      avgPredErr = predRows.isOk() && predRows.value.length > 0
+        ? predRows.value.reduce((s, r) => s + (r.prediction_error || 0), 0) / predRows.value.length
+        : 0.5;
+    }
+
+    // Object coverage: objects with traces / total known objects
     // Rough: each object should have ~3 traces
     const objectCoverage = Math.min(1, objectTraces / 30);
 
@@ -461,20 +510,9 @@ export class DevelopmentalMetricsService {
       : 0;
 
     // Generalization rate: abstractions / (objects seen)
-    const abstractResult = await this.db.query<{ count: number }>(
-      `SELECT count() AS count FROM trace WHERE (content CONTAINS '[ABSTRACT]' OR content CONTAINS '[PROPERTY]') AND archived = false GROUP ALL`,
-    );
-    const abstractions = abstractResult.isOk() && abstractResult.value.length > 0
-      ? abstractResult.value[0].count ?? 0 : 0;
     const generalization = objectTraces > 0 ? Math.min(1, abstractions / (objectTraces * 0.1)) : 0;
 
     // Prediction precision: from commit history (prediction errors should decrease)
-    const predRows = await this.db.query<{ prediction_error: number }>(
-      `SELECT prediction_error FROM commit_log WHERE prediction_error IS NOT NONE LIMIT 20`,
-    );
-    const avgPredErr = predRows.isOk() && predRows.value.length > 0
-      ? predRows.value.reduce((s, r) => s + (r.prediction_error || 0), 0) / predRows.value.length
-      : 0.5;
     const predictionPrecision = Math.max(0, 1 - avgPredErr);
 
     // Causal understanding: trajectories with confidence > 0.5

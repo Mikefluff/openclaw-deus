@@ -455,8 +455,7 @@ export class TraceGraphService {
   async consolidateEpisodicEdges(): Promise<{ consolidated: number; pruned: number }> {
     // Find episodic patterns: same from→to appearing 3+ times
     const patterns = await this.db.query<{ from_id: string; to_id: string; cnt: number }>(
-      `SELECT in.trace_id AS from_id, out.trace_id AS to_id, count() AS cnt
-       FROM episodic GROUP BY in, out HAVING count() >= 3 LIMIT 20`,
+      `RETURN fn::find_episodic_patterns(3)`,
     );
 
     let consolidated = 0;

@@ -184,13 +184,7 @@ export class ConceptSpaceService {
     // 2. Find traces with high weight variance in their outgoing edges
     // High variance = connected to diverse outcomes → needs dimensional separation
     const highVariance = await this.db.query<{ trace_id: string; content: string; position: number[]; edge_count: number }>(
-      `SELECT in.trace_id AS trace_id, in.content AS content, in.position AS position, count() AS edge_count
-       FROM activates
-       WHERE in.archived = false
-       GROUP BY in
-       HAVING count() > 2
-       ORDER BY edge_count DESC
-       LIMIT $limit`,
+      `RETURN fn::find_high_connectivity(2, $limit)`,
       { limit: limit * 2 },
     );
     if (highVariance.isOk() && highVariance.value.length >= 2) {
@@ -351,33 +345,6 @@ export class ConceptSpaceService {
       { trace_id: '', delta: deltaA, reason: 'attraction' },
       { trace_id: '', delta: deltaB, reason: 'attraction' },
     ];
-  }
-
-  /**
-   * Apply movement to a trace in concept space.
-   */
-  async applyMovement(traceId: string, delta: number[]): Promise<void> {
-    const trace = await this.db.query<Trace>(
-      `SELECT position, velocity FROM trace WHERE trace_id = $tid LIMIT 1`,
-      { tid: traceId },
-    );
-    if (trace.isErr() || trace.value.length === 0) return;
-
-    const pos = [...(trace.value[0].position || [])];
-    const vel = [...(trace.value[0].velocity || [])];
-
-    // Apply delta with momentum
-    for (let d = 0; d < Math.max(pos.length, delta.length); d++) {
-      if (d >= pos.length) { pos.push(0); vel.push(0); }
-      const d_val = delta[d] ?? 0;
-      vel[d] = vel[d] * 0.7 + d_val * 0.3; // momentum
-      pos[d] += vel[d];
-    }
-
-    await this.db.execute(
-      `UPDATE trace SET position = $pos, velocity = $vel WHERE trace_id = $tid`,
-      { pos, vel, tid: traceId },
-    );
   }
 
   // ═══════════════════════════════════════════
@@ -625,19 +592,6 @@ export class ConceptSpaceService {
   }
 
   /**
-   * Predict outcome cluster given current cluster + action.
-   */
-  async predictCluster(currentCluster: string, action: string): Promise<{ cluster_id: string; confidence: number } | null> {
-    const result = await this.db.query<{ to_cluster: string; confidence: number }>(
-      `SELECT to_cluster, confidence FROM cluster_trajectory WHERE from_cluster = $from AND action = $action ORDER BY confidence DESC LIMIT 1`,
-      { from: currentCluster, action },
-    );
-    return result.isOk() && result.value.length > 0
-      ? { cluster_id: result.value[0].to_cluster, confidence: result.value[0].confidence }
-      : null;
-  }
-
-  /**
    * Get all active clusters with member counts.
    */
   async getActiveClusters(): Promise<Array<{ cluster_id: string; centroid: number[]; member_count: number; confidence: number }>> {
@@ -852,25 +806,6 @@ export class ConceptSpaceService {
       confidence: 0.5,
       traversal_count: 1,
     } as Record<string, unknown>);
-  }
-
-  async predict(currentPosition: number[], action: string): Promise<number[] | null> {
-    // Find trajectories starting near current position with matching action
-    const trajectories = await this.getTrajectories();
-    let bestMatch: Trajectory | null = null;
-    let bestDist = Infinity;
-
-    for (const t of trajectories) {
-      if (t.action !== action) continue;
-      const dist = this.distance(currentPosition, t.from_position);
-      if (dist < bestDist) {
-        bestDist = dist;
-        bestMatch = t;
-      }
-    }
-
-    if (!bestMatch || bestDist > 3.0) return null;
-    return bestMatch.to_position;
   }
 
   private async getTrajectories(): Promise<Trajectory[]> {

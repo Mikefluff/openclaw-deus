@@ -462,8 +462,9 @@ describe('ActiveCognitionService', () => {
         .mockResolvedValueOnce(ok([]));
 
       await svc.detectSchemas(5);
-      // No shared words → materializeAbstraction returns early → no createTrace
-      expect(mockTraceGraph.createTrace).not.toHaveBeenCalled();
+      // With graph-based naming, abstraction is still created (using co_activation_count as name)
+      // No shared words doesn't prevent creation — naming is from graph structure, not text
+      expect(mockTraceGraph.createTrace).toHaveBeenCalled();
     });
   });
 });

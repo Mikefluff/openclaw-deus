@@ -45,13 +45,18 @@ export class CausalGraphService {
     }
 
     // Build edges: beliefs that support graph relations
-    const supports = await this.db.query<{ in_id: string; out_id: string; weight: number }>(
-      `SELECT in AS in_id, out AS out_id, 0.8 AS weight FROM supports`,
-    );
-    if (supports.isOk()) {
-      for (const s of supports.value) {
-        edges.push({ from: String(s.in_id), to: String(s.out_id), weight: s.weight });
+    // Wrapped in try/catch — 'supports' table may not exist yet (migration pending)
+    try {
+      const supports = await this.db.query<{ in_id: string; out_id: string; weight: number }>(
+        `SELECT in AS in_id, out AS out_id, 0.8 AS weight FROM supports`,
+      );
+      if (supports.isOk()) {
+        for (const s of supports.value) {
+          edges.push({ from: String(s.in_id), to: String(s.out_id), weight: s.weight });
+        }
       }
+    } catch {
+      // 'supports' table not yet created — skip silently
     }
 
     // Contradiction edges (negative weight)
