@@ -16,6 +16,7 @@ import { RawStreamService } from './sensory/raw-stream.service';
 import { AgentAction, WorldBridge, ActionConsequence } from './agency.types';
 import { LightConeService } from './light-cone.service';
 import { ConceptSpaceService } from './space/concept-space.service';
+import { SensorimotorPredictorService } from './sensorimotor-predictor.service';
 import { EnergyService } from './energy.service';
 
 /**
@@ -105,6 +106,7 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
     private readonly energy: EnergyService,
     private readonly lightCone: LightConeService,
     private readonly conceptSpace: ConceptSpaceService,
+    private readonly sensorimotorPredictor: SensorimotorPredictorService,
   ) {}
 
   onModuleInit(): void {
@@ -354,6 +356,12 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
         for (const conflict of graphConflicts) {
           await this.conceptSpace.birthDimension(conflict, cycle);
         }
+
+        // Train sensorimotor predictor from transition buffer
+        await this.sensorimotorPredictor.trainOnBatch(10);
+
+        // Update predictor dimension when concept space grows
+        this.sensorimotorPredictor.updatePosDim(this.conceptSpace.getDimensionCount());
 
         // FIX 2: energy for reflection
         this.energy.spend(this.energy.cost.reflection_cycle, 'pump:reflection');
@@ -777,12 +785,17 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
     // Spend energy
     if (!this.energy.spend(action.energy_cost, `action:${action.type}:${action.target}`)) return false;
 
-    // PREDICT: what do we expect to happen? (spatial prediction)
+    // PREDICT: learned dynamics model (JEPA + Active Inference)
     let prediction: number[] | null = null;
+    let predictionUncertainty: number[] = [];
     const targetTraces = await this.findTracesForTarget(action.target || '');
     if (targetTraces.length > 0 && action.method) {
       const currentPos = targetTraces[0].position || [];
-      prediction = await this.conceptSpace.predict(currentPos, action.method);
+      if (currentPos.length > 0) {
+        const pred = this.sensorimotorPredictor.predict(currentPos, action.method);
+        prediction = pred.predicted_position;
+        predictionUncertainty = pred.uncertainty;
+      }
     }
     this.lastActionPrediction = {
       target: action.target || '',
@@ -835,19 +848,27 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
       totalValence += consequence.emotional_valence;
     }
 
-    // COMPARE PREDICTION VS ACTUAL: spatial error backpropagation
-    if (prediction && targetTraces.length > 0) {
-      // Find what the post-action state actually looks like
+    // COMPARE PREDICTION VS ACTUAL: learned predictor + graph backprop
+    if (targetTraces.length > 0) {
       const postTraces = await this.findTracesForTarget(action.target || '');
       if (postTraces.length > 0) {
+        const currentPos = targetTraces[0].position || [];
         const actualPos = postTraces[0].position || [];
-        const spatialError = this.conceptSpace.distance(prediction, actualPos);
 
-        if (spatialError > 0.5) {
-          // Significant prediction error → backprop through trajectory
-          this.logger.log(`Prediction error: expected pos≈${prediction.slice(0, 3).map(p => p.toFixed(2))}, got pos≈${actualPos.slice(0, 3).map(p => p.toFixed(2))}, error=${spatialError.toFixed(3)}`);
-          for (const traceId of this.lastActionPrediction.traceIds) {
-            await this.traceGraph.backpropagatePredictionError(traceId, spatialError * 0.5);
+        // Record transition for predictor training (SMC: action + before + after)
+        if (currentPos.length > 0 && actualPos.length > 0) {
+          await this.sensorimotorPredictor.recordTransition(
+            currentPos, actualPos, action.method || 'unknown', totalValence, cycle,
+          );
+        }
+
+        // Spatial error → backprop through trace graph
+        if (prediction) {
+          const spatialError = this.conceptSpace.distance(prediction, actualPos);
+          if (spatialError > 0.3) {
+            for (const traceId of this.lastActionPrediction.traceIds.slice(0, 3)) {
+              await this.traceGraph.backpropagatePredictionError(traceId, spatialError * 0.5);
+            }
           }
         }
       }

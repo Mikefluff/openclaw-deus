@@ -177,6 +177,9 @@ const DEFAULTS: Record<string, Omit<CognitiveParam, 'key'>> = {
   'affect.config_delta_max': { value: 0.02, description: 'Max config delta per affect step (tanh scale)', min: 0.005, max: 0.1, tunable: true },
   'affect.mode_boundary_positive': { value: 0.5, description: 'Loss threshold for defensive mode', min: 0.1, max: 2.0, tunable: true },
   'affect.mode_boundary_negative': { value: -0.5, description: 'Loss threshold for explore mode', min: -2.0, max: -0.1, tunable: true },
+
+  // --- Sensorimotor predictor ---
+  'predictor.beta_kl': { value: 0.1, description: 'KL divergence weight in free energy loss', min: 0.01, max: 1.0, tunable: true },
 };
 
 @Injectable()
