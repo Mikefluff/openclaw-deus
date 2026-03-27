@@ -24,6 +24,7 @@ export class LlmClientService {
   private concurrency = 0;
   private maxConcurrency: number;
   private queue: Array<{ resolve: () => void; priority: LlmPriority }> = [];
+  private paused = false;
 
   constructor(
     private readonly budget: LlmBudgetService,
@@ -37,8 +38,14 @@ export class LlmClientService {
   }
 
   isAvailable(): boolean {
-    return this.client !== null;
+    return this.client !== null && !this.paused;
   }
+
+  /** Pause LLM calls (training mode — no tokens spent). */
+  pause(): void { this.paused = true; }
+
+  /** Resume LLM calls (production mode). */
+  resume(): void { this.paused = false; }
 
   async call<T = unknown>(options: LlmCallOptions): Promise<Result<LlmCallResult<T>, DomainError>> {
     // Check cache
@@ -56,8 +63,8 @@ export class LlmClientService {
     }
 
     // Check availability
-    if (!this.client) {
-      return err(new LlmError('LLM client not available — API key not configured'));
+    if (!this.client || this.paused) {
+      return err(new LlmError(this.paused ? 'LLM paused (training mode)' : 'LLM client not available — API key not configured'));
     }
 
     // Check budget
@@ -126,7 +133,7 @@ export class LlmClientService {
         }));
 
         const response = await this.client!.messages.create({
-          model: process.env.LLM_MODEL || 'claude-sonnet-4-20250514',
+          model: process.env.LLM_MODEL || 'claude-haiku-4-5-20251001',
           max_tokens: options.maxTokens,
           system: [{
             type: 'text' as const,

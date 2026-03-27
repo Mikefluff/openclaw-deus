@@ -22,6 +22,7 @@ import { ConceptSpaceService } from '../kernel/space/concept-space.service';
 import { ModalityDiscoveryService } from '../kernel/sensory/modality-discovery.service';
 import { EnergyService } from '../kernel/energy.service';
 import { DevelopmentalMetricsService } from '../kernel/developmental-metrics.service';
+import { LlmClientService } from '../llm/llm-client.service';
 import { SurrealService } from '../database/surreal.service';
 import { EvolvingWorld } from './evolving-world';
 import { AgentAction, ActionConsequence, WorldBridge } from '../kernel/agency.types';
@@ -87,7 +88,12 @@ async function main() {
   const modalities = app.get(ModalityDiscoveryService);
   const energy = app.get(EnergyService);
   const devMetrics = app.get(DevelopmentalMetricsService);
+  const llm = app.get(LlmClientService);
   const db = app.get(SurrealService);
+
+  // TRAINING MODE: zero LLM calls. Child learns from experience, not from asking adults.
+  // Set LLM_MODEL=claude-haiku-4-5-20251001 for rare LLM calls if needed.
+  llm.pause();
 
   const world = new EvolvingWorld();
   const bridge = new EvolvingWorldBridge(world, devMetrics);
