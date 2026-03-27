@@ -310,6 +310,13 @@ async function main() {
       console.log(`  Energy: ${energyState.current}/${energyState.max} fatigue=${energyState.fatigue_level}`);
       console.log(`  Speed: ${Math.round(totalMs / Math.max(1, tick + 1))}ms/tick`);
 
+      // Show vocabulary + recent speech
+      const vocabSize = await conceptSpace.getVocabularySize();
+      const recentSpeech = kernelLoop.getVerbalProductions().filter(p => p.cycle > tick - REPORT_INTERVAL);
+      if (vocabSize > 0 || recentSpeech.length > 0) {
+        console.log(`  Language: vocab=${vocabSize} words=${recentSpeech.map(p => `"${p.word}"`).join(', ') || '(silent)'}`);
+      }
+
       // Show latest developmental snapshot if available
       const latestSnap = devMetrics.getLatest();
       if (latestSnap) {
@@ -330,8 +337,12 @@ async function main() {
   const finalEnergy = energy.getState();
   const finalSnap = await devMetrics.snapshot(TOTAL_TICKS);
 
+  const vocabFinal = await conceptSpace.getVocabularySize();
+  const allSpeech = kernelLoop.getVerbalProductions();
+
   console.log(`\n  Ticks: ${TOTAL_TICKS} | Time: ${Math.round(totalMs / 1000)}s`);
   console.log(`  Traces: ${finalTraces} | Commits: ${commitKernel.getCommitCount()}`);
+  console.log(`  Vocabulary: ${vocabFinal} lexical traces | ${allSpeech.length} words produced`);
   console.log(`  Dimensions: ${conceptSpace.getDimensionCount()} | Modalities: ${modalities.getModalityCount()}`);
   console.log(`  Affect: mode=${finalAffect.mode} val=${finalAffect.valence}`);
   console.log(`  Energy: ${finalEnergy.current}/${finalEnergy.max} total_spent=${finalEnergy.total_energy_spent}`);

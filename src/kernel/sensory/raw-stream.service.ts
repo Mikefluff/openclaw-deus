@@ -53,13 +53,18 @@ export class RawStreamService {
     // Attention gates trace weight: high attention → strong trace, low → weak
     const traceWeight = 0.3 + attentionLevel * 0.5 + result.novelty * 0.2;
 
+    // Detect speech events → create lexical traces (language grounding)
+    // Mama speech co-occurs with physical events → cross-modal binding creates word→concept links
+    const isSpeech = event.source?.startsWith('mama_') && event.source !== 'mama_emotion';
+    const sourceType = isSpeech ? 'lexical' as const : 'signal' as const;
+
     // Create modality-tagged trace (depth gated by attention)
     const traceResult = await this.traceGraph.createTrace({
-      source_type: 'signal',
-      content: event.content.slice(0, attentionLevel > 0.2 ? 500 : 100), // shallow = less content stored
+      source_type: sourceType,
+      content: event.content.slice(0, attentionLevel > 0.2 ? 500 : 100),
       initial_weight: Math.min(1, traceWeight),
-      confidence: 0.4 + attentionLevel * 0.4, // high attention = higher confidence
-      emotional_charge: 0,
+      confidence: 0.4 + attentionLevel * 0.4,
+      emotional_charge: isSpeech ? 0.05 : 0, // speech is mildly positive (social warmth)
     });
 
     if (traceResult.isOk()) {

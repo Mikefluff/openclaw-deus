@@ -86,6 +86,9 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
   // World bridge: kernel acts on the world through this
   private worldBridge: WorldBridge | null = null;
 
+  // Verbal production history
+  private verbalProductions: Array<{ word: string; cycle: number; cluster?: string }> = [];
+
   // Prediction→action→consequence loop: track what we predicted vs what happened
   private lastActionPrediction: { target: string; action: string; predictedPosition: number[] | null; traceIds: string[] } | null = null;
   private actionHistory: Array<{ action: string; target: string; cycle: number; valence: number }> = [];
@@ -310,6 +313,9 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
 
         // Agency on MEDIUM cadence (every 5 ticks) — child acts frequently
         await this.tryAct(this.traceGraph.getCycle());
+
+        // Verbal production on MEDIUM cadence — child tries to name things
+        await this.trySpeak(this.traceGraph.getCycle());
       }
 
       if (schedule.shouldSlow) {
@@ -390,6 +396,55 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
   }
 
   getEventQueueSize(): number { return this.eventQueue.length; }
+
+  // ═══════════════════════════════════════════
+  // VERBAL PRODUCTION: concept → word
+  // ═══════════════════════════════════════════
+
+  /**
+   * Try to produce speech. The child names what it's attending to.
+   *
+   * NOT a language module. Just: active cluster → find strongest lexical trace → output word.
+   * Triggered when:
+   * 1. Active traces have positions in concept space
+   * 2. A lexical trace is close enough (word associated with this concept)
+   * 3. The word has sufficient weight (heard enough times)
+   *
+   * Returns the word produced, or null if nothing to say.
+   */
+  private async trySpeak(cycle: number): Promise<string | null> {
+    // Get most active trace
+    const active = await this.traceGraph.getActiveTraces(3);
+    if (active.isErr() || active.value.length === 0) return null;
+
+    const strongest = active.value[0];
+    if (!strongest.position || strongest.position.length === 0) return null;
+
+    // Don't speak about lexical traces (don't name names)
+    if (strongest.source_type === 'lexical') return null;
+
+    // Find lexical label for this position
+    const word = await this.conceptSpace.findLexicalLabel(strongest.position);
+    if (!word) return null;
+
+    // Don't repeat the same word too often
+    const recentWords = this.verbalProductions.filter(p => p.cycle > cycle - 50);
+    if (recentWords.some(p => p.word === word)) return null;
+
+    // PRODUCE
+    this.verbalProductions.push({ word, cycle });
+    this.logger.log(`SPEECH: "${word}" (from trace ${strongest.trace_id})`);
+
+    // Self-trace: "I said X" — the child knows it spoke
+    await this.conceptSpace.createSelfTrace(`Я сказал: ${word}`, 0.5);
+
+    return word;
+  }
+
+  /** Get verbal production history. */
+  getVerbalProductions(): Array<{ word: string; cycle: number }> {
+    return [...this.verbalProductions];
+  }
 
   /**
    * Connect kernel to a world. The kernel ACTS through this bridge.

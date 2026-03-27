@@ -679,6 +679,59 @@ export class ConceptSpaceService {
   }
 
   // ═══════════════════════════════════════════
+  // LEXICAL: language grounding in concept space
+  // ═══════════════════════════════════════════
+
+  /**
+   * Find the lexical label for a position in concept space.
+   * Returns the content of the nearest lexical trace, stripped of mama prefix.
+   * This is PRODUCTION: concept → word.
+   */
+  async findLexicalLabel(position: number[]): Promise<string | null> {
+    if (position.length === 0) return null;
+
+    const lexical = await this.db.query<Trace>(
+      `SELECT trace_id, content, position, weight FROM trace
+       WHERE source_type = 'lexical' AND archived = false AND weight > 0.3
+       ORDER BY weight DESC LIMIT 20`,
+    );
+    if (lexical.isErr() || lexical.value.length === 0) return null;
+
+    let bestTrace: Trace | null = null;
+    let bestDist = Infinity;
+
+    for (const t of lexical.value) {
+      if (!t.position || t.position.length === 0) continue;
+      const dist = this.distance(position, t.position);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestTrace = t;
+      }
+    }
+
+    if (!bestTrace || bestDist > 3.0) return null;
+    return this.extractWord(bestTrace.content);
+  }
+
+  /**
+   * Count lexical traces (vocabulary size).
+   */
+  async getVocabularySize(): Promise<number> {
+    const result = await this.db.query<{ c: number }>(
+      `SELECT count() AS c FROM trace WHERE source_type = 'lexical' AND archived = false GROUP ALL`,
+    );
+    return result.isOk() && result.value.length > 0 ? result.value[0].c : 0;
+  }
+
+  /** Strip mama speech prefixes to extract bare word/phrase. */
+  private extractWord(content: string): string {
+    return content
+      .replace(/^Мама[^:]*:\s*"?/i, '')
+      .replace(/"?\s*$/i, '')
+      .trim();
+  }
+
+  // ═══════════════════════════════════════════
   // UTILITIES
   // ═══════════════════════════════════════════
 

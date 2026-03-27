@@ -32,7 +32,7 @@ export interface Signal {
 export interface Trace {
   id?: string;
   trace_id: string;
-  source_type: 'belief' | 'knowledge' | 'episode' | 'event' | 'decision' | 'signal' | 'commit';
+  source_type: 'belief' | 'knowledge' | 'episode' | 'event' | 'decision' | 'signal' | 'commit' | 'lexical';
   source_id?: string;
   content: string;
 
