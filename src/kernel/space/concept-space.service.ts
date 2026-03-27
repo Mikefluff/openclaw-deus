@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SurrealService } from '../../database/surreal.service';
 import { CognitiveConfigService } from '../../cognitive/cognitive-config.service';
+import { LightConeService } from '../light-cone.service';
 import { Dimension, SpatialConflict, SpatialMovement, SpatialCluster, WorldSnapshot, GradientField, Trajectory, SpatialGap } from './concept-space.types';
 import { Trace } from '../kernel.types';
 // Constants file exists but conflict detection is now purely graph-based — no linguistic constants needed
@@ -25,10 +26,13 @@ export class ConceptSpaceService {
   constructor(
     private readonly db: SurrealService,
     private readonly config: CognitiveConfigService,
+    private readonly lightCone: LightConeService,
   ) {}
 
   getDimensionCount(): number { return this.dimensions.length; }
   getDimensions(): Dimension[] { return [...this.dimensions]; }
+  getFastDimCount(): number { return this.dimensions.filter(d => d.temporal_tier === 'fast').length; }
+  getSlowDimCount(): number { return this.dimensions.filter(d => d.temporal_tier === 'slow').length; }
 
   // ═══════════════════════════════════════════
   // DISTANCE
@@ -226,6 +230,7 @@ export class ConceptSpaceService {
       return this.dimensions[this.dimensions.length - 1]; // return last, no new
     }
 
+    const severityThreshold = this.config.get('kernel.fast_slow_severity_threshold') ?? 0.5;
     const dim: Dimension = {
       id: this.dimCounter++,
       born_at_cycle: cycle,
@@ -233,6 +238,7 @@ export class ConceptSpaceService {
       positive_exemplars: [conflict.trace_a_id],
       negative_exemplars: [conflict.trace_b_id],
       label: undefined,
+      temporal_tier: conflict.severity > severityThreshold ? 'fast' : 'slow',
       variance: 2.0, // initially spread out
       usage_count: 1,
     };
@@ -260,6 +266,7 @@ export class ConceptSpaceService {
       born_from_b: conflict.trace_b_id,
       positive_exemplars: dim.positive_exemplars,
       negative_exemplars: dim.negative_exemplars,
+      temporal_tier: dim.temporal_tier,
       variance: dim.variance,
       usage_count: dim.usage_count,
     } as Record<string, unknown>);
@@ -414,8 +421,8 @@ export class ConceptSpaceService {
 
         // Update in DB
         await this.db.execute(
-          `UPDATE concept_dimension SET label = $label, positive_exemplars = $pos, negative_exemplars = $neg WHERE dimension_id = $did`,
-          { label: dim.label, pos: dim.positive_exemplars, neg: dim.negative_exemplars, did: dim.id },
+          `UPDATE concept_dimension SET label = $label, positive_exemplars = $pos, negative_exemplars = $neg, temporal_tier = $tier WHERE dimension_id = $did`,
+          { label: dim.label, pos: dim.positive_exemplars, neg: dim.negative_exemplars, tier: dim.temporal_tier, did: dim.id },
         );
 
         this.logger.log(`DIMENSION NAMED: axis_${dim.id} = "${dim.label}"`);
@@ -677,12 +684,16 @@ export class ConceptSpaceService {
 
   /**
    * Count lexical traces (vocabulary size).
+   * Includes both flushed DB traces and pending in-memory creates
+   * so vocab count is accurate even between SLOW flushes.
    */
   async getVocabularySize(): Promise<number> {
     const result = await this.db.query<{ c: number }>(
       `SELECT count() AS c FROM trace WHERE source_type = 'lexical' AND archived = false GROUP ALL`,
     );
-    return result.isOk() && result.value.length > 0 ? result.value[0].c : 0;
+    const dbCount = result.isOk() && result.value.length > 0 ? result.value[0].c : 0;
+    const pendingCount = this.lightCone?.getPendingLexicalCount() ?? 0;
+    return dbCount + pendingCount;
   }
 
   /** Strip mama speech prefixes to extract bare word/phrase. */
@@ -1016,7 +1027,10 @@ export class ConceptSpaceService {
       const effectiveDrift = driftRate / Math.max(1, anchoring);
 
       // Drift toward nearest attractor (loss of specificity)
+      // Only drift along SLOW dimensions — fast dims are for real-time dynamics
       const newPos = trace.position.map((p, d) => {
+        const dim = this.dimensions[d];
+        if (dim && dim.temporal_tier === 'fast') return p; // fast dims don't drift
         const target = nearestCentroid[d] ?? p;
         const diff = target - p;
         return p + diff * effectiveDrift * (1 - (trace.weight || 0)); // weak → faster drift
@@ -1066,6 +1080,7 @@ export class ConceptSpaceService {
           positive_exemplars: d.positive_exemplars || [],
           negative_exemplars: d.negative_exemplars || [],
           label: d.label,
+          temporal_tier: d.temporal_tier || 'slow',
           variance: d.variance || 0,
           usage_count: d.usage_count || 0,
         });

@@ -179,8 +179,14 @@ const DEFAULTS: Record<string, Omit<CognitiveParam, 'key'>> = {
   'affect.mode_boundary_positive': { value: 0.5, description: 'Loss threshold for defensive mode', min: 0.1, max: 2.0, tunable: true },
   'affect.mode_boundary_negative': { value: -0.5, description: 'Loss threshold for explore mode', min: -2.0, max: -0.1, tunable: true },
 
+  // --- Kernel: fast/slow dimension split ---
+  'kernel.fast_slow_severity_threshold': { value: 0.5, description: 'Conflict severity above this creates fast dim, below creates slow', min: 0.1, max: 2.0, tunable: true },
+
   // --- Sensorimotor predictor ---
   'predictor.beta_kl': { value: 0.1, description: 'KL divergence weight in free energy loss', min: 0.01, max: 1.0, tunable: true },
+  'predictor.decorrelation_weight': { value: 0.1, description: 'Barlow Twins decorrelation penalty weight', min: 0.01, max: 1.0, tunable: true },
+  'predictor.codebook_size': { value: 64, description: 'VQ codebook size (discrete movement primitives)', min: 8, max: 256, tunable: false },
+  'predictor.vq_weight': { value: 0.1, description: 'VQ commitment loss weight', min: 0.01, max: 1.0, tunable: true },
 };
 
 @Injectable()

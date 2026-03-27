@@ -278,7 +278,7 @@ describe('Property: Euclidean distance satisfies triangle inequality', () => {
   let space: ConceptSpaceService;
 
   beforeEach(() => {
-    space = new ConceptSpaceService(mockDb as any, {} as any);
+    space = new ConceptSpaceService(mockDb as any, {} as any, {} as any);
   });
 
   it('distance(a, a) == 0', () => {

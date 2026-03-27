@@ -11,6 +11,9 @@ const mockConfig = {
   get: jest.fn((key: string) => {
     const defaults: Record<string, number> = {
       'predictor.beta_kl': 0.1,
+      'predictor.decorrelation_weight': 0.1,
+      'predictor.codebook_size': 64,
+      'predictor.vq_weight': 0.1,
     };
     return defaults[key] ?? 0;
   }),
@@ -59,13 +62,20 @@ describe('SensorimotorPredictorService', () => {
 
     it('different actions produce different predictions', () => {
       const pos = randomPos();
-      const r1 = svc.predict(pos, 'push');
-      const r2 = svc.predict(pos, 'shake');
-      // At least one dimension should differ
-      const same = r1.predicted_position.every(
-        (v, i) => Math.abs(v - r2.predicted_position[i]) < 1e-12,
-      );
-      expect(same).toBe(false);
+      // Use multiple action pairs to increase chance of hitting different codebook entries
+      const actions = ['push', 'shake', 'drop', 'touch', 'approach'];
+      const predictions = actions.map(a => svc.predict(pos, a).predicted_position);
+      // At least one pair should differ (VQ may snap nearby deltas to same codebook entry)
+      let anyDifferent = false;
+      for (let a = 0; a < predictions.length && !anyDifferent; a++) {
+        for (let b = a + 1; b < predictions.length && !anyDifferent; b++) {
+          const different = predictions[a].some(
+            (v, i) => Math.abs(v - predictions[b][i]) > 1e-12,
+          );
+          if (different) anyDifferent = true;
+        }
+      }
+      expect(anyDifferent).toBe(true);
     });
 
     it('empty position returns zero-padded result', () => {

@@ -16,6 +16,9 @@ export interface Dimension {
   negative_exemplars: string[];
   label?: string;
 
+  // Fast/slow temporal tier: fast dims for real-time dynamics, slow dims drift toward attractors
+  temporal_tier?: 'fast' | 'slow';
+
   // Statistics
   variance: number;
   usage_count: number;

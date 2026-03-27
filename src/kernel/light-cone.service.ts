@@ -173,6 +173,11 @@ export class LightConeService {
 
   getHotTraceCount(): number { return this.hotTraces.size; }
 
+  /** Count pending creates that have source_type='lexical' (not yet flushed to DB). */
+  getPendingLexicalCount(): number {
+    return this.pendingCreates.filter(t => t.source_type === 'lexical').length;
+  }
+
   /**
    * Sync hot state FROM DB (called on SLOW cadence).
    * Loads recently changed traces into hot memory.

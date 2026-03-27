@@ -100,6 +100,16 @@ class CorrectiveWorldBridge implements WorldBridge {
   /** Signal from kernel that prediction was wrong (amplify next consequence). */
   markPredictionWrong(): void { this.lastPredictionWasWrong = true; }
 
+  /** Evaluate naming: does the word match current world objects? */
+  evaluateNaming(word: string): number {
+    const objects = this.world.getObjectNames();
+    const match = objects.some(obj =>
+      word.toLowerCase().includes(obj.toLowerCase()) ||
+      obj.toLowerCase().includes(word.toLowerCase()),
+    );
+    return match ? 0.15 : -0.05;
+  }
+
   /**
    * REWARD SHAPING: called periodically from training loop.
    * Compares child's cluster structure vs ground truth categories.

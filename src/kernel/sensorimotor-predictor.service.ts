@@ -35,6 +35,8 @@ interface PredictionResult {
   predicted_position: number[];
   uncertainty: number[];
   confidence: number;
+  predicted_t2?: number[];
+  codebook_id?: number;
 }
 
 @Injectable()
@@ -45,10 +47,15 @@ export class SensorimotorPredictorService implements OnModuleInit {
   private W_action!: number[][]; // action_count × ACTION_EMBED_DIM
   private W_delta!: number[][]; // (posDim + ACTION_EMBED_DIM) × posDim
   private W_unc!: number[][]; // (posDim + ACTION_EMBED_DIM) × posDim
+  private W_delta_t2!: number[][]; // (posDim + ACTION_EMBED_DIM) × posDim — multi-horizon t+2 head
   private actionIndex = new Map<string, number>(); // action → index
   private lr = 0.01;
   private stepCount = 0;
   private posDim = 8; // grows with concept space dimensions
+
+  // VQ Codebook (Delta-IRIS)
+  private codebook: number[][] = []; // codebook_size × posDim
+  private codebookSize = 64;
 
   // Cached forward pass values (for backward)
   private lastInput: number[] = [];
@@ -56,6 +63,10 @@ export class SensorimotorPredictorService implements OnModuleInit {
   private lastDelta: number[] = [];
   private lastUncLogit: number[] = [];
   private lastUncertainty: number[] = [];
+  private lastDeltaLogit_t2: number[] = [];
+  private lastDelta_t2: number[] = [];
+  private lastPredicted_t2: number[] = [];
+  private lastCodebookId = 0;
 
   // In-memory transition queue (flushed to DB on SLOW cadence)
   private pendingTransitions: Array<{
@@ -86,7 +97,7 @@ export class SensorimotorPredictorService implements OnModuleInit {
    */
   predict(position: number[], action: string): PredictionResult {
     const padded = this.padPosition(position);
-    const { predicted, uncertainty } = this.forward(padded, action);
+    const { predicted, uncertainty, predicted_t2, codebook_id } = this.forward(padded, action);
 
     // Confidence = inverse of mean uncertainty
     const meanUnc = uncertainty.reduce((s, u) => s + u, 0) / Math.max(1, uncertainty.length);
@@ -96,6 +107,8 @@ export class SensorimotorPredictorService implements OnModuleInit {
       predicted_position: predicted,
       uncertainty,
       confidence,
+      predicted_t2,
+      codebook_id,
     };
   }
 
@@ -163,21 +176,38 @@ export class SensorimotorPredictorService implements OnModuleInit {
     const transitions = result.value;
     let totalLoss = 0;
 
-    for (const t of transitions) {
+    for (let idx = 0; idx < transitions.length; idx++) {
+      const t = transitions[idx];
       // Ensure action is in index
       this.ensureAction(t.action);
 
       // Forward pass
       const padT = this.padPosition(t.position_t);
       const padT1 = this.padPosition(t.position_t1);
-      const { predicted } = this.forward(padT, t.action);
+      const { predicted, predicted_t2 } = this.forward(padT, t.action);
 
       // Compute loss
       const loss = this.computeLoss(predicted, padT1, t.reward);
       totalLoss += loss;
 
+      // Multi-horizon (DreamWeaver): if next transition in buffer is consecutive, compute t+2 loss
+      if (idx + 1 < transitions.length && transitions[idx + 1].cycle === t.cycle + 1) {
+        const actual_t2 = this.padPosition(transitions[idx + 1].position_t1);
+        const loss_t2 = this.computeLossAt(predicted_t2, actual_t2);
+        totalLoss += loss_t2 * 0.5; // half weight for longer horizon
+      }
+
       // Backward pass
       this.backward(padT1, t.reward);
+
+      // EMA codebook update (Delta-IRIS): codebook[id] = 0.99 * codebook[id] + 0.01 * delta
+      const ema = 0.99;
+      if (this.lastCodebookId < this.codebook.length) {
+        for (let d = 0; d < this.posDim; d++) {
+          this.codebook[this.lastCodebookId][d] =
+            ema * (this.codebook[this.lastCodebookId][d] || 0) + (1 - ema) * (this.lastDelta[d] || 0);
+        }
+      }
     }
 
     this.stepCount++;
@@ -256,7 +286,7 @@ export class SensorimotorPredictorService implements OnModuleInit {
   // FORWARD PASS
   // ═══════════════════════════════════════════
 
-  private forward(position: number[], action: string): { predicted: number[]; uncertainty: number[] } {
+  private forward(position: number[], action: string): { predicted: number[]; uncertainty: number[]; predicted_t2: number[]; codebook_id: number } {
     this.ensureAction(action);
     const actionIdx = this.actionIndex.get(action) || 0;
 
@@ -282,8 +312,28 @@ export class SensorimotorPredictorService implements OnModuleInit {
     const delta = deltaLogit.map(l => Math.tanh(l) * SCALE);
     this.lastDelta = delta;
 
-    // Predicted next position
-    const predicted = position.slice(0, this.posDim).map((p, i) => p + (delta[i] || 0));
+    // VQ Codebook (Delta-IRIS): quantize delta for discrete movement primitives
+    const { quantized, codebook_id } = this.quantize(delta);
+    this.lastCodebookId = codebook_id;
+
+    // Predicted next position (straight-through estimator: grad flows through quantized)
+    const predicted = position.slice(0, this.posDim).map((p, i) => p + (quantized[i] || 0));
+
+    // Multi-horizon prediction (DreamWeaver): T+2 via chained prediction
+    const input_t2 = [...predicted.slice(0, this.posDim), ...actionVec];
+    const delta_t2_logit = new Array(this.posDim).fill(0);
+    for (let j = 0; j < this.posDim; j++) {
+      let sum = 0;
+      for (let i = 0; i < Math.min(inputDim, this.W_delta_t2.length); i++) {
+        sum += (this.W_delta_t2[i]?.[j] ?? 0) * (input_t2[i] ?? 0);
+      }
+      delta_t2_logit[j] = sum;
+    }
+    this.lastDeltaLogit_t2 = delta_t2_logit;
+    const delta_t2 = delta_t2_logit.map(l => Math.tanh(l) * SCALE);
+    this.lastDelta_t2 = delta_t2;
+    const predicted_t2 = predicted.map((p, i) => p + (delta_t2[i] || 0));
+    this.lastPredicted_t2 = predicted_t2;
 
     // Uncertainty: softplus(W_unc × input)
     const uncLogit = new Array(this.posDim).fill(0);
@@ -298,7 +348,23 @@ export class SensorimotorPredictorService implements OnModuleInit {
     const uncertainty = uncLogit.map(l => Math.log(1 + Math.exp(l))); // softplus
     this.lastUncertainty = uncertainty;
 
-    return { predicted, uncertainty };
+    return { predicted, uncertainty, predicted_t2, codebook_id };
+  }
+
+  /**
+   * VQ Codebook: find nearest codebook entry to delta (Delta-IRIS).
+   */
+  private quantize(delta: number[]): { quantized: number[]; codebook_id: number } {
+    let bestId = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < this.codebook.length; i++) {
+      let dist = 0;
+      for (let d = 0; d < this.posDim; d++) {
+        dist += ((delta[d] || 0) - (this.codebook[i][d] || 0)) ** 2;
+      }
+      if (dist < bestDist) { bestDist = dist; bestId = i; }
+    }
+    return { quantized: [...this.codebook[bestId]], codebook_id: bestId };
   }
 
   // ═══════════════════════════════════════════
@@ -325,8 +391,39 @@ export class SensorimotorPredictorService implements OnModuleInit {
     }
     uncPenalty /= this.posDim;
 
-    // Free energy = prediction_error + β × uncertainty_penalty - reward_bonus
-    return predError + beta * uncPenalty - reward * 0.1;
+    // Decorrelation loss (R2-Dreamer): penalize correlated predictions across dimensions
+    // Cross-correlation of predicted deltas → off-diagonal should be zero
+    const decorrelationWeight = this.config.get('predictor.decorrelation_weight') ?? 0.1;
+    let decorrelation = 0;
+    for (let d1 = 0; d1 < this.posDim; d1++) {
+      for (let d2 = d1 + 1; d2 < this.posDim; d2++) {
+        const corr = (this.lastDelta[d1] || 0) * (this.lastDelta[d2] || 0);
+        decorrelation += corr * corr;
+      }
+    }
+
+    // VQ commitment loss (Delta-IRIS): ||delta - sg(quantized)||²
+    const vqWeight = this.config.get('predictor.vq_weight') ?? 0.1;
+    let vqCommitment = 0;
+    for (let d = 0; d < this.posDim; d++) {
+      vqCommitment += ((this.lastDelta[d] || 0) - (this.codebook[this.lastCodebookId]?.[d] || 0)) ** 2;
+    }
+
+    // Free energy + decorrelation + VQ commitment
+    return predError + beta * uncPenalty - reward * 0.1
+      + decorrelationWeight * decorrelation / Math.max(1, this.posDim)
+      + vqWeight * vqCommitment / this.posDim;
+  }
+
+  /**
+   * Reusable position error for multi-horizon loss.
+   */
+  private computeLossAt(predicted: number[], actual: number[]): number {
+    let err = 0;
+    for (let i = 0; i < this.posDim; i++) {
+      err += ((actual[i] || 0) - (predicted[i] || 0)) ** 2;
+    }
+    return err / this.posDim;
   }
 
   // ═══════════════════════════════════════════
@@ -336,6 +433,7 @@ export class SensorimotorPredictorService implements OnModuleInit {
   private backward(actual: number[], reward: number): void {
     const inputDim = this.posDim + ACTION_EMBED_DIM;
     const beta = this.config.get('predictor.beta_kl') ?? 0.1;
+    const decorrelationWeight = this.config.get('predictor.decorrelation_weight') ?? 0.1;
 
     // ∂L/∂predicted = 2(predicted - actual) / posDim
     const dL_dpred = new Array(this.posDim).fill(0);
@@ -344,14 +442,24 @@ export class SensorimotorPredictorService implements OnModuleInit {
       dL_dpred[i] = 2 * (pred - (actual[i] || 0)) / this.posDim;
     }
 
+    // Decorrelation gradient (R2-Dreamer): dDecorr/dDelta_d ≈ 2 × delta_d × Σ(delta_other²)
+    const dDecorr = new Array(this.posDim).fill(0);
+    for (let d = 0; d < this.posDim; d++) {
+      let sumOthersSq = 0;
+      for (let d2 = 0; d2 < this.posDim; d2++) {
+        if (d2 !== d) sumOthersSq += (this.lastDelta[d2] || 0) ** 2;
+      }
+      dDecorr[d] = 2 * (this.lastDelta[d] || 0) * sumOthersSq * decorrelationWeight / Math.max(1, this.posDim);
+    }
+
     // ∂predicted/∂delta = 1
     // ∂delta/∂deltaLogit = (1 - tanh²(logit)) × SCALE
     const dDelta_dLogit = this.lastDeltaLogit.map(l => (1 - Math.tanh(l) ** 2) * SCALE);
 
-    // ∂L/∂W_delta[i][j] = ∂L/∂pred[j] × dDelta_dLogit[j] × input[i]
+    // ∂L/∂W_delta[i][j] = (∂L/∂pred[j] + dDecorr[j]) × dDelta_dLogit[j] × input[i]
     for (let i = 0; i < Math.min(inputDim, this.W_delta.length); i++) {
       for (let j = 0; j < this.posDim; j++) {
-        const grad = dL_dpred[j] * (dDelta_dLogit[j] || 0) * (this.lastInput[i] || 0);
+        const grad = (dL_dpred[j] + dDecorr[j]) * (dDelta_dLogit[j] || 0) * (this.lastInput[i] || 0);
         this.W_delta[i][j] -= this.lr * this.clamp(grad);
       }
     }
@@ -370,14 +478,33 @@ export class SensorimotorPredictorService implements OnModuleInit {
       }
     }
 
-    // ∂L/∂W_action: gradient flows through input → action embedding
+    // ∂L/∂W_delta_t2: same chain rule as W_delta but for t+2 head
+    // Uses cached lastPredicted_t2 input and lastDeltaLogit_t2
+    const dDelta_t2_dLogit = this.lastDeltaLogit_t2.map(l => (1 - Math.tanh(l) ** 2) * SCALE);
+    // Input to t2 head was the t+1 predicted position + actionVec
     const actionIdx = this.lastActionIdx;
+    const actionVec = (actionIdx >= 0 && actionIdx < this.W_action.length)
+      ? this.W_action[actionIdx] : new Array(ACTION_EMBED_DIM).fill(0);
+    const quantized_t1 = this.codebook[this.lastCodebookId] || new Array(this.posDim).fill(0);
+    const input_t2 = [
+      ...Array.from({ length: this.posDim }, (_, i) => (this.lastInput[i] || 0) + (quantized_t1[i] || 0)),
+      ...actionVec,
+    ];
+    for (let i = 0; i < Math.min(inputDim, this.W_delta_t2.length); i++) {
+      for (let j = 0; j < this.posDim; j++) {
+        // Use same prediction error signal (approximate: treat t2 loss as small correction)
+        const grad = dL_dpred[j] * 0.5 * (dDelta_t2_dLogit[j] || 0) * (input_t2[i] || 0);
+        this.W_delta_t2[i][j] -= this.lr * this.clamp(grad);
+      }
+    }
+
+    // ∂L/∂W_action: gradient flows through input → action embedding
     if (actionIdx >= 0 && actionIdx < this.W_action.length) {
       for (let a = 0; a < ACTION_EMBED_DIM; a++) {
         let grad = 0;
-        const inputIdx = this.posDim + a;
+        const inputIdxA = this.posDim + a;
         for (let j = 0; j < this.posDim; j++) {
-          grad += dL_dpred[j] * (dDelta_dLogit[j] || 0) * (this.W_delta[inputIdx]?.[j] ?? 0);
+          grad += (dL_dpred[j] + dDecorr[j]) * (dDelta_dLogit[j] || 0) * (this.W_delta[inputIdxA]?.[j] ?? 0);
         }
         this.W_action[actionIdx][a] -= this.lr * this.clamp(grad);
       }
@@ -401,9 +528,24 @@ export class SensorimotorPredictorService implements OnModuleInit {
         this.W_action = JSON.parse(w.W_action as string || '[]');
         this.W_delta = JSON.parse(w.W_delta as string || '[]');
         this.W_unc = JSON.parse(w.W_uncertainty as string || '[]');
+        this.W_delta_t2 = JSON.parse(w.W_delta_t2 as string || '[]');
+        this.codebook = JSON.parse(w.codebook as string || '[]');
         this.actionIndex = new Map(Object.entries(JSON.parse(w.action_index as string || '{}')));
         this.lr = (w.learning_rate as number) || 0.01;
         this.stepCount = (w.step_count as number) || 0;
+
+        // If loaded weights lack t2/codebook (legacy), initialize them
+        const inputDim = this.posDim + ACTION_EMBED_DIM;
+        if (!this.W_delta_t2 || this.W_delta_t2.length === 0) {
+          this.W_delta_t2 = this.xavier(inputDim, this.posDim);
+        }
+        if (!this.codebook || this.codebook.length === 0) {
+          this.codebookSize = this.config.get('predictor.codebook_size') ?? 64;
+          this.codebook = Array.from({ length: this.codebookSize }, () =>
+            Array.from({ length: this.posDim }, () => (Math.random() - 0.5) * SCALE),
+          );
+        }
+
         this.logger.log(`Predictor weights loaded: step=${this.stepCount}, ${this.actionIndex.size} actions`);
         return;
       } catch { /* fall through to init */ }
@@ -425,10 +567,17 @@ export class SensorimotorPredictorService implements OnModuleInit {
     this.W_action = this.xavier(actionCount, ACTION_EMBED_DIM);
     this.W_delta = this.xavier(inputDim, this.posDim);
     this.W_unc = this.xavier(inputDim, this.posDim);
+    this.W_delta_t2 = this.xavier(inputDim, this.posDim);
     this.lr = 0.01;
     this.stepCount = 0;
 
-    this.logger.log(`Predictor weights initialized: posDim=${this.posDim}, actions=${actionCount}`);
+    // VQ Codebook (Delta-IRIS)
+    this.codebookSize = this.config.get('predictor.codebook_size') ?? 64;
+    this.codebook = Array.from({ length: this.codebookSize }, () =>
+      Array.from({ length: this.posDim }, () => (Math.random() - 0.5) * SCALE),
+    );
+
+    this.logger.log(`Predictor weights initialized: posDim=${this.posDim}, actions=${actionCount}, codebook=${this.codebookSize}`);
   }
 
   private async persistWeights(): Promise<void> {
@@ -440,6 +589,8 @@ export class SensorimotorPredictorService implements OnModuleInit {
         W_action: JSON.stringify(this.W_action),
         W_delta: JSON.stringify(this.W_delta),
         W_uncertainty: JSON.stringify(this.W_unc),
+        W_delta_t2: JSON.stringify(this.W_delta_t2),
+        codebook: JSON.stringify(this.codebook),
         action_index: JSON.stringify(actionObj),
         learning_rate: this.lr,
         step_count: this.stepCount,
@@ -460,19 +611,19 @@ export class SensorimotorPredictorService implements OnModuleInit {
     this.posDim = Math.min(newDim, MAX_POS_DIM);
     const inputDim = this.posDim + ACTION_EMBED_DIM;
 
-    // Expand W_delta and W_unc: add rows and columns
-    while (this.W_delta.length < inputDim) {
-      this.W_delta.push(new Array(this.posDim).fill(0).map(() => (Math.random() - 0.5) * 0.1));
-    }
-    for (const row of this.W_delta) {
-      while (row.length < this.posDim) row.push((Math.random() - 0.5) * 0.1);
+    // Expand W_delta, W_unc, W_delta_t2: add rows and columns
+    for (const W of [this.W_delta, this.W_unc, this.W_delta_t2]) {
+      while (W.length < inputDim) {
+        W.push(new Array(this.posDim).fill(0).map(() => (Math.random() - 0.5) * 0.1));
+      }
+      for (const row of W) {
+        while (row.length < this.posDim) row.push((Math.random() - 0.5) * 0.1);
+      }
     }
 
-    while (this.W_unc.length < inputDim) {
-      this.W_unc.push(new Array(this.posDim).fill(0).map(() => (Math.random() - 0.5) * 0.1));
-    }
-    for (const row of this.W_unc) {
-      while (row.length < this.posDim) row.push((Math.random() - 0.5) * 0.1);
+    // Expand codebook entries to new posDim
+    for (const entry of this.codebook) {
+      while (entry.length < this.posDim) entry.push((Math.random() - 0.5) * SCALE);
     }
 
     if (oldDim !== this.posDim) {

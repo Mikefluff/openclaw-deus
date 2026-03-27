@@ -437,6 +437,18 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
     // Self-trace: "I said X" — the child knows it spoke
     await this.conceptSpace.createSelfTrace(`Я сказал: ${word}`, 0.5);
 
+    // NAMING GAME: world evaluates the word
+    if (word && this.worldBridge) {
+      const targets = this.worldBridge.getAvailableTargets();
+      // Check if the word matches any current object name
+      const isCorrect = targets.some(t => word.toLowerCase().includes(t.toLowerCase()) || t.toLowerCase().includes(word.toLowerCase()));
+      if (isCorrect) {
+        this.affect.reward(0.15); // correct naming → reward
+      } else {
+        this.affect.inflictPain('naming_error', 0.05); // mild correction
+      }
+    }
+
     return word;
   }
 
