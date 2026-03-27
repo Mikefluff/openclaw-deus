@@ -342,4 +342,78 @@ describe('SensorimotorPredictorService', () => {
       expect((svc as any).W_action[(svc as any).W_action.length - 1]).toHaveLength(8); // ACTION_EMBED_DIM
     });
   });
+
+  // ═══════════════════════════════════════════
+  // computeEmpowerment()
+  // ═══════════════════════════════════════════
+  describe('computeEmpowerment()', () => {
+    it('returns 0 when fewer than 2 actions known', () => {
+      // Replace actionIndex with only 1 action
+      (svc as any).actionIndex = new Map([['push', 0]]);
+      const result = svc.computeEmpowerment(randomPos());
+      expect(result).toBe(0);
+    });
+
+    it('returns positive value when actions produce different predictions', () => {
+      const result = svc.computeEmpowerment(randomPos());
+      // Default service has 11 actions with xavier-initialized weights → diverse predictions
+      expect(result).toBeGreaterThan(0);
+    });
+
+    it('returns higher value when predictions are more diverse', () => {
+      const pos = randomPos();
+      // Measure with default (diverse) weights
+      const empDefault = svc.computeEmpowerment(pos);
+
+      // Create a service where all action embeddings are identical → low empowerment
+      const svc2 = createService();
+      const actionCount = (svc2 as any).W_action.length;
+      const uniformEmbed = new Array(8).fill(0.1);
+      for (let i = 0; i < actionCount; i++) {
+        (svc2 as any).W_action[i] = [...uniformEmbed];
+      }
+      const empUniform = svc2.computeEmpowerment(pos);
+
+      expect(empDefault).toBeGreaterThan(empUniform);
+    });
+
+    it('returns bounded value (no NaN/Infinity)', () => {
+      const result = svc.computeEmpowerment(randomPos());
+      expect(Number.isFinite(result)).toBe(true);
+      expect(Number.isNaN(result)).toBe(false);
+    });
+  });
+
+  // ═══════════════════════════════════════════
+  // explorationDrive()
+  // ═══════════════════════════════════════════
+  describe('explorationDrive()', () => {
+    it('combines uncertainty + empowerment', () => {
+      const pos = randomPos();
+      const drive = svc.explorationDrive(pos, 'push', 0.5);
+      const uncertainty = svc.getUncertainty(pos, 'push');
+      const empowerment = svc.computeEmpowerment(pos);
+      expect(drive).toBeCloseTo(0.5 * uncertainty + 0.5 * empowerment, 8);
+    });
+
+    it('alpha=1 returns pure uncertainty', () => {
+      const pos = randomPos();
+      const drive = svc.explorationDrive(pos, 'push', 1.0);
+      const uncertainty = svc.getUncertainty(pos, 'push');
+      expect(drive).toBeCloseTo(uncertainty, 8);
+    });
+
+    it('alpha=0 returns pure empowerment', () => {
+      const pos = randomPos();
+      const drive = svc.explorationDrive(pos, 'push', 0.0);
+      const empowerment = svc.computeEmpowerment(pos);
+      expect(drive).toBeCloseTo(empowerment, 8);
+    });
+
+    it('returns finite positive number', () => {
+      const drive = svc.explorationDrive(randomPos(), 'push');
+      expect(Number.isFinite(drive)).toBe(true);
+      expect(drive).toBeGreaterThanOrEqual(0);
+    });
+  });
 });

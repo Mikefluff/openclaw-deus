@@ -24,6 +24,7 @@ const mockLightCone = {
   queueCreate: jest.fn(),
   queueLink: jest.fn(),
   queueReactivation: jest.fn(),
+  queueWrite: jest.fn(),
   flushCreates: jest.fn().mockReturnValue([]),
   flushLinks: jest.fn().mockReturnValue([]),
   flushReactivations: jest.fn().mockReturnValue(new Map()),
@@ -560,6 +561,92 @@ describe('TraceGraphService', () => {
       expect(mockLightCone.queueLink).toHaveBeenCalledWith({
         from: 'T_a', to: 'T_b', relation: 'inhibits', weight: 0.3,
       });
+    });
+  });
+
+  // ═══════════════════════════════════════════
+  // recordEpisodicEdge
+  // ═══════════════════════════════════════════
+
+  describe('recordEpisodicEdge()', () => {
+    it('queues via lightCone.queueWrite() with correct SQL', () => {
+      svc.recordEpisodicEdge('T_from', 'T_to', 'push', 5);
+      expect(mockLightCone.queueWrite).toHaveBeenCalledWith(
+        expect.objectContaining({
+          table: 'episodic',
+          operation: 'execute',
+          sql: expect.stringContaining('RELATE'),
+        }),
+      );
+    });
+
+    it('includes cycle, action, from/to trace IDs in vars', () => {
+      svc.recordEpisodicEdge('T_a', 'T_b', 'shake', 42);
+      const call = mockLightCone.queueWrite.mock.calls[0][0];
+      expect(call.vars).toEqual(
+        expect.objectContaining({ from: 'T_a', to: 'T_b', action: 'shake', cycle: 42 }),
+      );
+    });
+
+    it('includes episodic relation type in SQL', () => {
+      svc.recordEpisodicEdge('T_x', 'T_y', 'drop', 10);
+      const call = mockLightCone.queueWrite.mock.calls[0][0];
+      expect(call.sql).toContain('episodic');
+    });
+  });
+
+  // ═══════════════════════════════════════════
+  // consolidateEpisodicEdges
+  // ═══════════════════════════════════════════
+
+  describe('consolidateEpisodicEdges()', () => {
+    it('returns {consolidated: 0, pruned: 0} when no episodic patterns', async () => {
+      mockDb.query.mockResolvedValueOnce(ok([]));
+      mockDb.execute.mockResolvedValueOnce(ok({}));
+      const result = await svc.consolidateEpisodicEdges();
+      expect(result).toEqual({ consolidated: 0, pruned: expect.any(Number) });
+    });
+
+    it('promotes patterns with 3+ occurrences to activates edges', async () => {
+      mockDb.query.mockResolvedValueOnce(ok([
+        { from_id: 'T_a', to_id: 'T_b', cnt: 5 },
+        { from_id: 'T_c', to_id: 'T_d', cnt: 3 },
+      ]));
+      mockDb.execute.mockResolvedValue(ok({}));
+      const result = await svc.consolidateEpisodicEdges();
+      expect(result.consolidated).toBe(2);
+      // Should call db.execute for each promotion + 1 for DELETE
+      const relateCalls = mockDb.execute.mock.calls.filter(
+        (c: any[]) => typeof c[0] === 'string' && c[0].includes('RELATE'),
+      );
+      expect(relateCalls.length).toBe(2);
+    });
+
+    it('decays episodic edge weights (not time-based pruning)', async () => {
+      mockDb.query.mockResolvedValueOnce(ok([])); // no patterns
+      mockDb.execute.mockResolvedValue(ok({}));
+      await svc.consolidateEpisodicEdges();
+      // Should UPDATE weight *= 0.95 (decay) + DELETE weight < 0.01 (faded)
+      const decayCalls = mockDb.execute.mock.calls.filter(
+        (c: any[]) => typeof c[0] === 'string' && c[0].includes('weight * 0.95'),
+      );
+      const pruneCalls = mockDb.execute.mock.calls.filter(
+        (c: any[]) => typeof c[0] === 'string' && c[0].includes('DELETE episodic') && c[0].includes('weight < 0.01'),
+      );
+      expect(decayCalls.length).toBe(1);
+      expect(pruneCalls.length).toBe(1);
+    });
+
+    it('removes consolidated episodic edges after promotion', async () => {
+      mockDb.query.mockResolvedValueOnce(ok([
+        { from_id: 'T_a', to_id: 'T_b', cnt: 5 },
+      ]));
+      mockDb.execute.mockResolvedValue(ok({}));
+      await svc.consolidateEpisodicEdges();
+      const deleteConsolidated = mockDb.execute.mock.calls.filter(
+        (c: any[]) => typeof c[0] === 'string' && c[0].includes('DELETE episodic') && c[0].includes('in.trace_id'),
+      );
+      expect(deleteConsolidated.length).toBe(1);
     });
   });
 });

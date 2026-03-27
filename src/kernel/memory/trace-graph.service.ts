@@ -446,7 +446,11 @@ export class TraceGraphService {
    * Called on GLOBAL cadence (every 200 ticks).
    *
    * If trace A→B has 3+ episodic edges → create/strengthen semantic activates edge.
-   * Then prune old episodic edges (> 500 cycles old).
+   *
+   * Pruning: NOT time-based (important rare events must persist).
+   * Instead: weight decay on episodic edges. Consolidated patterns get removed.
+   * Unconsolidated edges fade through weight decay (same as trace forgetting).
+   * Emotional edges resist decay (anchoring).
    */
   async consolidateEpisodicEdges(): Promise<{ consolidated: number; pruned: number }> {
     // Find episodic patterns: same from→to appearing 3+ times
@@ -463,19 +467,28 @@ export class TraceGraphService {
           `RELATE (SELECT id FROM trace WHERE trace_id = $from LIMIT 1)->activates->(SELECT id FROM trace WHERE trace_id = $to LIMIT 1) SET weight = math::clamp(weight + 0.2, 0.01, 1.0)`,
           { from: p.from_id, to: p.to_id },
         );
+        // Remove consolidated episodic edges (they're now semantic)
+        await this.db.execute(
+          `DELETE episodic WHERE in.trace_id = $from AND out.trace_id = $to`,
+          { from: p.from_id, to: p.to_id },
+        );
         consolidated++;
       }
     }
 
-    // Prune old episodic edges
+    // Weight decay on remaining episodic edges (not time-based deletion).
+    // Low-weight edges naturally die. Emotional traces anchor via connected trace charge.
+    const decayResult = await this.db.execute(
+      `UPDATE episodic SET weight = weight * 0.95 WHERE weight > 0.01`,
+    );
+    // Remove only truly faded edges (weight → 0)
     const pruneResult = await this.db.execute(
-      `DELETE episodic WHERE cycle < $cutoff`,
-      { cutoff: Math.max(0, this.cycle - 500) },
+      `DELETE episodic WHERE weight < 0.01`,
     );
     const pruned = pruneResult.isOk() ? 1 : 0;
 
     if (consolidated > 0) {
-      this.logger.log(`Episodic→Semantic: ${consolidated} patterns consolidated, old edges pruned`);
+      this.logger.log(`Episodic→Semantic: ${consolidated} patterns consolidated, faded edges pruned`);
     }
 
     return { consolidated, pruned };

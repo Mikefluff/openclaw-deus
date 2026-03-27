@@ -32,6 +32,8 @@ npx ts-node src/training/multi-world.ts 500
 | Co-activation | Hebbian (fire together → wire together) | Edge strengthening + co_activation_count |
 | Cluster accuracy | Reward shaping (correct categories → reward) | Affect gradient |
 | Adversarial exposure | Weak cluster detection | More objects from weak categories |
+| Episodic memory | Action→consequence timestamped links | Consolidation: frequent patterns → permanent edges |
+| Empowerment | Variance of predicted outcomes across actions | Action selection prefers controllable regions |
 
 ## Evolving World Levels
 

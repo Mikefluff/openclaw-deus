@@ -149,6 +149,24 @@ cluster ──cluster_trajectory──> cluster   (abstract dynamics)
 
 Transfer learning: new object → belongs_to cluster:round → cluster trajectory predicts "push → rolls". No explicit copy needed.
 
+## Episodic Memory (AriGraph-inspired)
+
+Dual-edge architecture in the trace graph:
+- **Semantic edges** (`activates`, `inhibits`): permanent, represent learned associations
+- **Episodic edges** (`episodic`): timestamped, record specific interactions with context
+
+Consolidation (GLOBAL cadence): episodic patterns appearing 3+ times promote to permanent semantic edges. Remaining episodic edges decay through weight attenuation (×0.95 per GLOBAL cycle) — not time-based pruning. Emotional/significant edges resist decay through higher initial weight. Edges that fade below 0.01 are removed. This models natural memory consolidation — frequent patterns become knowledge, rare-but-important events persist through weight, irrelevant noise fades.
+
+## Empowerment
+
+The exploration drive combines two signals:
+- **Curiosity** (uncertainty): how unpredictable is this region? → seek to reduce uncertainty
+- **Empowerment** (control): how much do my actions matter here? → seek controllable regions
+
+`drive = α × uncertainty + (1-α) × empowerment`
+
+This avoids the "noisy TV problem" — pure curiosity gets stuck on random uncontrollable phenomena. Empowerment ensures the agent focuses on regions where it can actually learn.
+
 ## Concurrent Modulation
 
 Affect, energy, and attention modulate ALL operations simultaneously:
