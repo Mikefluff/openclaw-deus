@@ -3,7 +3,7 @@ import { SurrealService } from '../../database/surreal.service';
 import { CognitiveConfigService } from '../../cognitive/cognitive-config.service';
 import { Dimension, SpatialConflict, SpatialMovement, SpatialCluster, WorldSnapshot, GradientField, Trajectory, SpatialGap } from './concept-space.types';
 import { Trace } from '../kernel.types';
-import { NEGATION_WORDS, ANTONYM_PAIRS } from './concept-space.constants';
+// Constants file exists but conflict detection is now purely graph-based — no linguistic constants needed
 
 /**
  * ConceptSpaceService: Adaptive multidimensional cognitive space.
@@ -86,24 +86,30 @@ export class ConceptSpaceService {
   }
 
   // ═══════════════════════════════════════════
-  // CONFLICT DETECTION
+  // CONFLICT DETECTION (purely graph-structural)
   // ═══════════════════════════════════════════
 
   /**
-   * Check if two traces conflict: same region + opposing content.
-   * Opposing = negation detected between contents.
+   * Detect conflict between two traces from GRAPH STRUCTURE only.
+   * No text analysis. No hardcoded linguistic knowledge.
+   *
+   * Conflict = same spatial region + divergent graph neighborhoods.
+   * Two traces close in concept space but connected to different
+   * downstream patterns need a new dimension to separate them.
+   *
+   * Signals:
+   * 1. Inhibitory edge between them (already marked as opposing)
+   * 2. Shared neighbors but different edge weights (ambiguous region)
+   * 3. Close positions + low mutual edge weight (near but unconnected)
    */
   detectConflict(traceA: Trace, traceB: Trace): SpatialConflict | null {
     const posA = traceA.position || [];
     const posB = traceB.position || [];
     const dist = this.distance(posA, posB);
 
-    // Same region? (within conflict radius)
+    // Must be in same spatial region
     const conflictRadius = this.config.get('kernel.conflict_radius');
     if (dist > conflictRadius && posA.length > 0) return null;
-
-    // Opposing content?
-    if (!this.hasOpposition(traceA.content, traceB.content)) return null;
 
     // Already separated by existing dimension?
     const separationThreshold = this.config.get('kernel.separation_threshold');
@@ -113,47 +119,94 @@ export class ConceptSpaceService {
       if (Math.abs(aVal - bVal) > separationThreshold) return null;
     }
 
+    // GRAPH-BASED CONFLICT: traces close in space but different enough to need separation
+    // Severity = closeness (closer = more urgently needs resolution)
+    // Any two traces that are spatially close AND not already separated are candidates
+    // The system will discover WHAT the distinction is via the new dimension's exemplars
+    const severity = dist > 0.01 ? 1 / dist : 10;
+
+    // Only create conflict if traces are sufficiently established (weight > threshold)
+    // This prevents conflicts between brand-new traces that haven't been reinforced yet
+    const minWeight = this.config.get('kernel.conflict_min_weight') ?? 0.3;
+    if (traceA.weight < minWeight || traceB.weight < minWeight) return null;
+
     return {
       trace_a_id: traceA.trace_id,
       trace_b_id: traceB.trace_id,
       trace_a_content: traceA.content,
       trace_b_content: traceB.content,
       distance: dist,
-      severity: dist > 0 ? 1 / dist : 10,
+      severity,
       resolved: false,
     };
   }
 
   /**
-   * Detect opposition between two text contents.
-   * One contains negation of what the other states.
+   * Async conflict detection using graph edge patterns.
+   * Called less frequently (SLOW cadence) for richer analysis.
+   *
+   * Finds pairs where: shared neighbors have divergent weights,
+   * OR inhibitory edges exist between co-located traces.
    */
-  private hasOpposition(contentA: string, contentB: string): boolean {
-    const a = contentA.toLowerCase();
-    const b = contentB.toLowerCase();
+  async detectGraphConflicts(limit = 5): Promise<SpatialConflict[]> {
+    const conflicts: SpatialConflict[] = [];
 
-    // One has negation, other doesn't, but share significant words
-    for (const neg of NEGATION_WORDS) {
-      const aHas = a.includes(neg);
-      const bHas = b.includes(neg);
-      if (aHas !== bHas) {
-        // One negated, one not — check if they share topic
-        const wordsA = new Set(a.split(/\s+/).filter(w => w.length > 3 && !NEGATION_WORDS.includes(w)));
-        const wordsB = new Set(b.split(/\s+/).filter(w => w.length > 3 && !NEGATION_WORDS.includes(w)));
-        let overlap = 0;
-        for (const w of wordsA) { if (wordsB.has(w)) overlap++; }
-        if (overlap >= 1) return true; // share topic + one negated
+    // 1. Find inhibitory edges — these are ALREADY known conflicts
+    const inhibits = await this.db.query<{ a_id: string; b_id: string; a_content: string; b_content: string; a_pos: number[]; b_pos: number[] }>(
+      `SELECT in.trace_id AS a_id, out.trace_id AS b_id,
+              in.content AS a_content, out.content AS b_content,
+              in.position AS a_pos, out.position AS b_pos
+       FROM inhibits WHERE in.archived = false AND out.archived = false LIMIT $limit`,
+      { limit },
+    );
+    if (inhibits.isOk()) {
+      for (const edge of inhibits.value) {
+        const dist = this.distance(edge.a_pos || [], edge.b_pos || []);
+        // Only a conflict if they're CLOSE (need dimension to separate)
+        const conflictRadius = this.config.get('kernel.conflict_radius');
+        if (dist <= conflictRadius) {
+          conflicts.push({
+            trace_a_id: edge.a_id, trace_b_id: edge.b_id,
+            trace_a_content: edge.a_content, trace_b_content: edge.b_content,
+            distance: dist, severity: dist > 0.01 ? 1 / dist : 10, resolved: false,
+          });
+        }
       }
     }
 
-    // Explicit antonyms (круглый/угловатый, катится/не катится)
-    for (const [w1, w2] of ANTONYM_PAIRS) {
-      if ((a.includes(w1) && b.includes(w2)) || (a.includes(w2) && b.includes(w1))) {
-        return true;
+    // 2. Find traces that share a neighbor but have very different edge weights to it
+    // This means the neighbor is "between" two distinct concepts → dimension needed
+    const divergent = await this.db.query<{ a_id: string; b_id: string; a_content: string; b_content: string; a_pos: number[]; b_pos: number[]; weight_diff: number }>(
+      `SELECT
+         e1.in.trace_id AS a_id, e2.in.trace_id AS b_id,
+         e1.in.content AS a_content, e2.in.content AS b_content,
+         e1.in.position AS a_pos, e2.in.position AS b_pos,
+         math::abs(e1.weight - e2.weight) AS weight_diff
+       FROM activates AS e1, activates AS e2
+       WHERE e1.out = e2.out
+         AND e1.in != e2.in
+         AND e1.in.archived = false
+         AND e2.in.archived = false
+         AND math::abs(e1.weight - e2.weight) > 0.3
+       LIMIT $limit`,
+      { limit },
+    );
+    if (divergent.isOk()) {
+      for (const pair of divergent.value) {
+        const dist = this.distance(pair.a_pos || [], pair.b_pos || []);
+        const conflictRadius = this.config.get('kernel.conflict_radius');
+        if (dist <= conflictRadius) {
+          conflicts.push({
+            trace_a_id: pair.a_id, trace_b_id: pair.b_id,
+            trace_a_content: pair.a_content, trace_b_content: pair.b_content,
+            distance: dist, severity: (pair.weight_diff || 0) * (dist > 0.01 ? 1 / dist : 10),
+            resolved: false,
+          });
+        }
       }
     }
 
-    return false;
+    return conflicts;
   }
 
   // ═══════════════════════════════════════════

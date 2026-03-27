@@ -256,22 +256,23 @@ export class AffectiveStateService implements OnModuleInit {
   // ═══════════════════════════════════════════
 
   private updateAccumulators(commits: CommitDelta[], timeSense: TimeSense): void {
-    const decayRate = 0.15; // accumulators decay 15% per cycle toward 0
+    const decayRate = 0.05; // slower decay — let accumulators build up (was 0.15)
 
     // Feed from commits
     if (commits.length > 0) {
       const avgPredError = commits.reduce((s, c) => s + c.prediction_error, 0) / commits.length;
       const avgNovelty = commits.reduce((s, c) => s + c.novelty_cost, 0) / commits.length;
+      const totalEnergy = commits.reduce((s, c) => s + c.energy, 0);
       const convergent = commits.filter(c => c.convergence_score > 0.3).length;
       const escalations = commits.filter(c => c.is_escalation).length;
       const lowEnergy = commits.filter(c => c.energy < 0.15).length;
 
-      this.acc[0] += avgPredError;                    // prediction_error
-      this.acc[1] += escalations * 0.3;               // tension
+      this.acc[0] += avgPredError + totalEnergy * 0.1; // prediction_error + general arousal
+      this.acc[1] += escalations * 0.3 + commits.length * 0.05; // tension from volume
       // acc[2] (pain) only via inflictPain()
       this.acc[3] += convergent * 0.2;                // convergence
       // acc[4] (reward) only via reward()
-      this.acc[5] += avgNovelty;                       // novelty
+      this.acc[5] += avgNovelty + commits.length * 0.1; // novelty from new experiences
       this.acc[6] += lowEnergy * 0.1 + (1 - timeSense.novelty_rate) * 0.1; // stability
     }
 

@@ -136,6 +136,7 @@ const DEFAULTS: Record<string, Omit<CognitiveParam, 'key'>> = {
 
   // --- Kernel: concept space ---
   'kernel.conflict_radius': { value: 2.0, description: 'Max distance for conflict detection', min: 0.5, max: 10, tunable: true },
+  'kernel.conflict_min_weight': { value: 0.3, description: 'Min trace weight for conflict candidacy', min: 0.1, max: 0.8, tunable: true },
   'kernel.separation_threshold': { value: 0.5, description: 'Min separation along dimension to resolve conflict', min: 0.1, max: 3, tunable: true },
 
   // --- Kernel: sleep & timeout ---

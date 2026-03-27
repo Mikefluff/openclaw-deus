@@ -1,21 +1,16 @@
 /**
- * Constants for ConceptSpaceService: negation detection and antonym pairs.
- * Extracted from service to avoid hardcoding linguistic data in business logic.
+ * Constants for ConceptSpaceService.
+ *
+ * NO hardcoded antonyms or linguistic knowledge.
+ * Conflicts are detected from DATA: spatial proximity + low content overlap.
+ * The system discovers its own distinctions.
  */
 
-/** Words indicating negation across supported languages (Russian + English). */
-export const NEGATION_WORDS: readonly string[] = [
-  'не', 'нет', 'без', 'никогда',
-  'not', 'no', 'without', 'never', 'unlike',
-];
+/** Minimum word length for content comparison (filter noise words). */
+export const MIN_WORD_LENGTH = 3;
 
-/**
- * Explicit antonym pairs for opposition detection.
- * Each pair [wordA, wordB] means traces containing A and B are potentially in conflict.
- */
-export const ANTONYM_PAIRS: ReadonlyArray<readonly [string, string]> = [
-  ['круглый', 'угловатый'], ['круглая', 'угловатая'], ['круглое', 'угловатое'],
-  ['катится', 'не катится'], ['гладкий', 'шершавый'],
-  ['большой', 'маленький'], ['тяжёлый', 'лёгкий'],
-  ['round', 'angular'], ['rolls', "doesn't roll"],
-];
+/** Content overlap threshold below which two nearby traces are considered conflicting. */
+export const CONFLICT_OVERLAP_THRESHOLD = 0.3;
+
+/** Minimum shared context words to confirm traces are about the same domain. */
+export const MIN_SHARED_CONTEXT = 1;

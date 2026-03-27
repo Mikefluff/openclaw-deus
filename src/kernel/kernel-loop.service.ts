@@ -327,6 +327,12 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
           }
         }
 
+        // Graph-based conflict detection → dimension birth
+        const graphConflicts = await this.conceptSpace.detectGraphConflicts(3);
+        for (const conflict of graphConflicts) {
+          await this.conceptSpace.birthDimension(conflict, cycle);
+        }
+
         // FIX 2: energy for reflection
         this.energy.spend(this.energy.cost.reflection_cycle, 'pump:reflection');
 
