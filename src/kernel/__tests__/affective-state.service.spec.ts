@@ -194,9 +194,9 @@ describe('AffectiveStateService', () => {
   describe('accumulator decay', () => {
     it('values decrease toward 0 over cycles', () => {
       (svc as any).acc[0] = 3.0;
-      // Run multiple cycles with empty commits to decay
-      for (let i = 0; i < 5; i++) {
-        svc.processCommits([], makeTimeSense());
+      // Run multiple cycles with empty commits and zero tempo to decay
+      for (let i = 0; i < 10; i++) {
+        svc.processCommits([], makeTimeSense({ tempo: 0 }));
       }
       expect((svc as any).acc[0]).toBeLessThan(3.0);
     });

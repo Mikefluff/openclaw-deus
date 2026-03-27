@@ -94,6 +94,8 @@ export class AffectiveStateService implements OnModuleInit {
 
   async onModuleInit(): Promise<void> {
     await this.loadOrInitWeights();
+    // Run one forward pass to initialize hormones from current weights
+    this.forward();
   }
 
   // ═══════════════════════════════════════════
@@ -256,24 +258,32 @@ export class AffectiveStateService implements OnModuleInit {
   // ═══════════════════════════════════════════
 
   private updateAccumulators(commits: CommitDelta[], timeSense: TimeSense): void {
-    const decayRate = 0.05; // slower decay — let accumulators build up (was 0.15)
+    const decayRate = 0.03; // slow decay — let accumulators build momentum
 
-    // Feed from commits
     if (commits.length > 0) {
       const avgPredError = commits.reduce((s, c) => s + c.prediction_error, 0) / commits.length;
       const avgNovelty = commits.reduce((s, c) => s + c.novelty_cost, 0) / commits.length;
+      const avgUrgency = commits.reduce((s, c) => s + c.urgency, 0) / commits.length;
       const totalEnergy = commits.reduce((s, c) => s + c.energy, 0);
       const convergent = commits.filter(c => c.convergence_score > 0.3).length;
       const escalations = commits.filter(c => c.is_escalation).length;
-      const lowEnergy = commits.filter(c => c.energy < 0.15).length;
 
-      this.acc[0] += avgPredError + totalEnergy * 0.1; // prediction_error + general arousal
-      this.acc[1] += escalations * 0.3 + commits.length * 0.05; // tension from volume
+      // Every commit represents cognitive work → base accumulation
+      const baseActivity = Math.min(1, commits.length * 0.15);
+
+      this.acc[0] += avgPredError + avgUrgency * 0.3 + baseActivity * 0.2;  // prediction_error + arousal
+      this.acc[1] += escalations * 0.3 + baseActivity * 0.1;                 // tension
       // acc[2] (pain) only via inflictPain()
-      this.acc[3] += convergent * 0.2;                // convergence
+      this.acc[3] += convergent * 0.2 + (1 - avgPredError) * baseActivity * 0.1; // convergence (less error = more)
       // acc[4] (reward) only via reward()
-      this.acc[5] += avgNovelty + commits.length * 0.1; // novelty from new experiences
-      this.acc[6] += lowEnergy * 0.1 + (1 - timeSense.novelty_rate) * 0.1; // stability
+      this.acc[5] += avgNovelty + baseActivity * 0.3;                         // novelty (always some with new events)
+      this.acc[6] += (1 - timeSense.novelty_rate) * 0.2;                     // stability
+    }
+
+    // TimeSense-driven arousal: fast tempo → more pred_error accumulator
+    if (timeSense.tempo > 0.3) {
+      this.acc[0] += timeSense.tempo * 0.1;
+      this.acc[5] += timeSense.novelty_rate * 0.1;
     }
 
     // Pain tracking
@@ -283,7 +293,7 @@ export class AffectiveStateService implements OnModuleInit {
       this.painCyclesUnresolved = 0;
     }
 
-    // Decay all accumulators
+    // Decay all accumulators (slow)
     for (let i = 0; i < N_ACCUMULATORS; i++) {
       this.acc[i] *= (1 - decayRate);
       this.acc[i] = Math.max(0, Math.min(5, this.acc[i]));

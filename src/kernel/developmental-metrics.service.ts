@@ -469,12 +469,13 @@ export class DevelopmentalMetricsService {
     const generalization = objectTraces > 0 ? Math.min(1, abstractions / (objectTraces * 0.1)) : 0;
 
     // Prediction precision: from commit history (prediction errors should decrease)
-    const predResult = await this.db.query<{ avg_err: number }>(
-      `SELECT math::mean(prediction_error) AS avg_err FROM commit_log WHERE prediction_error IS NOT NONE LIMIT 20`,
+    const predRows = await this.db.query<{ prediction_error: number }>(
+      `SELECT prediction_error FROM commit_log WHERE prediction_error IS NOT NONE LIMIT 20`,
     );
-    const avgPredError = predResult.isOk() && predResult.value.length > 0
-      ? (predResult.value[0].avg_err ?? 0.5) : 0.5;
-    const predictionPrecision = Math.max(0, 1 - avgPredError);
+    const avgPredErr = predRows.isOk() && predRows.value.length > 0
+      ? predRows.value.reduce((s, r) => s + (r.prediction_error || 0), 0) / predRows.value.length
+      : 0.5;
+    const predictionPrecision = Math.max(0, 1 - avgPredErr);
 
     // Causal understanding: trajectories with confidence > 0.5
     const snapshot = await this.conceptSpace.snapshot();

@@ -145,6 +145,11 @@ async function main() {
       const accuracy = total > 0 ? correct / total : 0;
       devMetrics.recordAccuracy(tick, accuracy);
 
+      // Reward for accurate world model — child feels good when understanding improves
+      if (accuracy > 0.5) {
+        affect.reward(accuracy * 0.3);
+      }
+
       // Take snapshot
       const snap = await devMetrics.snapshot(tick);
 

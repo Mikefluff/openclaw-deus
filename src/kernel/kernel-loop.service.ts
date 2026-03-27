@@ -859,8 +859,9 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
     const actions = this.worldBridge.getAvailableActions();
     if (targets.length === 0 || actions.length === 0) return null;
 
-    // Don't act too often (natural pace)
-    if (Math.random() > 0.3) return null;
+    // Action probability modulated by affect mode: explore → act more, exploit → act less
+    const actionProb = affectState.mode === 'explore' ? 0.6 : 0.3;
+    if (Math.random() > actionProb) return null;
 
     // Find known targets from trace graph
     const activeTraces = await this.traceGraph.getActiveTraces(10);

@@ -174,34 +174,33 @@ export class ConceptSpaceService {
       }
     }
 
-    // 2. Find traces that share a neighbor but have very different edge weights to it
-    // This means the neighbor is "between" two distinct concepts → dimension needed
-    const divergent = await this.db.query<{ a_id: string; b_id: string; a_content: string; b_content: string; a_pos: number[]; b_pos: number[]; weight_diff: number }>(
-      `SELECT
-         e1.in.trace_id AS a_id, e2.in.trace_id AS b_id,
-         e1.in.content AS a_content, e2.in.content AS b_content,
-         e1.in.position AS a_pos, e2.in.position AS b_pos,
-         math::abs(e1.weight - e2.weight) AS weight_diff
-       FROM activates AS e1, activates AS e2
-       WHERE e1.out = e2.out
-         AND e1.in != e2.in
-         AND e1.in.archived = false
-         AND e2.in.archived = false
-         AND math::abs(e1.weight - e2.weight) > 0.3
+    // 2. Find traces with high weight variance in their outgoing edges
+    // High variance = connected to diverse outcomes → needs dimensional separation
+    const highVariance = await this.db.query<{ trace_id: string; content: string; position: number[]; edge_count: number }>(
+      `SELECT in.trace_id AS trace_id, in.content AS content, in.position AS position, count() AS edge_count
+       FROM activates
+       WHERE in.archived = false
+       GROUP BY in
+       HAVING count() > 2
+       ORDER BY edge_count DESC
        LIMIT $limit`,
-      { limit },
+      { limit: limit * 2 },
     );
-    if (divergent.isOk()) {
-      for (const pair of divergent.value) {
-        const dist = this.distance(pair.a_pos || [], pair.b_pos || []);
-        const conflictRadius = this.config.get('kernel.conflict_radius');
-        if (dist <= conflictRadius) {
-          conflicts.push({
-            trace_a_id: pair.a_id, trace_b_id: pair.b_id,
-            trace_a_content: pair.a_content, trace_b_content: pair.b_content,
-            distance: dist, severity: (pair.weight_diff || 0) * (dist > 0.01 ? 1 / dist : 10),
-            resolved: false,
-          });
+    if (highVariance.isOk() && highVariance.value.length >= 2) {
+      // Compare pairs of high-connectivity traces that are spatially close
+      const traces = highVariance.value;
+      const conflictRadius = this.config.get('kernel.conflict_radius');
+      for (let i = 0; i < Math.min(traces.length, limit); i++) {
+        for (let j = i + 1; j < Math.min(traces.length, limit + 1); j++) {
+          const dist = this.distance(traces[i].position || [], traces[j].position || []);
+          if (dist <= conflictRadius && dist > 0.01) {
+            conflicts.push({
+              trace_a_id: traces[i].trace_id, trace_b_id: traces[j].trace_id,
+              trace_a_content: traces[i].content, trace_b_content: traces[j].content,
+              distance: dist, severity: dist > 0.01 ? 1 / dist : 10,
+              resolved: false,
+            });
+          }
         }
       }
     }
