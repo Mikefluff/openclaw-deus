@@ -4,6 +4,7 @@ import { CognitiveAgent, AgentContext } from '../kernel-loop.service';
 import { CausalGraphService } from '../../cognitive/causal-graph.service';
 import { BayesianUpdaterService } from '../../cognitive/bayesian-updater.service';
 import { CalibrationService } from '../../cognitive/calibration.service';
+import { CognitiveConfigService } from '../../cognitive/cognitive-config.service';
 
 /**
  * PredictiveAgent (rank 2): "What will happen? Was I right?"
@@ -27,6 +28,7 @@ export class PredictiveAgent implements CognitiveAgent {
     private readonly causalGraph: CausalGraphService,
     private readonly bayesian: BayesianUpdaterService,
     private readonly calibration: CalibrationService,
+    private readonly config: CognitiveConfigService,
   ) {}
 
   async process(input: string, context: AgentContext): Promise<Signal[]> {
@@ -39,14 +41,14 @@ export class PredictiveAgent implements CognitiveAgent {
       const predicted = this.lastPredictions.get(trace.trace_id);
       if (predicted !== undefined) {
         const error = Math.abs(traceWeight - predicted);
-        if (error > 0.15) {
+        if (error > this.config.get('predictive.error_threshold')) {
           signals.push({
             agent_id: this.id,
             agent_rank: this.rank,
             type: 'prediction',
             content: `Prediction error: expected ${predicted.toFixed(2)}, got ${traceWeight.toFixed(2)} for "${trace.content.slice(0, 40)}"`,
             payload: { prediction_error: error, trace_id: trace.trace_id, predicted, actual: traceWeight },
-            confidence: Math.min(0.8, 0.3 + error), // confidence proportional to error
+            confidence: Math.min(this.config.get('predictive.confidence_max'), this.config.get('predictive.confidence_base') + error), // confidence proportional to error
             novelty_cost: error * 0.5, // diminished novelty for repeated errors
             used_slow_path: false,
             targets: [trace.trace_id],
@@ -64,7 +66,7 @@ export class PredictiveAgent implements CognitiveAgent {
       if (graph.isOk() && graph.value.nodes.length > 0) {
         const topVOI = this.causalGraph.getTopVOIBeliefs(graph.value, 3);
         for (const voi of topVOI) {
-          if (voi.voi > 0.1) {
+          if (voi.voi > this.config.get('predictive.voi_threshold')) {
             signals.push({
               agent_id: this.id,
               agent_rank: this.rank,

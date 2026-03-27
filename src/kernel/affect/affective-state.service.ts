@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { SurrealService } from '../../database/surreal.service';
+import { CognitiveConfigService } from '../../cognitive/cognitive-config.service';
 import { CommitDelta, TimeSense } from '../kernel.types';
 
 /**
@@ -90,7 +91,10 @@ export class AffectiveStateService implements OnModuleInit {
   private lastConfigDeltas: number[] = new Array(N_CONFIG_TARGETS).fill(0);
   private lastModeProbs: number[] = new Array(N_MODES).fill(0.25);
 
-  constructor(private readonly db: SurrealService) {}
+  constructor(
+    private readonly db: SurrealService,
+    private readonly config: CognitiveConfigService,
+  ) {}
 
   async onModuleInit(): Promise<void> {
     await this.loadOrInitWeights();
@@ -151,7 +155,7 @@ export class AffectiveStateService implements OnModuleInit {
       for (let i = 0; i < N_HORMONES; i++) {
         sum += this.lastHormones[i] * this.W2[i][j];
       }
-      this.lastConfigDeltas[j] = Math.tanh(sum) * 0.02; // max ±0.02 per step
+      this.lastConfigDeltas[j] = Math.tanh(sum) * this.config.get('affect.config_delta_max');
     }
 
     // Mode: hormones × W_mode → softmax → probabilities
@@ -236,7 +240,7 @@ export class AffectiveStateService implements OnModuleInit {
     // Encourage mode that minimizes loss
     // If loss > 0 → defensive/exploit should be higher (reduce risk)
     // If loss < 0 → explore should be higher (we're doing well, explore more)
-    const targetMode = loss > 0.5 ? 2 : loss < -0.5 ? 0 : 1; // defensive / explore / exploit
+    const targetMode = loss > this.config.get('affect.mode_boundary_positive') ? 2 : loss < this.config.get('affect.mode_boundary_negative') ? 0 : 1; // defensive / explore / exploit
     for (let i = 0; i < N_HORMONES; i++) {
       for (let j = 0; j < N_MODES; j++) {
         const target = j === targetMode ? 1 : 0;
@@ -258,7 +262,7 @@ export class AffectiveStateService implements OnModuleInit {
   // ═══════════════════════════════════════════
 
   private updateAccumulators(commits: CommitDelta[], timeSense: TimeSense): void {
-    const decayRate = 0.03; // slow decay — let accumulators build momentum
+    const decayRate = this.config.get('affect.accumulator_decay_rate');
 
     if (commits.length > 0) {
       const avgPredError = commits.reduce((s, c) => s + c.prediction_error, 0) / commits.length;

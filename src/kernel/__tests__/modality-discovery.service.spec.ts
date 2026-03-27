@@ -11,9 +11,18 @@ const mockConceptSpace = {
   getDimensionCount: jest.fn().mockReturnValue(3),
 };
 
+const mockConfig = {
+  get: jest.fn((key: string) => {
+    const defaults: Record<string, number> = {
+      'sensory.novelty_threshold': 0.4,
+    };
+    return defaults[key] ?? 0;
+  }),
+};
+
 function createService(): ModalityDiscoveryService {
   const fingerprinter = new FingerprinterService();
-  return new ModalityDiscoveryService(mockDb as any, fingerprinter, mockConceptSpace as any);
+  return new ModalityDiscoveryService(mockDb as any, fingerprinter, mockConceptSpace as any, mockConfig as any);
 }
 
 function makeEvent(content: string, source = 'test', timestamp = Date.now()): RawSensoryEvent {

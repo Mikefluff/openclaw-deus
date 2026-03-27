@@ -3,6 +3,7 @@ import { SurrealService } from '../../database/surreal.service';
 import { DiscoveredModality, EventFingerprint, ModalityResult, RawSensoryEvent } from './modality.types';
 import { FingerprinterService } from './fingerprinter.service';
 import { ConceptSpaceService } from '../space/concept-space.service';
+import { CognitiveConfigService } from '../../cognitive/cognitive-config.service';
 
 /**
  * ModalityDiscovery: Online clustering of raw events into discovered modalities.
@@ -17,7 +18,6 @@ import { ConceptSpaceService } from '../space/concept-space.service';
  */
 
 const FINGERPRINT_DIM = 11; // dimension of fingerprint vector
-const NOVELTY_THRESHOLD = 0.4; // distance above this → new modality
 
 @Injectable()
 export class ModalityDiscoveryService {
@@ -29,6 +29,7 @@ export class ModalityDiscoveryService {
     private readonly db: SurrealService,
     private readonly fingerprinter: FingerprinterService,
     private readonly conceptSpace: ConceptSpaceService,
+    private readonly config: CognitiveConfigService,
   ) {}
 
   /**
@@ -53,7 +54,7 @@ export class ModalityDiscoveryService {
 
     let isNew = false;
 
-    if (!bestModality || bestDist > NOVELTY_THRESHOLD) {
+    if (!bestModality || bestDist > this.config.get('sensory.novelty_threshold')) {
       // TOO DIFFERENT from all known → BIRTH NEW MODALITY
       bestModality = await this.birthModality(vector, cycle);
       isNew = true;
@@ -68,7 +69,7 @@ export class ModalityDiscoveryService {
     const conceptPosition = this.project(vector, bestModality);
 
     // Update self-similarity in fingerprint
-    fingerprint.self_similarity = 1 - (bestDist / Math.max(0.01, NOVELTY_THRESHOLD));
+    fingerprint.self_similarity = 1 - (bestDist / Math.max(0.01, this.config.get('sensory.novelty_threshold')));
 
     return {
       modality_id: bestModality.id,

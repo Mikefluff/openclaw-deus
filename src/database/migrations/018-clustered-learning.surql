@@ -31,3 +31,6 @@ DEFINE FIELD to_cluster   ON cluster_trajectory TYPE string;
 DEFINE FIELD action        ON cluster_trajectory TYPE string;
 DEFINE FIELD confidence    ON cluster_trajectory TYPE float DEFAULT 0.5;
 DEFINE FIELD traversal_count ON cluster_trajectory TYPE int DEFAULT 1;
+
+-- Vector index for spatial nearest-neighbor queries O(log n)
+DEFINE INDEX idx_trace_position ON trace FIELDS position MTREE DIMENSION 64 TYPE F32;

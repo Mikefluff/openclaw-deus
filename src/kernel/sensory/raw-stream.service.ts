@@ -4,6 +4,7 @@ import { ModalityDiscoveryService } from './modality-discovery.service';
 import { AttentionService } from './attention.service';
 import { TraceGraphService } from '../memory/trace-graph.service';
 import { Signal } from '../kernel.types';
+import { CognitiveConfigService } from '../../cognitive/cognitive-config.service';
 
 /**
  * RawStreamService: Entry point for ALL sensory input.
@@ -27,6 +28,7 @@ export class RawStreamService {
     private readonly modalityDiscovery: ModalityDiscoveryService,
     private readonly attention: AttentionService,
     private readonly traceGraph: TraceGraphService,
+    private readonly config: CognitiveConfigService,
   ) {}
 
   /**
@@ -120,15 +122,16 @@ export class RawStreamService {
    * sight + sound + touch into unified objects.
    */
   private async crossModalBind(newTraceId: string, newModalityId: number, cycle: number): Promise<void> {
-    const bindingWindow = 3; // cycles
+    const bindingWindow = this.config.get('sensory.binding_window');
+    const bindingWeight = this.config.get('sensory.binding_weight');
 
     for (const recent of this.recentModalityTraces) {
       if (recent.modality_id === newModalityId) continue; // same modality → skip
       if (cycle - recent.cycle > bindingWindow) continue; // too old
 
       // Different modality + recent = cross-modal co-occurrence → BIND
-      await this.traceGraph.link(newTraceId, recent.trace_id, 'activates', 0.3);
-      await this.traceGraph.link(recent.trace_id, newTraceId, 'activates', 0.3);
+      await this.traceGraph.link(newTraceId, recent.trace_id, 'activates', bindingWeight);
+      await this.traceGraph.link(recent.trace_id, newTraceId, 'activates', bindingWeight);
 
       // LEARNING: update modality projection from cross-modal binding
       const [newPos, coPos] = await Promise.all([

@@ -151,6 +151,32 @@ const DEFAULTS: Record<string, Omit<CognitiveParam, 'key'>> = {
   // --- Kernel: learning phases ---
   'kernel.learning_phase_early': { value: 3, description: 'Cycle count threshold for early learning phase (fundamentals)', min: 1, max: 20, tunable: true },
   'kernel.learning_phase_mid': { value: 8, description: 'Cycle count threshold for mid learning phase (depth + connections)', min: 2, max: 50, tunable: true },
+
+  // --- Sensory agent ---
+  'sensory.bootstrap_confidence': { value: 0.95, description: 'Confidence when no active traces exist (bootstrap)', min: 0.5, max: 1.0, tunable: true },
+  'sensory.default_confidence': { value: 0.8, description: 'Default sensory perception confidence', min: 0.3, max: 1.0, tunable: true },
+  'sensory.novelty_signal_threshold': { value: 0.6, description: 'Novelty above this marks input as novel', min: 0.2, max: 0.95, tunable: true },
+  'sensory.novelty_slow_path_threshold': { value: 0.8, description: 'Novelty above this triggers LLM slow-path extraction', min: 0.5, max: 1.0, tunable: true },
+  'sensory.change_detection_threshold': { value: 0.05, description: 'Min trace weight delta to count as changed', min: 0.01, max: 0.2, tunable: true },
+
+  // --- Predictive agent ---
+  'predictive.error_threshold': { value: 0.15, description: 'Prediction error threshold for signaling', min: 0.05, max: 0.5, tunable: true },
+  'predictive.confidence_max': { value: 0.8, description: 'Max confidence for prediction error signals', min: 0.5, max: 1.0, tunable: true },
+  'predictive.confidence_base': { value: 0.3, description: 'Base confidence added to prediction error magnitude', min: 0.1, max: 0.7, tunable: true },
+  'predictive.voi_threshold': { value: 0.1, description: 'Min value-of-information to signal', min: 0.01, max: 0.5, tunable: true },
+
+  // --- Raw stream (cross-modal binding) ---
+  'sensory.binding_window': { value: 3, description: 'Cross-modal binding window in cycles', min: 1, max: 10, tunable: true },
+  'sensory.binding_weight': { value: 0.3, description: 'Edge weight for cross-modal binding links', min: 0.05, max: 0.8, tunable: true },
+
+  // --- Modality discovery ---
+  'sensory.novelty_threshold': { value: 0.4, description: 'Fingerprint distance above this births a new modality', min: 0.1, max: 1.0, tunable: true },
+
+  // --- Affective state ---
+  'affect.accumulator_decay_rate': { value: 0.03, description: 'Accumulator decay rate per cycle', min: 0.005, max: 0.1, tunable: true },
+  'affect.config_delta_max': { value: 0.02, description: 'Max config delta per affect step (tanh scale)', min: 0.005, max: 0.1, tunable: true },
+  'affect.mode_boundary_positive': { value: 0.5, description: 'Loss threshold for defensive mode', min: 0.1, max: 2.0, tunable: true },
+  'affect.mode_boundary_negative': { value: -0.5, description: 'Loss threshold for explore mode', min: -2.0, max: -0.1, tunable: true },
 };
 
 @Injectable()

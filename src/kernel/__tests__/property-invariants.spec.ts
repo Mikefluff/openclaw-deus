@@ -18,6 +18,18 @@ const mockDb = {
   create: jest.fn().mockResolvedValue({ isOk: () => true, value: {} }),
 };
 
+const mockConfig = {
+  get: jest.fn((key: string) => {
+    const defaults: Record<string, number> = {
+      'affect.accumulator_decay_rate': 0.03,
+      'affect.config_delta_max': 0.02,
+      'affect.mode_boundary_positive': 0.5,
+      'affect.mode_boundary_negative': -0.5,
+    };
+    return defaults[key] ?? 0;
+  }),
+};
+
 function makeCommit(overrides: Partial<CommitDelta> = {}): CommitDelta {
   return {
     commit_id: 'c1',
@@ -50,7 +62,7 @@ function makeTimeSense(overrides: Partial<TimeSense> = {}): TimeSense {
 }
 
 function createAffectiveService(): AffectiveStateService {
-  const svc = new AffectiveStateService(mockDb as any);
+  const svc = new AffectiveStateService(mockDb as any, mockConfig as any);
   (svc as any).initWeights();
   return svc;
 }

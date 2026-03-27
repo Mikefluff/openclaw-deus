@@ -3,6 +3,7 @@ import { Signal } from '../kernel.types';
 import { CognitiveAgent, AgentContext } from '../kernel-loop.service';
 import { IntentionRecognitionService } from '../../intention/services/intention-recognition.service';
 import { KnowledgeExtractionService } from '../../knowledge/services/knowledge-extraction.service';
+import { CognitiveConfigService } from '../../cognitive/cognitive-config.service';
 
 /**
  * SensoryAgent (rank 1): "What changed? What is new?"
@@ -25,6 +26,7 @@ export class SensoryAgent implements CognitiveAgent {
   constructor(
     private readonly intentionRecognition: IntentionRecognitionService,
     private readonly knowledgeExtraction: KnowledgeExtractionService,
+    private readonly config: CognitiveConfigService,
   ) {}
 
   async process(input: string, context: AgentContext): Promise<Signal[]> {
@@ -43,16 +45,16 @@ export class SensoryAgent implements CognitiveAgent {
 
     // Bootstrap: if no active traces exist, this is a completely new context → high confidence (escalation)
     const isBootstrap = context.active_traces.length === 0;
-    const confidence = isBootstrap ? 0.95 : 0.8;
+    const confidence = isBootstrap ? this.config.get('sensory.bootstrap_confidence') : this.config.get('sensory.default_confidence');
 
     signals.push({
       agent_id: this.id,
       agent_rank: this.rank,
       type: 'perception',
       content: `Input: novelty=${novelty.toFixed(2)}, ${changed.length} new aspects, ${unchanged.length} reinforcements`,
-      payload: { raw_input: input.slice(0, 500), novelty, changed, unchanged, is_novel: novelty > 0.6, bootstrap: isBootstrap },
+      payload: { raw_input: input.slice(0, 500), novelty, changed, unchanged, is_novel: novelty > this.config.get('sensory.novelty_signal_threshold'), bootstrap: isBootstrap },
       confidence,
-      novelty_cost: novelty > 0.6 ? 0.3 : 0.05,
+      novelty_cost: novelty > this.config.get('sensory.novelty_signal_threshold') ? 0.3 : 0.05,
       used_slow_path: false,
       targets,
       cycle: context.cycle,
@@ -60,7 +62,7 @@ export class SensoryAgent implements CognitiveAgent {
 
     // SLOW PATH: LLM extraction — only for TRULY novel events, not routine observations
     // High novelty threshold prevents LLM spam on mundane events like "на полу лежит мячик"
-    if (novelty > 0.8 && context.llm_budget.remaining > 0) {
+    if (novelty > this.config.get('sensory.novelty_slow_path_threshold') && context.llm_budget.remaining > 0) {
       await this.slowPathExtraction(input, signals, context);
     }
 
@@ -87,7 +89,7 @@ export class SensoryAgent implements CognitiveAgent {
       const prev = this.previousTraceWeights.get(trace.trace_id);
       if (prev !== undefined) {
         const delta = trace.weight - prev;
-        if (Math.abs(delta) > 0.05) {
+        if (Math.abs(delta) > this.config.get('sensory.change_detection_threshold')) {
           weightChanges.push({ trace_id: trace.trace_id, delta, content: trace.content });
         }
       }
@@ -176,7 +178,7 @@ export class SensoryAgent implements CognitiveAgent {
       const prev = this.previousTraceWeights.get(trace.trace_id);
       if (prev !== undefined) {
         const delta = Math.abs(trace.weight - prev);
-        if (delta > 0.05) {
+        if (delta > this.config.get('sensory.change_detection_threshold')) {
           changed.push(trace.trace_id);
         } else {
           unchanged.push(trace.trace_id);

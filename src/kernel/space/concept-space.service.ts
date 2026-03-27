@@ -54,7 +54,29 @@ export class ConceptSpaceService {
    * Returns: closest first.
    */
   async findNeighbors(position: number[], radius: number, limit = 10): Promise<Array<{ trace: Trace; dist: number }>> {
-    // Get active traces with positions
+    // Try MTREE KNN index first (SurrealDB native vector search, O(log n))
+    try {
+      const knnResult = await this.db.query<Trace & { dist: number }>(
+        `SELECT *, vector::distance::euclidean(position, $pos) AS dist
+         FROM trace
+         WHERE position <|${limit}|> $pos
+           AND archived = false
+           AND suppressed = false
+         ORDER BY dist
+         LIMIT $limit`,
+        { pos: position, limit },
+      );
+      if (knnResult.isOk() && knnResult.value.length > 0) {
+        return knnResult.value
+          .filter(t => (t.dist ?? 0) <= radius)
+          .map(t => ({ trace: t, dist: t.dist ?? 0 }));
+      }
+    } catch {
+      // MTREE KNN syntax may differ in this SurrealDB version — fall back to brute-force
+      this.logger.debug('MTREE KNN query failed, falling back to brute-force neighbor search');
+    }
+
+    // Fallback: brute-force scan + JS sort
     const result = await this.db.query<Trace>(
       `SELECT * FROM trace WHERE archived = false AND suppressed = false AND array::len(position) > 0 LIMIT 100`,
     );
