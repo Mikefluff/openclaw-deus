@@ -30,6 +30,7 @@ import { AgentAction, ActionConsequence, WorldBridge } from '../kernel/agency.ty
 const TOTAL_TICKS = parseInt(process.argv[2] || '500', 10);
 const REPORT_INTERVAL = Math.max(10, Math.floor(TOTAL_TICKS / 20));
 const DEV_METRICS_INTERVAL = Math.max(25, Math.floor(TOTAL_TICKS / 10));
+const CONSULTATION_INTERVAL = 100; // LLM "adult" checks in every 100 ticks
 
 /**
  * WorldBridge: connects kernel's agency to the evolving world.
@@ -75,6 +76,119 @@ class EvolvingWorldBridge implements WorldBridge {
     if (lower.includes('молодец') || lower.includes('умница') || lower.includes('хорошо') || lower.includes('красив')) return 0.3;
     if (lower.includes('покатил') || lower.includes('плавает') || lower.includes('звенит')) return 0.1;
     return 0;
+  }
+}
+
+/**
+ * Adult consultation: LLM reviews the child's world model and gives corrections.
+ *
+ * Like a parent sitting down with the child:
+ * - "What do you know about the objects around you?"
+ * - "Actually, мячик is round AND red, you missed the color"
+ * - "When you push round things, they roll — did you notice that?"
+ *
+ * Corrective feedback is fed back as high-confidence events.
+ * Uses Haiku (cheapest model) — this is a simple check-in, not deep reasoning.
+ */
+async function adultConsultation(
+  tick: number,
+  world: EvolvingWorld,
+  db: SurrealService,
+  conceptSpace: ConceptSpaceService,
+  affect: AffectiveStateService,
+  devMetrics: DevelopmentalMetricsService,
+  llm: LlmClientService,
+  kernelLoop: KernelLoopService,
+): Promise<void> {
+  // Build summary of what child knows
+  const groundTruth = world.getGroundTruth();
+  const snapshot = await conceptSpace.snapshot();
+  const affectSnap = affect.getSnapshot();
+  const latestDev = devMetrics.getLatest();
+
+  // Gather child's beliefs about objects
+  const beliefs: string[] = [];
+  const gaps: string[] = [];
+  for (const obj of groundTruth) {
+    const traces = await db.query<{ content: string }>(
+      `SELECT content FROM trace WHERE content CONTAINS $name AND archived = false ORDER BY weight DESC LIMIT 3`,
+      { name: obj.name },
+    );
+    if (traces.isOk() && traces.value.length > 0) {
+      const known = traces.value.map(t => t.content).join('; ');
+      beliefs.push(`${obj.name}: ребёнок знает: ${known}`);
+      // Check what's missing
+      const knownText = known.toLowerCase();
+      const missing = Object.entries(obj.properties)
+        .filter(([, v]) => !knownText.includes(v.toLowerCase()))
+        .map(([k, v]) => `${k}=${v}`);
+      if (missing.length > 0) {
+        gaps.push(`${obj.name}: не знает: ${missing.join(', ')}`);
+      }
+    } else {
+      gaps.push(`${obj.name}: вообще не знает этот предмет`);
+    }
+  }
+
+  const prompt = [
+    `Ты — мама/учитель ребёнка. Ребёнку ${tick} тиков. Он изучает мир.`,
+    `Локация: ${world.getState().location}. Уровень мира: ${world.getLevel()}.`,
+    ``,
+    `Что ребёнок знает:`,
+    ...beliefs.slice(0, 10),
+    ``,
+    `Что ребёнок НЕ знает или путает:`,
+    ...gaps.slice(0, 10),
+    ``,
+    `Состояние: ${affectSnap.mode}, valence=${affectSnap.valence}, dimensions=${snapshot.dimension_count}`,
+    latestDev ? `Стадия: ${latestDev.stage}, health=${latestDev.overall_health}` : '',
+    ``,
+    `Дай 3-5 коротких корректирующих фраз на русском, как мама говорит ребёнку.`,
+    `Исправь ошибки, укажи на то что он пропустил, похвали за то что знает.`,
+    `Каждая фраза — одно предложение. Просто и ласково.`,
+  ].join('\n');
+
+  // Briefly unpause LLM for one consultation
+  llm.resume();
+  try {
+    const result = await llm.call<{ phrases: string[] }>({
+      operationType: 'self_assessment' as any,
+      priority: 'low' as any,
+      maxTokens: 300,
+      systemPrompt: 'Ты мама маленького ребёнка. Говори просто и ласково на русском. Отвечай JSON с полем phrases (массив строк).',
+      userMessage: prompt,
+      tools: [{
+        name: 'feedback',
+        description: 'Corrective feedback phrases',
+        input_schema: {
+          type: 'object' as const,
+          properties: {
+            phrases: { type: 'array' as const, items: { type: 'string' as const } },
+          },
+          required: ['phrases'],
+        },
+      }],
+      forceTool: 'feedback',
+    });
+
+    if (result.isOk() && result.value.data) {
+      const phrases = (result.value.data as any).phrases || [];
+      console.log(`\n  👩 МАМА (tick ${tick}):`);
+      for (const phrase of phrases.slice(0, 5)) {
+        console.log(`    "${phrase}"`);
+        // Feed correction back as high-value event
+        kernelLoop.pushEvent(`Мама говорит: "${phrase}"`, 'message');
+      }
+      // Process the mama's feedback through one pump cycle
+      await kernelLoop.pump();
+      // Reward for receiving adult guidance
+      affect.reward(0.2);
+      console.log(`    [${result.value.usage.input_tokens}+${result.value.usage.output_tokens} tokens]\n`);
+    }
+  } catch (e) {
+    console.log(`  [Consultation failed: ${(e as Error).message?.slice(0, 60)}]`);
+  } finally {
+    llm.pause(); // Back to training mode
   }
 }
 
@@ -128,6 +242,13 @@ async function main() {
     if (energy.needsSleep()) {
       devMetrics.recordSleep(tick);
       energy.sleep();
+    }
+
+    // === ADULT CONSULTATION (rare LLM — corrective feedback) ===
+    // Like a parent checking in: "what do you know? what are you confused about?"
+    // Haiku reviews the child's world model and gives corrections.
+    if ((tick + 1) % CONSULTATION_INTERVAL === 0 && tick > 0) {
+      await adultConsultation(tick, world, db, conceptSpace, affect, devMetrics, llm, kernelLoop);
     }
 
     totalMs += Date.now() - start;
