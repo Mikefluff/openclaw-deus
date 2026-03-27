@@ -85,6 +85,10 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
   // World bridge: kernel acts on the world through this
   private worldBridge: WorldBridge | null = null;
 
+  // Prediction→action→consequence loop: track what we predicted vs what happened
+  private lastActionPrediction: { target: string; action: string; predictedPosition: number[] | null; traceIds: string[] } | null = null;
+  private actionHistory: Array<{ action: string; target: string; cycle: number; valence: number }> = [];
+
   // Promise resolvers for external callers waiting on results
   private pendingResolvers: Array<{ resolve: (output: KernelOutput) => void; eventId: number }> = [];
   private eventIdCounter = 0;
@@ -262,16 +266,28 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
       } else {
         // No external event: layered idle processing
 
-        // MEDIUM cadence: spreading activation on hot traces
+        // MEDIUM cadence: affect-modulated spreading activation on hot traces
         if (schedule.shouldMedium) {
           this.lightCone.markMedium();
-          // Spread activation in-memory (no DB)
           const hotTraces = this.lightCone.getHotTraces(10);
+          const affectSnap = this.affect.getSnapshot();
+
+          // Concurrent affect modulation: hormones modulate in-memory dynamics
+          const spreadBoost = affectSnap.hormones.norepinephrine * 0.03; // NE → wider activation
+          const decayRate = 1 - affectSnap.hormones.serotonin * 0.01;    // serotonin → slower decay
+          const emotionalAmplify = affectSnap.hormones.cortisol * 0.02;   // stress → emotional traces amplified
+
           for (const ht of hotTraces) {
-            // Affect modulates in-memory: emotional traces activate more
+            // Emotional traces get amplified by stress hormones
             if (Math.abs(ht.emotionalCharge) > 0.1) {
-              ht.weight = Math.min(1, ht.weight + 0.01);
+              ht.weight = Math.min(1, ht.weight + 0.01 + emotionalAmplify);
             }
+            // Norepinephrine boosts all active traces
+            if (spreadBoost > 0.005) {
+              ht.weight = Math.min(1, ht.weight + spreadBoost);
+            }
+            // Serotonin slows decay
+            ht.weight *= decayRate;
           }
         }
 
@@ -435,11 +451,22 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
         this.energy.spend(this.energy.cost.commit, 'commit');
       }
 
-      // Affect processes commits
+      // CONCURRENT AFFECT MODULATION: process commits → apply deltas IMMEDIATELY
+      // This means the SAME iteration's subsequent operations feel the affect change
       const timeSense = await this.commitKernel.computeTimeSense();
       const { configDeltas } = this.affect.processCommits(filteredCommits, timeSense);
       for (const [key, delta] of configDeltas) {
         this.config.adjust(key, delta, `affect:gradient`);
+      }
+
+      // Affect-modulated spreading: emotional commits get wider activation spread
+      for (const commit of filteredCommits) {
+        if (Math.abs(commit.urgency) > 0.5 || commit.type === 'priority') {
+          // High urgency → spread activation wider for affected traces
+          for (const traceId of commit.changes.traces_activated.slice(0, 5)) {
+            await this.traceGraph.spreadActivation(traceId, 2); // extra depth
+          }
+        }
       }
 
       // Stabilization
@@ -501,8 +528,14 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
   // ═══════════════════════════════════════════
 
   /**
-   * Try to act on the world. The kernel DECIDES what to do
-   * based on desire gradient, curiosity, and available energy.
+   * Try to act on the world. Full prediction→action→consequence loop:
+   *
+   * 1. Compute gradient field from 5 drives → desire vector
+   * 2. PREDICT outcome using concept space trajectories
+   * 3. EXECUTE action in world
+   * 4. COMPARE prediction vs actual → backprop spatial error
+   * 5. RECORD trajectory (from→to in concept space)
+   * 6. CREATE self-trace if significant learning occurred
    *
    * Returns true if an action was taken.
    */
@@ -515,42 +548,109 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
     // Don't act if resting or defensive
     if (affectState.mode === 'resting' || affectState.mode === 'defensive') return false;
 
-    // Decide action from desire gradient + curiosity
+    // Decide action from desire gradient + spatial navigation
     const action = await this.decideAction(affectState);
     if (!action) return false;
 
     // Spend energy
     if (!this.energy.spend(action.energy_cost, `action:${action.type}:${action.target}`)) return false;
 
+    // PREDICT: what do we expect to happen? (spatial prediction)
+    let prediction: number[] | null = null;
+    const targetTraces = await this.findTracesForTarget(action.target || '');
+    if (targetTraces.length > 0 && action.method) {
+      const currentPos = targetTraces[0].position || [];
+      prediction = await this.conceptSpace.predict(currentPos, action.method);
+    }
+    this.lastActionPrediction = {
+      target: action.target || '',
+      action: action.method || '',
+      predictedPosition: prediction,
+      traceIds: targetTraces.map(t => t.trace_id),
+    };
+
     // EXECUTE action in the world
-    this.logger.log(`Agency: ${action.type} "${action.target}" (${action.reason})`);
+    this.logger.log(`Agency: ${action.type} "${action.target}" (${action.reason})${prediction ? ' [predicted]' : ' [no prediction]'}`);
     const consequences = await this.worldBridge.executeAction(action);
 
-    // Process consequences through the kernel (like any other event)
+    // Process consequences and close the loop
+    let totalValence = 0;
     for (const consequence of consequences) {
       const rawEvent = RawStreamService.stringToEvent(consequence.content, 'world_consequence');
       const signals = await this.rawStream.ingest(rawEvent, cycle);
+
       if (signals.length > 0) {
-        await this.commitKernel.processCycle(signals);
+        const commitResult = await this.commitKernel.processCycle(signals);
+
+        // RECORD TRAJECTORY: link pre-action traces to post-action traces
+        if (commitResult.isOk()) {
+          for (const commit of commitResult.value) {
+            for (const newTraceId of commit.changes.traces_created) {
+              for (const oldTraceId of this.lastActionPrediction.traceIds.slice(0, 3)) {
+                await this.conceptSpace.recordTrajectory(oldTraceId, newTraceId, action.method || 'unknown');
+              }
+            }
+            // Also record activated traces as trajectory endpoints
+            for (const activatedId of commit.changes.traces_activated.slice(0, 3)) {
+              for (const oldTraceId of this.lastActionPrediction.traceIds.slice(0, 2)) {
+                if (oldTraceId !== activatedId) {
+                  await this.conceptSpace.recordTrajectory(oldTraceId, activatedId, action.method || 'unknown');
+                }
+              }
+            }
+          }
+        }
       }
 
-      // Emotional consequence → affect
+      // Emotional consequence → affect (CONCURRENT: applied immediately)
       if (consequence.emotional_valence > 0.1) this.affect.reward(consequence.emotional_valence);
       if (consequence.emotional_valence < -0.1) this.affect.inflictPain('action_consequence', Math.abs(consequence.emotional_valence));
 
       // Energy from consequence
       if (consequence.emotional_valence > 0) this.energy.reward(consequence.emotional_valence);
       if (consequence.emotional_valence < 0) this.energy.pain(Math.abs(consequence.emotional_valence));
+
+      totalValence += consequence.emotional_valence;
     }
+
+    // COMPARE PREDICTION VS ACTUAL: spatial error backpropagation
+    if (prediction && targetTraces.length > 0) {
+      // Find what the post-action state actually looks like
+      const postTraces = await this.findTracesForTarget(action.target || '');
+      if (postTraces.length > 0) {
+        const actualPos = postTraces[0].position || [];
+        const spatialError = this.conceptSpace.distance(prediction, actualPos);
+
+        if (spatialError > 0.5) {
+          // Significant prediction error → backprop through trajectory
+          this.logger.log(`Prediction error: expected pos≈${prediction.slice(0, 3).map(p => p.toFixed(2))}, got pos≈${actualPos.slice(0, 3).map(p => p.toFixed(2))}, error=${spatialError.toFixed(3)}`);
+          for (const traceId of this.lastActionPrediction.traceIds) {
+            await this.traceGraph.backpropagatePredictionError(traceId, spatialError * 0.5);
+          }
+        }
+      }
+    }
+
+    // SELF-MODEL: significant experiences create self-traces
+    if (Math.abs(totalValence) > 0.2 && action.target) {
+      const selfContent = totalValence > 0
+        ? `Я умею ${action.method || 'взаимодействовать с'} ${action.target}`
+        : `${action.method || 'взаимодействие с'} ${action.target} — опасно/неприятно`;
+      await this.conceptSpace.createSelfTrace(selfContent, Math.min(1, Math.abs(totalValence)));
+    }
+
+    // Track for developmental metrics
+    this.actionHistory.push({ action: action.method || '', target: action.target || '', cycle, valence: totalValence });
 
     return true;
   }
 
   /**
    * Decide what action to take. Driven by:
-   * - Curiosity (high novelty targets)
-   * - Desire gradient (toward reward, away from pain)
-   * - Available targets in the world
+   * 1. GRADIENT FIELD: 5 drives (pain avoidance, novelty, uncertainty aversion, mastery, prediction accuracy)
+   * 2. DESIRE VECTOR: spatial pull toward attractors, away from repellers
+   * 3. CURIOSITY: unknown targets in explore mode
+   * 4. TRAJECTORY HISTORY: prefer actions that led to positive outcomes
    *
    * Returns null if nothing interesting to do.
    */
@@ -561,36 +661,101 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
     const actions = this.worldBridge.getAvailableActions();
     if (targets.length === 0 || actions.length === 0) return null;
 
-    // Pick target: prefer novel (not recently interacted with)
+    // Don't act too often (natural pace)
+    if (Math.random() > 0.3) return null;
+
+    // Find known targets from trace graph
     const activeTraces = await this.traceGraph.getActiveTraces(10);
     const knownTargets = new Set(
       activeTraces.isOk()
         ? activeTraces.value.map(t => t.content.toLowerCase()).flatMap(c => targets.filter(t => c.includes(t.toLowerCase())))
         : [],
     );
-
-    // Prefer unknown targets (curiosity)
-    let target: string;
     const unknownTargets = targets.filter(t => !knownTargets.has(t));
-    if (unknownTargets.length > 0 && affectState.mode === 'explore') {
+
+    // SPATIAL DECISION: use gradient field to score targets
+    let target: string;
+    let reason: string;
+
+    if (affectState.mode === 'explore' && unknownTargets.length > 0) {
+      // Explore mode: curiosity drives toward unknown
       target = unknownTargets[Math.floor(Math.random() * unknownTargets.length)];
+      reason = `curious about ${target}`;
+    } else if (activeTraces.isOk() && activeTraces.value.length > 0) {
+      // Use gradient field to pick best target
+      const gradientField = await this.conceptSpace.computeGradientField();
+
+      let bestTarget = targets[0];
+      let bestScore = -Infinity;
+
+      for (const t of targets) {
+        const tracesForTarget = activeTraces.value.filter(tr => tr.content.toLowerCase().includes(t.toLowerCase()));
+        if (tracesForTarget.length === 0) {
+          // Unknown target → novelty bonus
+          const score = affectState.mode === 'explore' ? 0.5 : 0.1;
+          if (score > bestScore) { bestScore = score; bestTarget = t; }
+          continue;
+        }
+
+        // Compute desire pull toward this target's position
+        const pos = tracesForTarget[0].position || [];
+        if (pos.length > 0) {
+          const desire = this.conceptSpace.desireVector(pos, gradientField);
+          const magnitude = Math.sqrt(desire.reduce((s, d) => s + d * d, 0));
+
+          // Factor in recent success/failure with this target
+          const recentActions = this.actionHistory.filter(a => a.target === t).slice(-5);
+          const avgValence = recentActions.length > 0
+            ? recentActions.reduce((s, a) => s + a.valence, 0) / recentActions.length : 0;
+
+          const score = magnitude + avgValence * 0.3;
+          if (score > bestScore) { bestScore = score; bestTarget = t; }
+        }
+      }
+
+      target = bestTarget;
+      reason = bestScore > 0.3 ? `desire gradient toward ${target}` : `exploring ${target}`;
     } else {
       target = targets[Math.floor(Math.random() * targets.length)];
+      reason = `random exploration of ${target}`;
     }
 
-    // Pick action: explore mode → varied actions, exploit → repeat successful
-    const action = actions[Math.floor(Math.random() * actions.length)];
-
-    // Don't act too often (1 in 3 chance to skip — simulate child's natural pace)
-    if (Math.random() > 0.3) return null;
+    // Pick action: exploit mode → repeat successful actions, explore → varied
+    let method: string;
+    if (affectState.mode !== 'explore') {
+      // Check history for this target
+      const successActions = this.actionHistory
+        .filter(a => a.target === target && a.valence > 0)
+        .map(a => a.action);
+      if (successActions.length > 0) {
+        // Repeat successful action (exploitation)
+        method = successActions[successActions.length - 1];
+      } else {
+        method = actions[Math.floor(Math.random() * actions.length)];
+      }
+    } else {
+      method = actions[Math.floor(Math.random() * actions.length)];
+    }
 
     return {
-      type: 'manipulate',
+      type: unknownTargets.includes(target) ? 'explore' : 'manipulate',
       target,
-      method: action,
-      reason: unknownTargets.includes(target) ? `curious about ${target}` : `exploring ${target}`,
-      energy_cost: this.energy.cost.exploration_action,
+      method,
+      reason,
+      energy_cost: unknownTargets.includes(target) ? this.energy.cost.exploration_action : this.energy.cost.exploitation_action,
     };
+  }
+
+  /**
+   * Find traces mentioning a specific target object.
+   */
+  private async findTracesForTarget(target: string): Promise<Array<{ trace_id: string; position: number[] }>> {
+    if (!target) return [];
+    const result = await this.traceGraph.getActiveTraces(20);
+    if (result.isErr()) return [];
+    return result.value
+      .filter(t => t.content.toLowerCase().includes(target.toLowerCase()))
+      .map(t => ({ trace_id: t.trace_id, position: t.position || [] }));
   }
 
   /**
@@ -640,12 +805,10 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
       return; // switch to resting — don't ruminate
     }
 
-    // PSYCHOLOGIST: multi-signal compound trigger, not just pain
+    // PSYCHOLOGIST: shouldRequestHelp() encapsulates compound trigger
     const needsExpert = !this.learningDomain
-      && affect.pain.intensity > 0.3                     // unresolved prediction error
-      && affect.arousal > 0.5                             // elevated arousal
-      && this.idleCyclesWithoutProgress > 3               // stalled convergence
-      && this.allCommits.filter(c => c.type === 'self_model').length > 2  // repeated self-perturbation
+      && this.shouldRequestHelp()
+      && this.allCommits.filter(c => c.type === 'self_model').length > 2
       && this.idleCyclesSinceLastLlm > 10;
 
     // ADAPTIVE TEACHER: not fixed interval — triggered by accumulated error mass
@@ -691,6 +854,28 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
     ]);
 
     const allSignals = [...agentSignals, ...replaySignals, ...curiositySignals, ...inferenceSignals, ...schemaSignals];
+
+    // SELF-MODEL ENRICHMENT: schemas and inferences generate self-knowledge
+    if (schemaSignals.length > 0) {
+      for (const sig of schemaSignals.slice(0, 2)) {
+        if (sig.confidence > 0.6) {
+          await this.conceptSpace.createSelfTrace(
+            `Я заметил паттерн: ${sig.content.slice(0, 80)}`,
+            sig.confidence * 0.7,
+          );
+        }
+      }
+    }
+    if (inferenceSignals.length > 0) {
+      for (const sig of inferenceSignals.slice(0, 2)) {
+        if (sig.confidence > 0.7) {
+          await this.conceptSpace.createSelfTrace(
+            `Я понял: ${sig.content.slice(0, 80)}`,
+            sig.confidence * 0.6,
+          );
+        }
+      }
+    }
 
     // Energy cost for idle reflection cycle
     this.energy.spend(this.energy.cost.reflection_cycle, 'idle_reflection');

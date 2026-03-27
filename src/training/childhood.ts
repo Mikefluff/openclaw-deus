@@ -1,11 +1,12 @@
 /**
- * CHILDHOOD: Child lives in a world. Kernel IS the child.
+ * CHILDHOOD: Child lives in an evolving world. Kernel IS the child.
  *
  * Training script is NOT the brain — it's the WORLD + OBSERVER.
- * - Creates virtual world
+ * - Creates evolving virtual world
  * - Feeds world events to kernel
  * - Executes kernel's actions in the world
- * - Observes and reports (never controls)
+ * - Observes developmental metrics (never controls)
+ * - World evolves based on child's development
  *
  * The kernel decides: what to explore, when to rest, when to ask for help.
  */
@@ -21,26 +22,47 @@ import { AffectiveStateService } from '../kernel/affect/affective-state.service'
 import { ConceptSpaceService } from '../kernel/space/concept-space.service';
 import { ModalityDiscoveryService } from '../kernel/sensory/modality-discovery.service';
 import { EnergyService } from '../kernel/energy.service';
+import { DevelopmentalMetricsService } from '../kernel/developmental-metrics.service';
 import { SurrealService } from '../database/surreal.service';
-import { VirtualWorld } from './virtual-world';
+import { EvolvingWorld } from './evolving-world';
 import { AgentAction, ActionConsequence, WorldBridge } from '../kernel/agency.types';
 
 const TOTAL_TICKS = parseInt(process.argv[2] || '500', 10);
 const REPORT_INTERVAL = Math.max(10, Math.floor(TOTAL_TICKS / 20));
+const DEV_METRICS_INTERVAL = Math.max(25, Math.floor(TOTAL_TICKS / 10));
 
 /**
- * WorldBridge: connects kernel's agency to the virtual world.
+ * WorldBridge: connects kernel's agency to the evolving world.
  * Kernel ACTS → bridge EXECUTES → world RESPONDS.
  */
-class VirtualWorldBridge implements WorldBridge {
-  constructor(private readonly world: VirtualWorld) {}
+class EvolvingWorldBridge implements WorldBridge {
+  constructor(
+    private readonly world: EvolvingWorld,
+    private readonly devMetrics: DevelopmentalMetricsService,
+  ) {}
 
   async executeAction(action: AgentAction): Promise<ActionConsequence[]> {
     const consequences = this.world.childAction(action.method || 'touch', action.target);
+    const valence = this.inferValence(consequences.map(c => c.content).join(' '));
+
+    // Record action for developmental metrics
+    const isExploration = !action.target || Math.random() < 0.5; // heuristic
+    this.devMetrics.recordAction(
+      action.method || 'touch',
+      action.target || 'unknown',
+      this.world.getState().tick,
+      isExploration,
+    );
+
+    // Track pain
+    if (valence < -0.1) {
+      this.devMetrics.recordPainOnset(this.world.getState().tick);
+    }
+
     return consequences.map(e => ({
       content: e.content,
       source: e.source,
-      emotional_valence: this.inferValence(e.content),
+      emotional_valence: valence,
     }));
   }
 
@@ -66,17 +88,18 @@ async function main() {
   const conceptSpace = app.get(ConceptSpaceService);
   const modalities = app.get(ModalityDiscoveryService);
   const energy = app.get(EnergyService);
+  const devMetrics = app.get(DevelopmentalMetricsService);
   const db = app.get(SurrealService);
 
-  const world = new VirtualWorld();
-  const bridge = new VirtualWorldBridge(world);
+  const world = new EvolvingWorld();
+  const bridge = new EvolvingWorldBridge(world, devMetrics);
 
   // Connect kernel to world — kernel can now ACT
   kernelLoop.setWorld(bridge);
 
   console.log(`\n${'═'.repeat(60)}`);
-  console.log(`  CHILDHOOD: ${TOTAL_TICKS} world ticks`);
-  console.log(`  Location: ${world.getState().location}`);
+  console.log(`  CHILDHOOD: ${TOTAL_TICKS} world ticks (evolving world)`);
+  console.log(`  Starting: ${world.getState().location} | Level ${world.getLevel()}`);
   console.log(`  Kernel controls its own life.`);
   console.log(`${'═'.repeat(60)}\n`);
 
@@ -89,12 +112,48 @@ async function main() {
     // === WORLD TICK: generate ambient events ===
     const events = world.tick();
 
-    // === FEED events to kernel (kernel decides what to do with them) ===
+    // === FEED events to kernel ===
     for (const event of events) {
       await pipeline.processMessage(event.content);
     }
 
+    // === TRACK SLEEP ===
+    if (energy.needsSleep()) {
+      devMetrics.recordSleep(tick);
+    }
+
     totalMs += Date.now() - start;
+
+    // === DEVELOPMENTAL METRICS (periodic) ===
+    if ((tick + 1) % DEV_METRICS_INTERVAL === 0) {
+      // Compute world model accuracy for metrics
+      const groundTruth = world.getGroundTruth();
+      let correct = 0; let total = 0;
+      for (const obj of groundTruth) {
+        const traces_q = await db.query<Record<string, unknown>>(
+          `SELECT content FROM trace WHERE content CONTAINS $name AND archived = false LIMIT 3`,
+          { name: obj.name },
+        );
+        if (traces_q.isOk() && traces_q.value.length > 0) {
+          total++;
+          const texts = traces_q.value.map(t => (t.content as string || '').toLowerCase());
+          if (Object.values(obj.properties).some(p => texts.some(t => t.includes(p.toLowerCase())))) correct++;
+        }
+      }
+      const accuracy = total > 0 ? correct / total : 0;
+      devMetrics.recordAccuracy(tick, accuracy);
+
+      // Take snapshot
+      const snap = await devMetrics.snapshot(tick);
+
+      // Check world progression
+      const progressed = world.checkProgression(snap);
+      if (progressed) {
+        console.log(`\n  ★★★ WORLD LEVEL UP → ${world.getLevel()} at tick ${tick + 1} ★★★`);
+        console.log(`  New location: ${world.getState().location}`);
+        console.log(`  Objects: ${world.getObjectNames().join(', ')}\n`);
+      }
+    }
 
     // === OBSERVE (never control) ===
     if ((tick + 1) % REPORT_INTERVAL === 0 || tick === TOTAL_TICKS - 1) {
@@ -108,28 +167,17 @@ async function main() {
       const worldState = world.getState();
 
       console.log(`\n  ── ${pct}% (tick ${tick + 1}/${TOTAL_TICKS}) ──`);
-      console.log(`  World: ${worldState.location} | ${worldState.weather} | ${worldState.timeOfDay}`);
+      console.log(`  World: ${worldState.location} | Level ${worldState.level} | ${worldState.weather} | ${worldState.timeOfDay}`);
       console.log(`  Brain: traces=${traces}(+${traces - lastReportTraces}) commits=${commits} dims=${dims} modalities=${mods}`);
       console.log(`  Affect: mode=${affectState.mode} val=${affectState.valence} arousal=${affectState.arousal}`);
-      console.log(`  Energy: ${energyState.current}/${energyState.max} fatigue=${energyState.fatigue_level} sleeps=${energyState.cycles_since_sleep > 0 ? 'awake' : 'just slept'}`);
+      console.log(`  Energy: ${energyState.current}/${energyState.max} fatigue=${energyState.fatigue_level}`);
       console.log(`  Speed: ${Math.round(totalMs / Math.max(1, tick + 1))}ms/tick`);
 
-      // World model check
-      const groundTruth = world.getGroundTruth();
-      let correct = 0;
-      let total = 0;
-      for (const obj of groundTruth) {
-        const traces_q = await db.query<Record<string, unknown>>(
-          `SELECT content FROM trace WHERE content CONTAINS $name AND archived = false LIMIT 3`,
-          { name: obj.name },
-        );
-        if (traces_q.isOk() && traces_q.value.length > 0) {
-          total++;
-          const texts = traces_q.value.map(t => (t.content as string || '').toLowerCase());
-          if (Object.values(obj.properties).some(p => texts.some(t => t.includes(p.toLowerCase())))) correct++;
-        }
+      // Show latest developmental snapshot if available
+      const latestSnap = devMetrics.getLatest();
+      if (latestSnap) {
+        console.log(devMetrics.formatSnapshot(latestSnap));
       }
-      if (total > 0) console.log(`  World model: ${correct}/${total} objects correct (${Math.round(correct / total * 100)}%)`);
 
       lastReportTraces = traces;
     }
@@ -143,12 +191,34 @@ async function main() {
   const finalTraces = await traceGraph.getTraceCount();
   const finalAffect = affect.getSnapshot();
   const finalEnergy = energy.getState();
+  const finalSnap = await devMetrics.snapshot(TOTAL_TICKS);
 
   console.log(`\n  Ticks: ${TOTAL_TICKS} | Time: ${Math.round(totalMs / 1000)}s`);
   console.log(`  Traces: ${finalTraces} | Commits: ${commitKernel.getCommitCount()}`);
   console.log(`  Dimensions: ${conceptSpace.getDimensionCount()} | Modalities: ${modalities.getModalityCount()}`);
   console.log(`  Affect: mode=${finalAffect.mode} val=${finalAffect.valence}`);
   console.log(`  Energy: ${finalEnergy.current}/${finalEnergy.max} total_spent=${finalEnergy.total_energy_spent}`);
+
+  console.log(`\n  ── DEVELOPMENTAL PROFILE ──`);
+  console.log(devMetrics.formatSnapshot(finalSnap));
+
+  // World progression history
+  const levelHist = world.getLevelHistory();
+  if (levelHist.length > 1) {
+    console.log(`\n  ── WORLD PROGRESSION ──`);
+    for (const lh of levelHist) {
+      console.log(`  Level ${lh.level} at tick ${lh.tick}`);
+    }
+  }
+
+  // Show developmental trajectory
+  const history = devMetrics.getHistory();
+  if (history.length >= 3) {
+    console.log(`\n  ── DEVELOPMENTAL TRAJECTORY ──`);
+    for (const snap of history) {
+      console.log(`  tick=${snap.tick} stage=${snap.stage} health=${snap.overall_health} accuracy=${snap.world_model.property_accuracy} abstractions=${snap.cognitive.abstraction_count}`);
+    }
+  }
 
   for (const d of conceptSpace.getDimensions().slice(0, 5)) {
     console.log(`  axis_${d.id}: ${d.label || '(unnamed)'}`);

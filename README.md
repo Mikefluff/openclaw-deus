@@ -11,6 +11,7 @@ DEUS is a cognitive architecture where:
 - **Time is emergent** — not `Date.now()` but the rate of cognitive reconfiguration
 - **Emotions are learned** — gradient descent on a differentiable affect model
 - **The kernel IS the agent** — it decides what to explore, when to rest, when to ask for help
+- **The world evolves WITH the child** — 5 progressive levels triggered by developmental metrics, not tick count
 
 ## Quick Start
 
@@ -28,7 +29,7 @@ npx ts-node src/training/childhood.ts 500
 npx ts-node src/cli.ts metrics
 
 # Tests
-npm test   # 193 tests, 29 suites
+npm test   # 448 tests, 41 suites
 ```
 
 ## Architecture
@@ -63,18 +64,20 @@ The kernel is a continuous event loop:
 | [AGENCY.md](docs/AGENCY.md) | WorldBridge, action selection, help requesting |
 | [TRAINING.md](docs/TRAINING.md) | Virtual world, energy budget, running training |
 | [LIGHT-CONE.md](docs/LIGHT-CONE.md) | Multi-frequency processing, hot memory, write batching |
+| [DEVELOPMENTAL-METRICS.md](docs/DEVELOPMENTAL-METRICS.md) | 5 metric domains, developmental stages, evolving world |
 | [ROADMAP.md](docs/ROADMAP.md) | Development strategy, 5 phases, success criteria |
 
 ## Numbers
 
 ```
-186 files, ~21,000 lines TypeScript
-29 test suites, 193 tests
+190+ files, ~23,000 lines TypeScript
+41 test suites, 448 tests
 22 NestJS modules
 17 SurrealDB migrations, 4 stored procedures
 54 database tables
 5 cognitive agents, 4 hormones, 5 desire drives
 6 commit types, 6 child actions
+5 developmental metric domains, 5 world levels
 ~60 learnable config params + ~40 gradient-learned affect params
 ```
 
@@ -102,9 +105,10 @@ src/
 │   ├── affect/                # Gradient descent affect model
 │   ├── cognition/             # Active cognition (dreaming, curiosity, inference)
 │   ├── narrative/             # Commit compaction, temporal storytelling
+│   ├── developmental-metrics   # 5-domain developmental observation
 │   └── substrate-bridge       # Reptilian brain ↔ traces ↔ world model
 ├── cognitive/                 # Substrate services
-├── training/                  # Virtual world + childhood runner
+├── training/                  # Evolving world + childhood runner
 ├── beliefs/                   # Belief system
 ├── knowledge/                 # Knowledge extraction + gaps
 ├── intention/                 # BDI intentions
