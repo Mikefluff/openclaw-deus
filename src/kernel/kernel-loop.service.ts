@@ -373,6 +373,8 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
         await this.conceptSpace?.nameDimensions();
         await this.conceptSpace?.materializeClusters(globalCycle);
         await this.substrateBridge.syncSubstrateToTraces(globalCycle);
+        // Consolidate episodic → semantic edges (AriGraph-inspired)
+        await this.traceGraph.consolidateEpisodicEdges();
       }
 
       if (schedule.shouldDeep) {
@@ -919,12 +921,22 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
+    // EPISODIC EDGE: timestamped action→consequence link (AriGraph-inspired)
+    if (this.lastActionPrediction.traceIds.length > 0) {
+      const postTraces2 = await this.findTracesForTarget(action.target || '');
+      for (const preId of this.lastActionPrediction.traceIds.slice(0, 2)) {
+        for (const post of postTraces2.slice(0, 2)) {
+          this.traceGraph.recordEpisodicEdge(preId, post.trace_id, action.method || 'unknown', cycle);
+        }
+      }
+    }
+
     // CLUSTER-LEVEL TRAJECTORY: abstract action→outcome at cluster level
     if (this.lastActionPrediction.traceIds.length > 0) {
       const preCluster = await this.conceptSpace.getTraceCluster(this.lastActionPrediction.traceIds[0]);
-      const postTraces = await this.findTracesForTarget(action.target || '');
-      const postCluster = postTraces.length > 0
-        ? await this.conceptSpace.getTraceCluster(postTraces[0].trace_id) : null;
+      const postTraces3 = await this.findTracesForTarget(action.target || '');
+      const postCluster = postTraces3.length > 0
+        ? await this.conceptSpace.getTraceCluster(postTraces3[0].trace_id) : null;
       if (preCluster && postCluster) {
         await this.conceptSpace.recordClusterTrajectory(preCluster, postCluster, action.method || 'unknown');
       }
@@ -1008,7 +1020,10 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
           const avgValence = recentActions.length > 0
             ? recentActions.reduce((s, a) => s + a.valence, 0) / recentActions.length : 0;
 
-          const score = magnitude + avgValence * 0.3;
+          // Empowerment bonus: prefer positions where agent has control
+          const empowerment = this.sensorimotorPredictor.computeEmpowerment(pos);
+
+          const score = magnitude + avgValence * 0.3 + empowerment * 0.2;
           if (score > bestScore) { bestScore = score; bestTarget = t; }
         }
       }

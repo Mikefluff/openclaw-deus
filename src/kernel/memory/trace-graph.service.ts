@@ -425,6 +425,63 @@ export class TraceGraphService {
   }
 
   // ═══════════════════════════════════════════
+  // EPISODIC EDGES (AriGraph-inspired)
+  // ═══════════════════════════════════════════
+
+  /**
+   * Record an episodic edge: timestamped, context-specific interaction.
+   * "At cycle N, trace A activated trace B because of action X"
+   * Queued in-memory, flushed with flushToDb().
+   */
+  recordEpisodicEdge(from: string, to: string, action: string, cycle: number): void {
+    this.lightCone.queueWrite({
+      table: 'episodic', operation: 'execute', data: {},
+      sql: `RELATE (SELECT id FROM trace WHERE trace_id = $from LIMIT 1)->episodic->(SELECT id FROM trace WHERE trace_id = $to LIMIT 1) SET weight = 0.5, cycle = $cycle, action = $action`,
+      vars: { from, to, cycle, action },
+    });
+  }
+
+  /**
+   * Consolidate episodic → semantic: frequent episodic patterns become permanent edges.
+   * Called on GLOBAL cadence (every 200 ticks).
+   *
+   * If trace A→B has 3+ episodic edges → create/strengthen semantic activates edge.
+   * Then prune old episodic edges (> 500 cycles old).
+   */
+  async consolidateEpisodicEdges(): Promise<{ consolidated: number; pruned: number }> {
+    // Find episodic patterns: same from→to appearing 3+ times
+    const patterns = await this.db.query<{ from_id: string; to_id: string; cnt: number }>(
+      `SELECT in.trace_id AS from_id, out.trace_id AS to_id, count() AS cnt
+       FROM episodic GROUP BY in, out HAVING count() >= 3 LIMIT 20`,
+    );
+
+    let consolidated = 0;
+    if (patterns.isOk()) {
+      for (const p of patterns.value) {
+        // Promote to permanent semantic edge
+        await this.db.execute(
+          `RELATE (SELECT id FROM trace WHERE trace_id = $from LIMIT 1)->activates->(SELECT id FROM trace WHERE trace_id = $to LIMIT 1) SET weight = math::clamp(weight + 0.2, 0.01, 1.0)`,
+          { from: p.from_id, to: p.to_id },
+        );
+        consolidated++;
+      }
+    }
+
+    // Prune old episodic edges
+    const pruneResult = await this.db.execute(
+      `DELETE episodic WHERE cycle < $cutoff`,
+      { cutoff: Math.max(0, this.cycle - 500) },
+    );
+    const pruned = pruneResult.isOk() ? 1 : 0;
+
+    if (consolidated > 0) {
+      this.logger.log(`Episodic→Semantic: ${consolidated} patterns consolidated, old edges pruned`);
+    }
+
+    return { consolidated, pruned };
+  }
+
+  // ═══════════════════════════════════════════
   // PRIVATE
   // ═══════════════════════════════════════════
 

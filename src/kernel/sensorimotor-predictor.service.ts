@@ -210,6 +210,48 @@ export class SensorimotorPredictorService implements OnModuleInit {
     return uncertainty.reduce((s, u) => s + u, 0) / Math.max(1, uncertainty.length);
   }
 
+  /**
+   * Empowerment: how much control the agent has at this position.
+   * = variance of predicted outcomes across all known actions.
+   * High empowerment = actions produce diverse outcomes (agent has influence).
+   * Low empowerment = all actions lead to similar outcomes (no control).
+   *
+   * Combined with uncertainty for exploration drive:
+   *   drive = α × uncertainty + (1-α) × empowerment
+   */
+  computeEmpowerment(position: number[]): number {
+    const actions = Array.from(this.actionIndex.keys());
+    if (actions.length < 2) return 0;
+
+    // Predict outcome for each action
+    const predictions: number[][] = [];
+    for (const action of actions) {
+      const { predicted_position } = this.predict(position, action);
+      predictions.push(predicted_position);
+    }
+
+    // Empowerment = mean variance of predicted positions across actions
+    let totalVar = 0;
+    for (let d = 0; d < this.posDim; d++) {
+      const vals = predictions.map(p => p[d] || 0);
+      const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
+      const variance = vals.reduce((s, v) => s + (v - mean) ** 2, 0) / vals.length;
+      totalVar += variance;
+    }
+
+    return totalVar / this.posDim;
+  }
+
+  /**
+   * Exploration drive: combines curiosity (uncertainty) + empowerment.
+   * Seeks regions that are both UNKNOWN and CONTROLLABLE.
+   */
+  explorationDrive(position: number[], action: string, alpha = 0.5): number {
+    const uncertainty = this.getUncertainty(position, action);
+    const empowerment = this.computeEmpowerment(position);
+    return alpha * uncertainty + (1 - alpha) * empowerment;
+  }
+
   // ═══════════════════════════════════════════
   // FORWARD PASS
   // ═══════════════════════════════════════════
