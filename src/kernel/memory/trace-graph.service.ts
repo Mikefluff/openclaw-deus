@@ -371,6 +371,11 @@ export class TraceGraphService {
   // PRIVATE
   // ═══════════════════════════════════════════
 
+  async getTracePosition(traceId: string): Promise<number[] | null> {
+    const trace = await this.findById(traceId);
+    return trace ? trace.position : null;
+  }
+
   private async findById(traceId: string): Promise<Trace | null> {
     const r = await this.db.query<Trace>('SELECT * FROM trace WHERE trace_id = $tid LIMIT 1', { tid: traceId });
     return r.isOk() && r.value.length > 0 ? r.value[0] : null;

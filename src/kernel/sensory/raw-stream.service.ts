@@ -129,6 +129,15 @@ export class RawStreamService {
       // Different modality + recent = cross-modal co-occurrence → BIND
       await this.traceGraph.link(newTraceId, recent.trace_id, 'activates', 0.3);
       await this.traceGraph.link(recent.trace_id, newTraceId, 'activates', 0.3);
+
+      // LEARNING: update modality projection from cross-modal binding
+      const [newPos, coPos] = await Promise.all([
+        this.traceGraph.getTracePosition(newTraceId),
+        this.traceGraph.getTracePosition(recent.trace_id),
+      ]);
+      if (newPos && coPos) {
+        this.modalityDiscovery.updateProjection(newModalityId, newPos, coPos);
+      }
     }
   }
 

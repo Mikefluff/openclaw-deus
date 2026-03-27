@@ -352,6 +352,15 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
       cycleCommitsAll.push(...filteredCommits);
       this.allCommits.push(...filteredCommits);
 
+      // LEARNING: backpropagate prediction errors to trace graph
+      for (const commit of filteredCommits) {
+        if (commit.prediction_error > 0.15) {
+          for (const traceId of commit.changes.traces_activated) {
+            await this.traceGraph.backpropagatePredictionError(traceId, commit.prediction_error);
+          }
+        }
+      }
+
       // Energy cost per commit
       for (const _commit of filteredCommits) {
         this.energy.spend(this.energy.cost.commit, 'commit');
@@ -407,8 +416,10 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
     // Apply commits → world model (actually update the picture of reality)
     await this.substrateBridge.applyCommitsToWorldModel(cycleCommitsAll);
 
-    // Narrative compaction: compress old commits into narrative frames
-    await this.narrative.compact();
+    // Narrative compaction: compress old commits into narrative frames (batched every 50 cycles)
+    if (this.traceGraph.getCycle() % 50 === 0) {
+      await this.narrative.compact();
+    }
 
     // Resolve pending callers
     const output = await this.buildOutput(cycleCommitsAll);
