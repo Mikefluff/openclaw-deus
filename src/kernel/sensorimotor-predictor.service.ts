@@ -57,6 +57,12 @@ export class SensorimotorPredictorService implements OnModuleInit {
   private lastUncLogit: number[] = [];
   private lastUncertainty: number[] = [];
 
+  // In-memory transition queue (flushed to DB on SLOW cadence)
+  private pendingTransitions: Array<{
+    position_t: number[]; position_t1: number[];
+    action: string; reward: number; cycle: number;
+  }> = [];
+
   // Known actions (built from world)
   private static readonly DEFAULT_ACTIONS = ['touch', 'push', 'drop', 'shake', 'look_closely', 'put_in_water',
     'approach', 'share', 'take', 'observe', 'help'];
@@ -94,8 +100,38 @@ export class SensorimotorPredictorService implements OnModuleInit {
   }
 
   /**
-   * Record a sensorimotor transition for training.
-   * Called after every action→consequence in tryAct().
+   * Queue a sensorimotor transition in memory (zero-DB on FAST path).
+   * Flushed to DB via flushTransitions() on SLOW cadence.
+   */
+  queueTransition(
+    position_t: number[], position_t1: number[],
+    action: string, reward: number, cycle: number,
+  ): void {
+    this.pendingTransitions.push({
+      position_t: this.padPosition(position_t),
+      position_t1: this.padPosition(position_t1),
+      action, reward, cycle,
+    });
+  }
+
+  /**
+   * Flush queued transitions to DB. Called on SLOW cadence before trainOnBatch().
+   */
+  async flushTransitions(): Promise<void> {
+    if (this.pendingTransitions.length === 0) return;
+    const batch = this.pendingTransitions.splice(0);
+    for (const t of batch) {
+      await this.db.create('sensorimotor_transition', {
+        position_t: t.position_t,
+        position_t1: t.position_t1,
+        action: t.action, reward: t.reward, cycle: t.cycle, trained: false,
+      } as Record<string, unknown>);
+    }
+  }
+
+  /**
+   * Record a sensorimotor transition for training (direct DB write).
+   * @deprecated Use queueTransition() + flushTransitions() for zero-DB FAST path.
    */
   async recordTransition(
     position_t: number[], position_t1: number[],

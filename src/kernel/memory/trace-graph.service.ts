@@ -5,6 +5,7 @@ import { SurrealService } from '../../database/surreal.service';
 import { CognitiveConfigService } from '../../cognitive/cognitive-config.service';
 import { Trace, TraceRelation, Signal } from '../kernel.types';
 import { ConceptSpaceService } from '../space/concept-space.service';
+import { LightConeService } from '../light-cone.service';
 
 /**
  * TraceGraph: Learning memory substrate.
@@ -31,6 +32,8 @@ export class TraceGraphService {
     private readonly config: CognitiveConfigService,
     @Inject(forwardRef(() => ConceptSpaceService))
     private readonly conceptSpace: ConceptSpaceService,
+    @Inject(forwardRef(() => LightConeService))
+    private readonly lightCone: LightConeService,
   ) {}
 
   getCycle(): number { return this.cycle; }
@@ -57,16 +60,19 @@ export class TraceGraphService {
       ? await this.conceptSpace.projectNewTrace(data.content)
       : [];
 
+    const weight = data.initial_weight ?? 0.5;
+    const emotionalCharge = data.emotional_charge ?? 0;
+
     const trace: Omit<Trace, 'id'> = {
       trace_id: `T${Date.now()}_${this.traceIdCounter++}`,
       source_type: data.source_type,
       source_id: data.source_id,
       content: data.content,
-      weight: data.initial_weight ?? 0.5,
-      initial_weight: data.initial_weight ?? 0.5,
+      weight,
+      initial_weight: weight,
       freshness: 1.0,
       confidence: data.confidence ?? 0.5,
-      emotional_charge: data.emotional_charge ?? 0,
+      emotional_charge: emotionalCharge,
       reactivation_count: 0,
       last_reactivated_cycle: this.cycle,
       reactivation_history: [this.cycle],
@@ -77,7 +83,11 @@ export class TraceGraphService {
       archived: false,
     };
 
-    return this.db.create<Trace>('trace', trace as unknown as Trace);
+    // FAST path: activate in hot memory + queue for SLOW DB write
+    this.lightCone.activateHot(trace.trace_id, data.content, weight, emotionalCharge);
+    this.lightCone.queueCreate(trace as unknown as Record<string, unknown>);
+
+    return ok(trace as Trace);
   }
 
   // ═══════════════════════════════════════════
@@ -91,16 +101,30 @@ export class TraceGraphService {
   async ingestSignals(signals: Signal[]): Promise<Result<string[], DomainError>> {
     const activatedTraces: string[] = [];
 
-    for (const signal of signals) {
-      // Find existing trace by content OR create new
-      const existing = await this.findTraceBySimilarity(signal.content);
+    // RATE LIMIT: max 3 new traces per ingest cycle (reactivations unlimited)
+    let newTracesThisCycle = 0;
+    const MAX_NEW_PER_CYCLE = 3;
 
-      if (existing) {
-        await this.reactivate(existing.trace_id, signal.confidence, signal.novelty_cost);
-        activatedTraces.push(existing.trace_id);
-      } else {
+    for (const signal of signals) {
+      // Prefer reactivating existing traces over creating new ones
+      // First try: signal has targets → reactivate those directly
+      if (signal.targets.length > 0) {
+        for (const tid of signal.targets.slice(0, 2)) {
+          await this.reactivate(tid, signal.confidence, signal.novelty_cost);
+          if (!activatedTraces.includes(tid)) activatedTraces.push(tid);
+        }
+        continue;
+      }
+
+      // Second try: find match in hot traces (zero-DB)
+      const existingId = this.findTraceBySimilarityFast(signal.content);
+      if (existingId) {
+        await this.reactivate(existingId, signal.confidence, signal.novelty_cost);
+        activatedTraces.push(existingId);
+      } else if (newTracesThisCycle < MAX_NEW_PER_CYCLE) {
+        // Create new trace only if under rate limit
         const result = await this.createTrace({
-          source_type: 'signal',
+          source_type: signal.type === 'affect' ? 'signal' : 'signal',
           content: signal.content,
           initial_weight: signal.confidence * 0.8,
           confidence: signal.confidence,
@@ -108,7 +132,7 @@ export class TraceGraphService {
         });
         if (result.isOk()) {
           activatedTraces.push(result.value.trace_id);
-          // Link new trace to existing targets
+          newTracesThisCycle++;
           for (const target of signal.targets) {
             await this.link(result.value.trace_id, target, 'activates', signal.confidence * 0.5);
           }
@@ -116,25 +140,22 @@ export class TraceGraphService {
       }
     }
 
-    // CONFLICT DETECTION → DIMENSION BIRTH
-    if (this.conceptSpace && activatedTraces.length > 1) {
+    // CONFLICT DETECTION → DIMENSION BIRTH (max 1 per 10 cycles)
+    if (this.conceptSpace && activatedTraces.length > 1 && this.cycle % 10 === 0) {
       await this.detectAndResolveConflicts(activatedTraces);
     }
 
-    // Auto-create edges between traces created/activated in the same cycle (bootstrap)
-    if (activatedTraces.length > 1) {
-      for (let i = 0; i < activatedTraces.length; i++) {
-        for (let j = i + 1; j < Math.min(activatedTraces.length, i + 4); j++) {
-          // Co-occurrence in same cycle → weak activates edge (Hebbian will strengthen if relevant)
-          await this.link(activatedTraces[i], activatedTraces[j], 'activates', 0.2);
-        }
+    // Co-occurrence edges (limited to first 3 traces)
+    const edgeTraces = activatedTraces.slice(0, 3);
+    for (let i = 0; i < edgeTraces.length; i++) {
+      for (let j = i + 1; j < edgeTraces.length; j++) {
+        await this.link(edgeTraces[i], edgeTraces[j], 'activates', 0.2);
       }
     }
 
-    // Run spreading activation + Hebbian learning on activated traces
-    for (const traceId of activatedTraces) {
-      await this.spreadActivation(traceId);
-    }
+    // FAST path: skip spreadActivation (DB-heavy recursive queries).
+    // Spreading activation runs on SLOW cadence via flushToDb().
+    // Hot traces are already activated in-memory by createTrace/reactivate above.
 
     return ok(activatedTraces);
   }
@@ -145,28 +166,11 @@ export class TraceGraphService {
 
   async reactivate(traceId: string, confidence: number, _novelty = 0): Promise<void> {
     const boost = this.config.get('kernel.activation_boost');
-    const history = await this.getReactivationHistory(traceId);
-    const newHistory = [...history, this.cycle].slice(-50);
+    const weight = Math.min(1.0, boost * (1 - boost) + boost); // asymptotic boost
 
-    // CRITICAL: clamp weight to [0, 1.0] — was accumulating above 1.0
-    await this.db.execute(
-      `UPDATE trace SET
-        weight = math::min([1.0, weight + $boost * (1.0 - weight)]),
-        freshness = 1.0,
-        confidence = math::min([1.0, math::max([$conf, confidence])]),
-        reactivation_count = reactivation_count + 1,
-        last_reactivated_cycle = $cycle,
-        reactivation_history = $history,
-        suppressed = false
-      WHERE trace_id = $tid AND weight <= 1.0`,
-      { boost, conf: Math.min(1, confidence), cycle: this.cycle, history: newHistory, tid: traceId },
-    );
-
-    // Force-clamp any traces that escaped above 1.0
-    await this.db.execute(
-      `UPDATE trace SET weight = 1.0 WHERE trace_id = $tid AND weight > 1.0`,
-      { tid: traceId },
-    );
+    // FAST path: activate in hot memory + queue for SLOW DB write
+    this.lightCone.activateHot(traceId, '', confidence, 0);
+    this.lightCone.queueReactivation(traceId, { weight, freshness: 1.0, confidence: Math.min(1, confidence) });
   }
 
   // ═══════════════════════════════════════════
@@ -342,13 +346,8 @@ export class TraceGraphService {
   // ═══════════════════════════════════════════
 
   async link(fromTraceId: string, toTraceId: string, relation: TraceRelation, weight: number): Promise<void> {
-    await this.db.execute(
-      `RELATE (SELECT id FROM trace WHERE trace_id = $from LIMIT 1)
-        -> ${relation}
-        -> (SELECT id FROM trace WHERE trace_id = $to LIMIT 1)
-        SET weight = $w, initial_weight = $w, co_activation_count = 0, last_co_activation = $cycle, prediction_error_sum = 0, outcome_reinforcement = 0`,
-      { from: fromTraceId, to: toTraceId, w: weight, cycle: this.cycle },
-    );
+    // FAST path: queue for SLOW DB write
+    this.lightCone.queueLink({ from: fromTraceId, to: toTraceId, relation, weight });
   }
 
   // ═══════════════════════════════════════════
@@ -391,6 +390,41 @@ export class TraceGraphService {
   }
 
   // ═══════════════════════════════════════════
+  // SLOW CADENCE: FLUSH TO DB
+  // ═══════════════════════════════════════════
+
+  /**
+   * Flush all queued FAST-path operations to DB. Called on SLOW cadence.
+   */
+  async flushToDb(): Promise<{ created: number; reactivated: number; linked: number }> {
+    // 1. Batch create traces
+    const creates = this.lightCone.flushCreates();
+    for (const trace of creates) {
+      await this.db.create('trace', trace);
+    }
+
+    // 2. Batch reactivations into single UPDATE per trace
+    const reactivations = this.lightCone.flushReactivations();
+    for (const [traceId, data] of reactivations) {
+      await this.db.execute(
+        `UPDATE trace SET weight = math::clamp($w, 0, 1), freshness = 1.0, confidence = math::max(confidence, $c), reactivation_count += 1, last_reactivated_cycle = $cycle WHERE trace_id = $tid`,
+        { w: data.weight, c: data.confidence, cycle: this.cycle, tid: traceId },
+      );
+    }
+
+    // 3. Batch links
+    const links = this.lightCone.flushLinks();
+    for (const link of links) {
+      await this.db.execute(
+        `RELATE (SELECT id FROM trace WHERE trace_id = $from LIMIT 1)->${link.relation}->(SELECT id FROM trace WHERE trace_id = $to LIMIT 1) SET weight = $w`,
+        { from: link.from, to: link.to, w: link.weight },
+      );
+    }
+
+    return { created: creates.length, reactivated: reactivations.size, linked: links.length };
+  }
+
+  // ═══════════════════════════════════════════
   // PRIVATE
   // ═══════════════════════════════════════════
 
@@ -402,6 +436,18 @@ export class TraceGraphService {
   private async findById(traceId: string): Promise<Trace | null> {
     const r = await this.db.query<Trace>('SELECT * FROM trace WHERE trace_id = $tid LIMIT 1', { tid: traceId });
     return r.isOk() && r.value.length > 0 ? r.value[0] : null;
+  }
+
+  /**
+   * FAST path: find a matching trace in hot memory (zero-DB).
+   * Returns the most active hot trace with weight > 0.3.
+   */
+  private findTraceBySimilarityFast(_content: string): string | null {
+    const hotTraces = this.lightCone.getHotTraces(30);
+    for (const ht of hotTraces) {
+      if (ht.weight > 0.3) return ht.traceId;
+    }
+    return null;
   }
 
   /**

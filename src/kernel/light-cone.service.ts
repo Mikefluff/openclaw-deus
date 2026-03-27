@@ -36,6 +36,15 @@ export class LightConeService {
   private hotEdgeUpdates: Array<{ from: string; to: string; deltaWeight: number }> = [];
   private pendingWrites: PendingWrite[] = [];
 
+  // Pending trace creates (queued during FAST, flushed on SLOW)
+  private pendingCreates: Array<Record<string, unknown>> = [];
+
+  // Pending link operations (queued during FAST, flushed on SLOW)
+  private pendingLinks: Array<{ from: string; to: string; relation: string; weight: number }> = [];
+
+  // Pending reactivations (queued during FAST, flushed on SLOW)
+  private pendingReactivations = new Map<string, { weight: number; freshness: number; confidence: number }>();
+
   // Cadence counters
   private tickCounter = 0;
   private lastMediumTick = 0;
@@ -147,6 +156,20 @@ export class LightConeService {
       .sort((a, b) => b.weight * b.freshness - a.weight * a.freshness)
       .slice(0, limit);
   }
+
+  // ═══════════════════════════════════════════
+  // FAST-path queue methods (zero-DB)
+  // ═══════════════════════════════════════════
+
+  queueCreate(trace: Record<string, unknown>): void { this.pendingCreates.push(trace); }
+  queueLink(link: { from: string; to: string; relation: string; weight: number }): void { this.pendingLinks.push(link); }
+  queueReactivation(traceId: string, data: { weight: number; freshness: number; confidence: number }): void {
+    this.pendingReactivations.set(traceId, data); // last wins
+  }
+
+  flushCreates(): Array<Record<string, unknown>> { const c = [...this.pendingCreates]; this.pendingCreates = []; return c; }
+  flushLinks(): Array<{ from: string; to: string; relation: string; weight: number }> { const l = [...this.pendingLinks]; this.pendingLinks = []; return l; }
+  flushReactivations(): Map<string, { weight: number; freshness: number; confidence: number }> { const r = new Map(this.pendingReactivations); this.pendingReactivations.clear(); return r; }
 
   getHotTraceCount(): number { return this.hotTraces.size; }
 

@@ -54,27 +54,8 @@ export class ConceptSpaceService {
    * Returns: closest first.
    */
   async findNeighbors(position: number[], radius: number, limit = 10): Promise<Array<{ trace: Trace; dist: number }>> {
-    // Try MTREE KNN index first (SurrealDB native vector search, O(log n))
-    try {
-      const knnResult = await this.db.query<Trace & { dist: number }>(
-        `SELECT *, vector::distance::euclidean(position, $pos) AS dist
-         FROM trace
-         WHERE position <|${limit}|> $pos
-           AND archived = false
-           AND suppressed = false
-         ORDER BY dist
-         LIMIT $limit`,
-        { pos: position, limit },
-      );
-      if (knnResult.isOk() && knnResult.value.length > 0) {
-        return knnResult.value
-          .filter(t => (t.dist ?? 0) <= radius)
-          .map(t => ({ trace: t, dist: t.dist ?? 0 }));
-      }
-    } catch {
-      // MTREE KNN syntax may differ in this SurrealDB version — fall back to brute-force
-      this.logger.debug('MTREE KNN query failed, falling back to brute-force neighbor search');
-    }
+    // NOTE: SurrealDB 3.0.4 KNN (<|K|>) doesn't support AND conditions.
+    // Using brute-force scan with JS sort. MTREE index helps DB internally.
 
     // Fallback: brute-force scan + JS sort
     const result = await this.db.query<Trace>(
@@ -239,6 +220,12 @@ export class ConceptSpaceService {
    * the conflicting traces along a new axis.
    */
   async birthDimension(conflict: SpatialConflict, cycle: number): Promise<Dimension> {
+    // Cap dimensions — too many = slow everything, diminishing returns
+    const maxDims = this.config.get('kernel.max_dimensions') ?? 30;
+    if (this.dimensions.length >= maxDims) {
+      return this.dimensions[this.dimensions.length - 1]; // return last, no new
+    }
+
     const dim: Dimension = {
       id: this.dimCounter++,
       born_at_cycle: cycle,
@@ -320,41 +307,16 @@ export class ConceptSpaceService {
 
     const dimCount = this.dimensions.length;
 
-    // Strategy 1: position near recently co-activated traces (Hebbian spatial)
-    const recentActive = await this.db.query<Trace>(
-      `SELECT trace_id, position, weight FROM trace
-       WHERE archived = false AND array::len(position) > 0
-       ORDER BY last_reactivated_cycle DESC LIMIT 10`,
-    );
-
-    if (recentActive.isOk() && recentActive.value.length > 0) {
-      // Weighted average of recent active trace positions
-      const position = new Array(dimCount).fill(0);
-      let totalWeight = 0;
-
-      for (const trace of recentActive.value) {
-        if (trace.position && trace.position.length > 0) {
-          const w = trace.weight || 0.1;
-          totalWeight += w;
-          for (let d = 0; d < Math.min(dimCount, trace.position.length); d++) {
-            position[d] += (trace.position[d] || 0) * w;
-          }
-        }
-      }
-
-      if (totalWeight > 0) {
-        for (let d = 0; d < dimCount; d++) {
-          position[d] /= totalWeight;
-          // Add small noise to prevent exact overlap (forces later conflict detection)
-          position[d] += (Math.random() - 0.5) * 0.1;
-        }
-        return position;
-      }
-    }
-
-    // Strategy 2: center with noise (no context)
-    return new Array(dimCount).fill(0).map(() => (Math.random() - 0.5) * 0.5);
+    // Primary strategy: center with noise, spread proportional to hot trace count.
+    // Positions converge through drift/attraction — no DB query needed on FAST path.
+    const hotTraceCount = this.hotTraceCount;
+    const spread = hotTraceCount > 0 ? 0.3 + Math.min(0.4, hotTraceCount * 0.02) : 0.5;
+    return new Array(dimCount).fill(0).map(() => (Math.random() - 0.5) * spread);
   }
+
+  /** Updated by kernel on SLOW cadence for spread estimation. */
+  private hotTraceCount = 0;
+  setHotTraceCount(count: number): void { this.hotTraceCount = count; }
 
   // ═══════════════════════════════════════════
   // MOVEMENT (Hebbian spatial: co-active → attract)

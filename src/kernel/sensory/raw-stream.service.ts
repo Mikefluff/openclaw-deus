@@ -135,17 +135,12 @@ export class RawStreamService {
       if (cycle - recent.cycle > bindingWindow) continue; // too old
 
       // Different modality + recent = cross-modal co-occurrence → BIND
+      // trace-graph.link() now queues in memory (zero-DB), flushed on SLOW cadence
       await this.traceGraph.link(newTraceId, recent.trace_id, 'activates', bindingWeight);
       await this.traceGraph.link(recent.trace_id, newTraceId, 'activates', bindingWeight);
 
-      // LEARNING: update modality projection from cross-modal binding
-      const [newPos, coPos] = await Promise.all([
-        this.traceGraph.getTracePosition(newTraceId),
-        this.traceGraph.getTracePosition(recent.trace_id),
-      ]);
-      if (newPos && coPos) {
-        this.modalityDiscovery.updateProjection(newModalityId, newPos, coPos);
-      }
+      // Modality projection updates deferred — positions not available in hot memory.
+      // Cross-modal binding via link is sufficient; projection will converge through drift.
     }
   }
 

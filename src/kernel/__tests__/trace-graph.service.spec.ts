@@ -19,11 +19,24 @@ const mockConceptSpace = {
   distance: jest.fn().mockReturnValue(0.5),
 };
 
+const mockLightCone = {
+  activateHot: jest.fn(),
+  queueCreate: jest.fn(),
+  queueLink: jest.fn(),
+  queueReactivation: jest.fn(),
+  flushCreates: jest.fn().mockReturnValue([]),
+  flushLinks: jest.fn().mockReturnValue([]),
+  flushReactivations: jest.fn().mockReturnValue(new Map()),
+  getHotTraces: jest.fn().mockReturnValue([]),
+  getHotTraceCount: jest.fn().mockReturnValue(0),
+};
+
 function createService(): TraceGraphService {
   return new TraceGraphService(
     mockDb as any,
     mockCognitiveConfig as any,
     mockConceptSpace as any,
+    mockLightCone as any,
   );
 }
 
@@ -128,14 +141,21 @@ describe('TraceGraphService', () => {
   // ═══════════════════════════════════════════
 
   describe('createTrace()', () => {
-    it('creates a trace with correct defaults', async () => {
-      mockDb.create.mockResolvedValueOnce(ok({ trace_id: 'T_new', weight: 0.5 }));
+    it('creates a trace with correct defaults (in-memory, queued)', async () => {
       const result = await svc.createTrace({
         source_type: 'signal',
         content: 'new trace content',
       });
       expect(result.isOk()).toBe(true);
-      expect(mockDb.create).toHaveBeenCalledWith('trace', expect.objectContaining({
+      // FAST path: no DB call, queued via lightCone
+      expect(mockDb.create).not.toHaveBeenCalled();
+      expect(mockLightCone.activateHot).toHaveBeenCalledWith(
+        expect.stringMatching(/^T\d+_\d+$/),
+        'new trace content',
+        0.5,
+        0,
+      );
+      expect(mockLightCone.queueCreate).toHaveBeenCalledWith(expect.objectContaining({
         source_type: 'signal',
         content: 'new trace content',
         weight: 0.5,
@@ -148,52 +168,47 @@ describe('TraceGraphService', () => {
     });
 
     it('uses provided initial_weight', async () => {
-      mockDb.create.mockResolvedValueOnce(ok({ trace_id: 'T_new', weight: 0.8 }));
       await svc.createTrace({
         source_type: 'belief',
         content: 'belief trace',
         initial_weight: 0.8,
       });
-      expect(mockDb.create).toHaveBeenCalledWith('trace', expect.objectContaining({
+      expect(mockLightCone.queueCreate).toHaveBeenCalledWith(expect.objectContaining({
         weight: 0.8,
         initial_weight: 0.8,
       }));
     });
 
     it('uses provided emotional_charge', async () => {
-      mockDb.create.mockResolvedValueOnce(ok({ trace_id: 'T_emo' }));
       await svc.createTrace({
         source_type: 'signal',
         content: 'emotional',
         emotional_charge: -0.5,
       });
-      expect(mockDb.create).toHaveBeenCalledWith('trace', expect.objectContaining({
+      expect(mockLightCone.queueCreate).toHaveBeenCalledWith(expect.objectContaining({
         emotional_charge: -0.5,
       }));
     });
 
     it('projects position via conceptSpace', async () => {
       mockConceptSpace.projectNewTrace.mockResolvedValueOnce([1, 2, 3]);
-      mockDb.create.mockResolvedValueOnce(ok({ trace_id: 'T_pos' }));
       await svc.createTrace({ source_type: 'signal', content: 'positioned' });
       expect(mockConceptSpace.projectNewTrace).toHaveBeenCalledWith('positioned');
-      expect(mockDb.create).toHaveBeenCalledWith('trace', expect.objectContaining({
+      expect(mockLightCone.queueCreate).toHaveBeenCalledWith(expect.objectContaining({
         position: [1, 2, 3],
         velocity: [0, 0, 0],
       }));
     });
 
-    it('returns err when db.create fails', async () => {
-      mockDb.create.mockResolvedValueOnce(err({ code: 'DB_ERROR', message: 'fail' }));
-      const result = await svc.createTrace({ source_type: 'signal', content: 'fail' });
-      expect(result.isErr()).toBe(true);
+    it('always returns ok (in-memory, no DB failure possible)', async () => {
+      const result = await svc.createTrace({ source_type: 'signal', content: 'always ok' });
+      expect(result.isOk()).toBe(true);
     });
 
     it('sets reactivation_history to current cycle', async () => {
       svc.tick(); // cycle = 1
-      mockDb.create.mockResolvedValueOnce(ok({ trace_id: 'T_hist' }));
       await svc.createTrace({ source_type: 'signal', content: 'with history' });
-      expect(mockDb.create).toHaveBeenCalledWith('trace', expect.objectContaining({
+      expect(mockLightCone.queueCreate).toHaveBeenCalledWith(expect.objectContaining({
         created_at_cycle: 1,
         last_reactivated_cycle: 1,
         reactivation_history: [1],
@@ -212,74 +227,60 @@ describe('TraceGraphService', () => {
       expect(result._unsafeUnwrap()).toEqual([]);
     });
 
-    it('creates new trace when no similar trace exists', async () => {
-      // findTraceBySimilarity returns no match
-      mockDb.query.mockResolvedValue(ok([]));
-      mockDb.create.mockResolvedValueOnce(ok({ trace_id: 'T_new_1' }));
+    it('creates new trace when no hot trace match exists', async () => {
+      // findTraceBySimilarityFast returns no match (no hot traces)
+      mockLightCone.getHotTraces.mockReturnValue([]);
 
       const result = await svc.ingestSignals([makeSignal()]);
       expect(result.isOk()).toBe(true);
-      expect(result._unsafeUnwrap()).toContain('T_new_1');
-      expect(mockDb.create).toHaveBeenCalled();
+      // New trace created in-memory via lightCone
+      expect(mockLightCone.queueCreate).toHaveBeenCalled();
     });
 
-    it('reactivates existing trace when similar content found', async () => {
-      const existing = makeTrace({ trace_id: 'T_existing', content: 'test signal content' });
-      // findNeighbors returns a spatial neighbor → findTraceBySimilarity finds a match
-      mockConceptSpace.findNeighbors.mockResolvedValueOnce([{ trace: existing, dist: 0.1 }]);
-      mockDb.query.mockResolvedValue(ok([existing]));
+    it('reactivates existing hot trace when match found', async () => {
+      // findTraceBySimilarityFast returns a hot trace match
+      mockLightCone.getHotTraces.mockReturnValue([{ traceId: 'T_existing', weight: 0.5 }]);
 
       const result = await svc.ingestSignals([makeSignal({ content: 'test signal content' })]);
       expect(result.isOk()).toBe(true);
       expect(result._unsafeUnwrap()).toContain('T_existing');
-      // reactivate calls db.execute for UPDATE
-      expect(mockDb.execute).toHaveBeenCalled();
+      // reactivate queues via lightCone, no DB call
+      expect(mockLightCone.queueReactivation).toHaveBeenCalled();
+      expect(mockDb.execute).not.toHaveBeenCalled();
     });
 
-    it('creates co-occurrence edges between multiple signals', async () => {
-      mockDb.query.mockResolvedValue(ok([]));
-      mockDb.create
-        .mockResolvedValueOnce(ok({ trace_id: 'T_1' }))
-        .mockResolvedValueOnce(ok({ trace_id: 'T_2' }));
+    it('creates co-occurrence edges between multiple signals via queueLink', async () => {
+      mockLightCone.getHotTraces.mockReturnValue([]);
 
       await svc.ingestSignals([
         makeSignal({ content: 'first unique signal alpha' }),
         makeSignal({ content: 'second unique signal beta' }),
       ]);
 
-      // link() calls db.execute with RELATE
-      const relateCalls = mockDb.execute.mock.calls.filter(
-        (c: any[]) => typeof c[0] === 'string' && c[0].includes('RELATE'),
-      );
-      expect(relateCalls.length).toBeGreaterThan(0);
+      // link() queues via lightCone.queueLink
+      expect(mockLightCone.queueLink).toHaveBeenCalled();
     });
 
-    it('links new trace to signal targets', async () => {
-      mockDb.query.mockResolvedValue(ok([]));
-      mockDb.create.mockResolvedValueOnce(ok({ trace_id: 'T_linked' }));
-
+    it('reactivates signal targets directly', async () => {
       await svc.ingestSignals([
         makeSignal({ targets: ['T_target_1', 'T_target_2'] }),
       ]);
 
-      const relateCalls = mockDb.execute.mock.calls.filter(
-        (c: any[]) => typeof c[0] === 'string' && c[0].includes('RELATE'),
-      );
-      expect(relateCalls.length).toBeGreaterThan(0);
+      // Targets are reactivated in-memory via lightCone
+      expect(mockLightCone.activateHot).toHaveBeenCalled();
+      expect(mockLightCone.queueReactivation).toHaveBeenCalled();
     });
 
-    it('runs spreadActivation on each activated trace', async () => {
-      mockDb.query.mockResolvedValue(ok([]));
-      mockDb.create.mockResolvedValueOnce(ok({ trace_id: 'T_spread' }));
-      mockDb.execute.mockResolvedValue(ok({}));
+    it('skips spreadActivation on FAST path (no DB queries)', async () => {
+      mockLightCone.getHotTraces.mockReturnValue([]);
 
       await svc.ingestSignals([makeSignal()]);
 
-      // spreadActivation calls fn::spread_activation
+      // spreadActivation is skipped on FAST path
       const spreadCalls = mockDb.execute.mock.calls.filter(
         (c: any[]) => typeof c[0] === 'string' && c[0].includes('fn::spread_activation'),
       );
-      expect(spreadCalls.length).toBeGreaterThan(0);
+      expect(spreadCalls.length).toBe(0);
     });
   });
 
@@ -546,23 +547,19 @@ describe('TraceGraphService', () => {
   // ═══════════════════════════════════════════
 
   describe('link()', () => {
-    it('executes RELATE query with correct params', async () => {
-      mockDb.execute.mockResolvedValue(ok({}));
+    it('queues link via lightCone instead of immediate DB call', async () => {
       await svc.link('T_from', 'T_to', 'activates', 0.5);
-      expect(mockDb.execute).toHaveBeenCalledWith(
-        expect.stringContaining('RELATE'),
-        expect.objectContaining({ from: 'T_from', to: 'T_to', w: 0.5 }),
-      );
+      expect(mockDb.execute).not.toHaveBeenCalled();
+      expect(mockLightCone.queueLink).toHaveBeenCalledWith({
+        from: 'T_from', to: 'T_to', relation: 'activates', weight: 0.5,
+      });
     });
 
-    it('passes current cycle to edge', async () => {
-      svc.tick(); // cycle = 1
-      mockDb.execute.mockResolvedValue(ok({}));
+    it('queues link with correct relation type', async () => {
       await svc.link('T_a', 'T_b', 'inhibits', 0.3);
-      expect(mockDb.execute).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({ cycle: 1 }),
-      );
+      expect(mockLightCone.queueLink).toHaveBeenCalledWith({
+        from: 'T_a', to: 'T_b', relation: 'inhibits', weight: 0.3,
+      });
     });
   });
 });

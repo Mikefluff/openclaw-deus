@@ -20,6 +20,7 @@ import { CognitiveConfigService } from '../../cognitive/cognitive-config.service
 export class CommitKernelService {
   private readonly logger = new Logger(CommitKernelService.name);
   private commitCount = 0;
+  private timeSenseCache: { cycle: number; value: TimeSense } | null = null;
 
   constructor(
     private readonly db: SurrealService,
@@ -125,6 +126,11 @@ export class CommitKernelService {
   async computeTimeSense(): Promise<TimeSense> {
     const cycle = this.traceGraph.getCycle();
 
+    // Cache: recompute only every 10 cycles (2 DB queries saved per cache hit)
+    if (this.timeSenseCache && cycle - this.timeSenseCache.cycle < 10) {
+      return this.timeSenseCache.value;
+    }
+
     // Get recent commits for analysis
     const recentResult = await this.db.query<CommitDelta>(
       `SELECT * FROM commit_log ORDER BY cycle DESC LIMIT 50`,
@@ -172,7 +178,7 @@ export class CommitKernelService {
       : tempo > 0.1 ? 'consolidating'
       : 'resting';
 
-    return {
+    const result: TimeSense = {
       cycle,
       tempo: Math.round(tempo * 100) / 100,
       novelty_rate: Math.round(noveltyRate * 1000) / 1000,
@@ -181,6 +187,8 @@ export class CommitKernelService {
       dilation: Math.round(Math.max(0.1, Math.min(3.0, dilation)) * 100) / 100,
       rhythm_phase: phase,
     };
+    this.timeSenseCache = { cycle, value: result };
+    return result;
   }
 
   getCommitCount(): number { return this.commitCount; }

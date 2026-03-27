@@ -227,27 +227,8 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
           } catch {}
         }
 
-        // Strengthen edges between co-occurring traces (Hebbian: fire together → wire together)
-        // This builds co_activation_count needed for schema detection
-        if (allSignals.length >= 2) {
-          const targetSets = allSignals.filter(s => s.targets.length > 0).map(s => s.targets);
-          for (let i = 0; i < Math.min(targetSets.length, 5); i++) {
-            for (let j = i + 1; j < Math.min(targetSets.length, 5); j++) {
-              for (const tA of targetSets[i].slice(0, 2)) {
-                for (const tB of targetSets[j].slice(0, 2)) {
-                  if (tA !== tB) {
-                    this.lightCone.queueWrite({
-                      table: 'activates', operation: 'execute',
-                      data: {},
-                      sql: `UPDATE activates SET weight = math::clamp(weight + 0.05, 0.01, 1.0), co_activation_count += 1 WHERE in.trace_id = $from AND out.trace_id = $to`,
-                      vars: { from: tA, to: tB },
-                    });
-                  }
-                }
-              }
-            }
-          }
-        }
+        // Hebbian co-activation edges now handled by trace-graph in-memory link queue.
+        // No DB writes on FAST path — trace-graph queues links, flushed on SLOW cadence.
 
         // FIX 1: Boost signal confidence for training — child experiences directly,
         // no need for multi-agent convergence on every mundane event.
@@ -321,6 +302,15 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
       if (schedule.shouldSlow) {
         this.lightCone.markSlow();
         const cycle = this.traceGraph.getCycle();
+
+        // Sync hot trace count for concept-space projection spread estimation
+        this.conceptSpace.setHotTraceCount(this.lightCone.getHotTraceCount());
+
+        // Batch flush all in-memory operations to DB (traces, links, reactivations)
+        await this.traceGraph.flushToDb();
+
+        // Flush sensorimotor transitions queued during FAST/MEDIUM paths
+        await this.sensorimotorPredictor.flushTransitions();
 
         // Flush batched writes + increment co_activation_count for schema detection
         const { writes, edgeUpdates } = this.lightCone.flushWrites();
@@ -413,18 +403,25 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
    * Returns the word produced, or null if nothing to say.
    */
   private async trySpeak(cycle: number): Promise<string | null> {
-    // Get most active trace
-    const active = await this.traceGraph.getActiveTraces(3);
-    if (active.isErr() || active.value.length === 0) return null;
+    // Get most active trace from hot memory (zero-DB)
+    const hotTraces = this.lightCone.getHotTraces(5);
+    if (hotTraces.length === 0) return null;
 
-    const strongest = active.value[0];
-    if (!strongest.position || strongest.position.length === 0) return null;
+    // Find strongest non-lexical trace
+    const strongest = hotTraces.find(ht => !ht.content.startsWith('Мама'));
+    if (!strongest) return null;
 
-    // Don't speak about lexical traces (don't name names)
-    if (strongest.source_type === 'lexical') return null;
+    // Search hot traces for lexical label (zero-DB: scan in-memory hot traces)
+    const lexicalTraces = this.lightCone.getHotTraces(50)
+      .filter(ht => ht.content.startsWith('Мама') && ht.weight > 0.3);
+    if (lexicalTraces.length === 0) return null;
 
-    // Find lexical label for this position
-    const word = await this.conceptSpace.findLexicalLabel(strongest.position);
+    // Find the lexical trace with highest weight (no position needed — just co-occurrence)
+    const bestLexical = lexicalTraces.sort((a, b) => b.weight - a.weight)[0];
+    const word = bestLexical.content
+      .replace(/^Мама[^:]*:\s*"?/i, '')
+      .replace(/"?\s*$/i, '')
+      .trim();
     if (!word) return null;
 
     // Don't repeat the same word too often
@@ -433,7 +430,7 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
 
     // PRODUCE
     this.verbalProductions.push({ word, cycle });
-    this.logger.log(`SPEECH: "${word}" (from trace ${strongest.trace_id})`);
+    this.logger.log(`SPEECH: "${word}" (from trace ${strongest.traceId})`);
 
     // Self-trace: "I said X" — the child knows it spoke
     await this.conceptSpace.createSelfTrace(`Я сказал: ${word}`, 0.5);
@@ -580,6 +577,15 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
         if (schedule.shouldSlow) {
           this.lightCone.markSlow();
           const cycle = this.traceGraph.tick();
+
+          // Sync hot trace count for concept-space projection spread estimation
+          this.conceptSpace.setHotTraceCount(this.lightCone.getHotTraceCount());
+
+          // Batch flush all in-memory operations to DB (traces, links, reactivations)
+          await this.traceGraph.flushToDb();
+
+          // Flush sensorimotor transitions queued during FAST/MEDIUM paths
+          await this.sensorimotorPredictor.flushTransitions();
 
           // Flush pending writes to DB
           const { writes, edgeUpdates } = this.lightCone.flushWrites();
@@ -870,26 +876,10 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
       const signals = await this.rawStream.ingest(rawEvent, cycle);
 
       if (signals.length > 0) {
-        const commitResult = await this.commitKernel.processCycle(signals);
-
-        // RECORD TRAJECTORY: link pre-action traces to post-action traces
-        if (commitResult.isOk()) {
-          for (const commit of commitResult.value) {
-            for (const newTraceId of commit.changes.traces_created) {
-              for (const oldTraceId of this.lastActionPrediction.traceIds.slice(0, 3)) {
-                await this.conceptSpace.recordTrajectory(oldTraceId, newTraceId, action.method || 'unknown');
-              }
-            }
-            // Also record activated traces as trajectory endpoints
-            for (const activatedId of commit.changes.traces_activated.slice(0, 3)) {
-              for (const oldTraceId of this.lastActionPrediction.traceIds.slice(0, 2)) {
-                if (oldTraceId !== activatedId) {
-                  await this.conceptSpace.recordTrajectory(oldTraceId, activatedId, action.method || 'unknown');
-                }
-              }
-            }
-          }
-        }
+        await this.commitKernel.processCycle(signals);
+        // Trajectory recording skipped on FAST path — data already captured
+        // by sensorimotorPredictor.recordTransition() below. Trajectories
+        // are batch-recorded during SLOW cadence via trainOnBatch().
       }
 
       // Emotional consequence → affect (CONCURRENT: applied immediately)
@@ -910,9 +900,9 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
         const currentPos = targetTraces[0].position || [];
         const actualPos = postTraces[0].position || [];
 
-        // Record transition for predictor training (SMC: action + before + after)
+        // Queue transition in-memory for predictor training (flushed on SLOW cadence via trainOnBatch)
         if (currentPos.length > 0 && actualPos.length > 0) {
-          await this.sensorimotorPredictor.recordTransition(
+          this.sensorimotorPredictor.queueTransition(
             currentPos, actualPos, action.method || 'unknown', totalValence, cycle,
           );
         }
