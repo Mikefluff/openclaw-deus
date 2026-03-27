@@ -58,8 +58,9 @@ export class SensoryAgent implements CognitiveAgent {
       cycle: context.cycle,
     });
 
-    // SLOW PATH: LLM extraction if novel enough and budget allows
-    if ((novelty > 0.5 || input.length > 100) && context.llm_budget.remaining > 0) {
+    // SLOW PATH: LLM extraction — only for TRULY novel events, not routine observations
+    // High novelty threshold prevents LLM spam on mundane events like "на полу лежит мячик"
+    if (novelty > 0.8 && context.llm_budget.remaining > 0) {
       await this.slowPathExtraction(input, signals, context);
     }
 

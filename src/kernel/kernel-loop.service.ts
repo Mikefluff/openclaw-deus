@@ -162,6 +162,129 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * Push event to kernel queue without waiting for processing.
+   * For training: world pushes events, kernel processes at its own pace.
+   * Returns immediately — no blocking.
+   */
+  pushEvent(content: string, type: 'message' | 'system' = 'message'): void {
+    this.eventQueue.push({ type, content, timestamp: Date.now() });
+  }
+
+  /**
+   * Pump the kernel: process all queued events + one full light-cone tick.
+   * For training: called once per world-tick, processes everything in queue.
+   * Much faster than think() because no stabilization loop per event.
+   */
+  async pump(): Promise<void> {
+    if (this.processing) return;
+    this.processing = true;
+
+    try {
+      const schedule = this.lightCone.fastTick();
+      this.energy.tick();
+
+      // Process ALL queued events in one batch (no stabilization between them)
+      const events: KernelEvent[] = [];
+      while (this.eventQueue.length > 0) {
+        events.push(this.eventQueue.shift()!);
+      }
+
+      if (events.length > 0) {
+        const cycle = this.traceGraph.tick();
+
+        // Ingest all events through raw stream (fast: modality + trace creation only)
+        const allSignals: Signal[] = [];
+        for (const event of events) {
+          const rawEvent = RawStreamService.stringToEvent(event.content, event.type);
+          const signals = await this.rawStream.ingest(rawEvent, cycle);
+          allSignals.push(...signals);
+        }
+
+        // Run fast-path agents only (no LLM)
+        const context = await this.buildContext(cycle, this.allCommits.slice(-5), this.phenomenalState, false);
+        context.llm_budget = { remaining: 0, used: 0, total: 0 }; // no LLM during pump
+
+        // Only sensory + predictive + affective (fast agents, no LLM)
+        const fastAgents = this.agents.filter(a => a.rank <= 3);
+        for (const agent of fastAgents) {
+          try {
+            const signals = await agent.process(events.map(e => e.content).join('\n'), context);
+            allSignals.push(...signals.filter(s => s.confidence >= 0.1).map(s => ({ ...s, cycle })));
+          } catch {}
+        }
+
+        // Single commit cycle for all events
+        if (allSignals.length > 0) {
+          const commitResult = await this.commitKernel.processCycle(allSignals);
+          if (commitResult.isOk() && commitResult.value.length > 0) {
+            this.allCommits.push(...commitResult.value);
+
+            // Backprop prediction errors
+            for (const commit of commitResult.value) {
+              if (commit.prediction_error > 0.15) {
+                for (const traceId of commit.changes.traces_activated.slice(0, 3)) {
+                  await this.traceGraph.backpropagatePredictionError(traceId, commit.prediction_error);
+                }
+              }
+            }
+
+            // Affect: process commits + apply config deltas
+            const timeSense = await this.commitKernel.computeTimeSense();
+            const { configDeltas } = this.affect.processCommits(commitResult.value, timeSense);
+            for (const [key, delta] of configDeltas) {
+              this.config.adjust(key, delta, 'affect:pump');
+            }
+          }
+        }
+      }
+
+      // Light-cone layered processing (same as normal tick)
+      if (schedule.shouldMedium) {
+        this.lightCone.markMedium();
+        const hotTraces = this.lightCone.getHotTraces(10);
+        const affectSnap = this.affect.getSnapshot();
+        const spreadBoost = affectSnap.hormones.norepinephrine * 0.03;
+        for (const ht of hotTraces) {
+          if (Math.abs(ht.emotionalCharge) > 0.1) ht.weight = Math.min(1, ht.weight + 0.01);
+          if (spreadBoost > 0.005) ht.weight = Math.min(1, ht.weight + spreadBoost);
+        }
+      }
+
+      if (schedule.shouldSlow) {
+        this.lightCone.markSlow();
+        const { writes, edgeUpdates } = this.lightCone.flushWrites();
+        for (const w of writes) {
+          if (w.sql) await this.traceGraph['db'].execute(w.sql, w.vars);
+        }
+        for (const eu of edgeUpdates) {
+          await this.traceGraph['db'].execute(
+            `UPDATE activates SET weight = math::clamp(weight + $dw, 0.01, 1.0) WHERE in.trace_id = $from AND out.trace_id = $to`,
+            { dw: eu.deltaWeight, from: eu.from, to: eu.to },
+          );
+        }
+        await this.tryAct(this.traceGraph.getCycle());
+        await this.traceGraph.forget();
+      }
+
+      if (schedule.shouldGlobal) {
+        this.lightCone.markGlobal();
+        await this.conceptSpace?.nameDimensions();
+        await this.substrateBridge.syncSubstrateToTraces(this.traceGraph.getCycle());
+      }
+
+      if (schedule.shouldDeep) {
+        this.lightCone.markDeep();
+        await this.narrative.compact();
+        await this.substrateBridge.applyCommitsToWorldModel(this.allCommits.slice(-50));
+      }
+    } finally {
+      this.processing = false;
+    }
+  }
+
+  getEventQueueSize(): number { return this.eventQueue.length; }
+
+  /**
    * Connect kernel to a world. The kernel ACTS through this bridge.
    * The world EXECUTES actions and returns consequences.
    */

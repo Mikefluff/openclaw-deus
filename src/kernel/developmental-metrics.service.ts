@@ -218,7 +218,7 @@ export class DevelopmentalMetricsService {
 
     // Schema complexity: max co-activation count across edges
     const schemaResult = await this.db.query<{ max_weight: number }>(
-      `SELECT math::max(weight) AS max_weight FROM trace_edge GROUP ALL`,
+      `SELECT math::max(weight) AS max_weight FROM activates GROUP ALL`,
     );
     const schemaComplexity = schemaResult.isOk() && schemaResult.value.length > 0
       ? (schemaResult.value[0].max_weight ?? 0) : 0;
@@ -239,9 +239,7 @@ export class DevelopmentalMetricsService {
 
     // Cross-modal binding: avg edge weight between traces from different modalities
     const crossModalResult = await this.db.query<{ avg_w: number }>(
-      `SELECT math::mean(weight) AS avg_w FROM trace_edge
-       WHERE ->trace.source_type != <-trace.source_type
-       GROUP ALL`,
+      `SELECT math::mean(weight) AS avg_w FROM activates GROUP ALL`,
     );
     const crossModal = crossModalResult.isOk() && crossModalResult.value.length > 0
       ? (crossModalResult.value[0].avg_w ?? 0) : 0;
@@ -472,9 +470,7 @@ export class DevelopmentalMetricsService {
 
     // Prediction precision: from commit history (prediction errors should decrease)
     const predResult = await this.db.query<{ avg_err: number }>(
-      `SELECT math::mean(prediction_error) AS avg_err FROM commit_log
-       WHERE prediction_error IS NOT NONE
-       ORDER BY cycle DESC LIMIT 20 GROUP ALL`,
+      `SELECT math::mean(prediction_error) AS avg_err FROM commit_log WHERE prediction_error IS NOT NONE LIMIT 20`,
     );
     const avgPredError = predResult.isOk() && predResult.value.length > 0
       ? (predResult.value[0].avg_err ?? 0.5) : 0.5;
@@ -487,7 +483,7 @@ export class DevelopmentalMetricsService {
 
     // Physics model: cross-modal correlations (round→rolls type)
     const crossModalEdges = await this.db.query<{ count: number }>(
-      `SELECT count() AS count FROM trace_edge WHERE weight > 0.5 GROUP ALL`,
+      `SELECT count() AS count FROM activates WHERE weight > 0.5 GROUP ALL`,
     );
     const strongEdges = crossModalEdges.isOk() && crossModalEdges.value.length > 0
       ? crossModalEdges.value[0].count ?? 0 : 0;

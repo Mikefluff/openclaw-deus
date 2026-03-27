@@ -14,7 +14,6 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from '../app.module';
-import { CognitivePipelineService } from '../cognitive/cognitive-pipeline.service';
 import { KernelLoopService } from '../kernel/kernel-loop.service';
 import { TraceGraphService } from '../kernel/memory/trace-graph.service';
 import { CommitKernelService } from '../kernel/commit/commit-kernel.service';
@@ -80,7 +79,6 @@ class EvolvingWorldBridge implements WorldBridge {
 
 async function main() {
   const app = await NestFactory.createApplicationContext(AppModule, { logger: ['warn'] });
-  const pipeline = app.get(CognitivePipelineService);
   const kernelLoop = app.get(KernelLoopService);
   const traceGraph = app.get(TraceGraphService);
   const commitKernel = app.get(CommitKernelService);
@@ -100,7 +98,7 @@ async function main() {
   console.log(`\n${'═'.repeat(60)}`);
   console.log(`  CHILDHOOD: ${TOTAL_TICKS} world ticks (evolving world)`);
   console.log(`  Starting: ${world.getState().location} | Level ${world.getLevel()}`);
-  console.log(`  Kernel controls its own life.`);
+  console.log(`  Fast path: pushEvent → pump (no LLM, no blocking)`);
   console.log(`${'═'.repeat(60)}\n`);
 
   let totalMs = 0;
@@ -112,14 +110,18 @@ async function main() {
     // === WORLD TICK: generate ambient events ===
     const events = world.tick();
 
-    // === FEED events to kernel ===
+    // === PUSH events to kernel queue (non-blocking) ===
     for (const event of events) {
-      await pipeline.processMessage(event.content);
+      kernelLoop.pushEvent(event.content);
     }
+
+    // === PUMP: kernel processes all queued events + light-cone tick ===
+    await kernelLoop.pump();
 
     // === TRACK SLEEP ===
     if (energy.needsSleep()) {
       devMetrics.recordSleep(tick);
+      energy.sleep();
     }
 
     totalMs += Date.now() - start;
