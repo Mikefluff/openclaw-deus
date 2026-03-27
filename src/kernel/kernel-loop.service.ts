@@ -13,6 +13,7 @@ import { SubstrateBridgeService } from './substrate-bridge.service';
 import { ActiveCognitionService } from './cognition/active-cognition.service';
 import { NarrativeService } from './narrative/narrative.service';
 import { RawStreamService } from './sensory/raw-stream.service';
+import { AgentAction, WorldBridge, ActionConsequence } from './agency.types';
 import { EnergyService } from './energy.service';
 
 /**
@@ -78,6 +79,9 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
   // Learning mode: proactive domain study during idle
   private learningDomain: string | null = null;
   private learningCycleCount = 0;
+
+  // World bridge: kernel acts on the world through this
+  private worldBridge: WorldBridge | null = null;
 
   // Promise resolvers for external callers waiting on results
   private pendingResolvers: Array<{ resolve: (output: KernelOutput) => void; eventId: number }> = [];
@@ -147,6 +151,15 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
         }
       }, thinkTimeout);
     });
+  }
+
+  /**
+   * Connect kernel to a world. The kernel ACTS through this bridge.
+   * The world EXECUTES actions and returns consequences.
+   */
+  setWorld(bridge: WorldBridge): void {
+    this.worldBridge = bridge;
+    this.logger.log('World bridge connected — kernel can now ACT');
   }
 
   /**
@@ -236,8 +249,15 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
         // EXTERNAL EVENT: interrupt, process fully
         await this.processExternalEvent(event, cycle);
       } else {
-        // NO EVENT: self-reflect (idle thinking)
-        await this.idleReflection(cycle);
+        // NO EVENT: agency + reflection
+
+        // 1. AGENCY: should I ACT on the world?
+        const acted = await this.tryAct(cycle);
+
+        // 2. If didn't act (or after acting): reflect
+        if (!acted) {
+          await this.idleReflection(cycle);
+        }
       }
     } finally {
       this.processing = false;
@@ -394,6 +414,115 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
     const output = await this.buildOutput(cycleCommitsAll);
     const resolver = this.pendingResolvers.shift();
     if (resolver) resolver.resolve(output);
+  }
+
+  // ═══════════════════════════════════════════
+  // AGENCY: kernel decides to ACT on the world
+  // ═══════════════════════════════════════════
+
+  /**
+   * Try to act on the world. The kernel DECIDES what to do
+   * based on desire gradient, curiosity, and available energy.
+   *
+   * Returns true if an action was taken.
+   */
+  private async tryAct(cycle: number): Promise<boolean> {
+    if (!this.worldBridge) return false;
+    if (!this.energy.canAffordExploration()) return false;
+
+    const affectState = this.affect.getSnapshot();
+
+    // Don't act if resting or defensive
+    if (affectState.mode === 'resting' || affectState.mode === 'defensive') return false;
+
+    // Decide action from desire gradient + curiosity
+    const action = await this.decideAction(affectState);
+    if (!action) return false;
+
+    // Spend energy
+    if (!this.energy.spend(action.energy_cost, `action:${action.type}:${action.target}`)) return false;
+
+    // EXECUTE action in the world
+    this.logger.log(`Agency: ${action.type} "${action.target}" (${action.reason})`);
+    const consequences = await this.worldBridge.executeAction(action);
+
+    // Process consequences through the kernel (like any other event)
+    for (const consequence of consequences) {
+      const rawEvent = RawStreamService.stringToEvent(consequence.content, 'world_consequence');
+      const signals = await this.rawStream.ingest(rawEvent, cycle);
+      if (signals.length > 0) {
+        await this.commitKernel.processCycle(signals);
+      }
+
+      // Emotional consequence → affect
+      if (consequence.emotional_valence > 0.1) this.affect.reward(consequence.emotional_valence);
+      if (consequence.emotional_valence < -0.1) this.affect.inflictPain('action_consequence', Math.abs(consequence.emotional_valence));
+
+      // Energy from consequence
+      if (consequence.emotional_valence > 0) this.energy.reward(consequence.emotional_valence);
+      if (consequence.emotional_valence < 0) this.energy.pain(Math.abs(consequence.emotional_valence));
+    }
+
+    return true;
+  }
+
+  /**
+   * Decide what action to take. Driven by:
+   * - Curiosity (high novelty targets)
+   * - Desire gradient (toward reward, away from pain)
+   * - Available targets in the world
+   *
+   * Returns null if nothing interesting to do.
+   */
+  private async decideAction(affectState: ReturnType<AffectiveStateService['getSnapshot']>): Promise<AgentAction | null> {
+    if (!this.worldBridge) return null;
+
+    const targets = this.worldBridge.getAvailableTargets();
+    const actions = this.worldBridge.getAvailableActions();
+    if (targets.length === 0 || actions.length === 0) return null;
+
+    // Pick target: prefer novel (not recently interacted with)
+    const activeTraces = await this.traceGraph.getActiveTraces(10);
+    const knownTargets = new Set(
+      activeTraces.isOk()
+        ? activeTraces.value.map(t => t.content.toLowerCase()).flatMap(c => targets.filter(t => c.includes(t.toLowerCase())))
+        : [],
+    );
+
+    // Prefer unknown targets (curiosity)
+    let target: string;
+    const unknownTargets = targets.filter(t => !knownTargets.has(t));
+    if (unknownTargets.length > 0 && affectState.mode === 'explore') {
+      target = unknownTargets[Math.floor(Math.random() * unknownTargets.length)];
+    } else {
+      target = targets[Math.floor(Math.random() * targets.length)];
+    }
+
+    // Pick action: explore mode → varied actions, exploit → repeat successful
+    const action = actions[Math.floor(Math.random() * actions.length)];
+
+    // Don't act too often (1 in 3 chance to skip — simulate child's natural pace)
+    if (Math.random() > 0.3) return null;
+
+    return {
+      type: 'manipulate',
+      target,
+      method: action,
+      reason: unknownTargets.includes(target) ? `curious about ${target}` : `exploring ${target}`,
+      energy_cost: this.energy.cost.exploration_action,
+    };
+  }
+
+  /**
+   * Request help from LLM (the kernel DECIDES it needs adult input).
+   * NOT injected from outside — internal decision.
+   */
+  private shouldRequestHelp(): boolean {
+    const affect = this.affect.getSnapshot();
+    return affect.pain.intensity > 0.4
+      && affect.arousal > 0.5
+      && this.idleCyclesWithoutProgress > 3
+      && this.energy.canAffordLlm();
   }
 
   /**
