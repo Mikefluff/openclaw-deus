@@ -486,6 +486,173 @@ export class ConceptSpaceService {
   }
 
   // ═══════════════════════════════════════════
+  // CLUSTER MATERIALIZATION (persist to graph DB)
+  // ═══════════════════════════════════════════
+
+  /**
+   * Materialize clusters as graph entities in SurrealDB.
+   * Clusters become first-class nodes with soft membership edges.
+   *
+   * Called on GLOBAL cadence. Creates/updates:
+   * - cluster records (centroid, radius, member_count, confidence)
+   * - belongs_to edges (trace → cluster, with membership_strength)
+   * - contains edges (cluster → cluster, hierarchy)
+   * - Links [ABSTRACT] traces to their cluster
+   */
+  async materializeClusters(cycle: number): Promise<{ created: number; updated: number }> {
+    const clusters = await this.findClusters(2, 1.5);
+    let created = 0;
+    let updated = 0;
+
+    // Load existing clusters
+    const existing = await this.db.query<{ cluster_id: string; centroid: number[] }>(
+      `SELECT cluster_id, centroid FROM cluster WHERE archived = false`,
+    );
+    const existingMap = new Map<string, number[]>();
+    if (existing.isOk()) {
+      for (const c of existing.value) existingMap.set(c.cluster_id, c.centroid);
+    }
+
+    for (let i = 0; i < clusters.length; i++) {
+      const cluster = clusters[i];
+      const clusterId = `CL_${i}_${cycle}`;
+
+      // Check if this cluster matches an existing one (centroid close enough)
+      let matchedId: string | null = null;
+      for (const [eid, eCentroid] of existingMap) {
+        if (this.distance(cluster.centroid, eCentroid) < cluster.radius * 0.5) {
+          matchedId = eid;
+          break;
+        }
+      }
+
+      if (matchedId) {
+        // Update existing cluster
+        await this.db.execute(
+          `UPDATE cluster SET centroid = $centroid, radius = $radius, member_count = $count, last_updated_cycle = $cycle, confidence = $conf WHERE cluster_id = $cid`,
+          { centroid: cluster.centroid, radius: cluster.radius, count: cluster.traces.length, cycle, conf: Math.min(1, cluster.traces.length / 10), cid: matchedId },
+        );
+        // Update membership edges
+        for (const traceId of cluster.traces) {
+          await this.db.execute(
+            `DELETE belongs_to WHERE in.trace_id = $tid AND out.cluster_id = $cid;
+             RELATE (SELECT id FROM trace WHERE trace_id = $tid LIMIT 1)->belongs_to->(SELECT id FROM cluster WHERE cluster_id = $cid LIMIT 1) SET membership_strength = 1.0, since_cycle = $cycle`,
+            { tid: traceId, cid: matchedId, cycle },
+          );
+        }
+        updated++;
+      } else {
+        // Create new cluster
+        await this.db.create('cluster', {
+          cluster_id: clusterId,
+          centroid: cluster.centroid,
+          radius: cluster.radius,
+          member_count: cluster.traces.length,
+          confidence: Math.min(1, cluster.traces.length / 10),
+          born_at_cycle: cycle,
+          last_updated_cycle: cycle,
+          archived: false,
+        } as Record<string, unknown>);
+
+        // Create membership edges
+        for (const traceId of cluster.traces) {
+          await this.db.execute(
+            `RELATE (SELECT id FROM trace WHERE trace_id = $tid LIMIT 1)->belongs_to->(SELECT id FROM cluster WHERE cluster_id = $cid LIMIT 1) SET membership_strength = 1.0, since_cycle = $cycle`,
+            { tid: traceId, cid: clusterId, cycle },
+          );
+        }
+        created++;
+      }
+    }
+
+    // Detect hierarchy: if cluster A centroid is inside cluster B radius
+    if (clusters.length >= 2) {
+      const allClusters = await this.db.query<{ cluster_id: string; centroid: number[]; radius: number }>(
+        `SELECT cluster_id, centroid, radius FROM cluster WHERE archived = false`,
+      );
+      if (allClusters.isOk()) {
+        for (const a of allClusters.value) {
+          for (const b of allClusters.value) {
+            if (a.cluster_id === b.cluster_id) continue;
+            if (a.radius < b.radius && this.distance(a.centroid, b.centroid) < b.radius) {
+              // A is inside B → A is a sub-cluster of B
+              await this.db.execute(
+                `RELATE (SELECT id FROM cluster WHERE cluster_id = $child LIMIT 1)->contains->(SELECT id FROM cluster WHERE cluster_id = $parent LIMIT 1) SET hierarchy_level = 1`,
+                { child: a.cluster_id, parent: b.cluster_id },
+              );
+            }
+          }
+        }
+      }
+    }
+
+    if (created > 0 || updated > 0) {
+      this.logger.log(`Clusters materialized: ${created} new, ${updated} updated (${clusters.length} total)`);
+    }
+
+    return { created, updated };
+  }
+
+  /**
+   * Get cluster for a trace (strongest membership).
+   */
+  async getTraceCluster(traceId: string): Promise<string | null> {
+    const result = await this.db.query<{ cluster_id: string }>(
+      `SELECT out.cluster_id AS cluster_id FROM belongs_to WHERE in.trace_id = $tid ORDER BY membership_strength DESC LIMIT 1`,
+      { tid: traceId },
+    );
+    return result.isOk() && result.value.length > 0 ? result.value[0].cluster_id : null;
+  }
+
+  /**
+   * Record a cluster-level trajectory: action at cluster A → cluster B.
+   */
+  async recordClusterTrajectory(fromCluster: string, toCluster: string, action: string): Promise<void> {
+    if (!fromCluster || !toCluster || fromCluster === toCluster) return;
+
+    // Upsert: increment traversal_count if exists, create if not
+    const existing = await this.db.query<{ id: string }>(
+      `SELECT id FROM cluster_trajectory WHERE from_cluster = $from AND to_cluster = $to AND action = $action LIMIT 1`,
+      { from: fromCluster, to: toCluster, action },
+    );
+
+    if (existing.isOk() && existing.value.length > 0) {
+      await this.db.execute(
+        `UPDATE cluster_trajectory SET traversal_count += 1, confidence = math::clamp(confidence + 0.05, 0, 1) WHERE from_cluster = $from AND to_cluster = $to AND action = $action`,
+        { from: fromCluster, to: toCluster, action },
+      );
+    } else {
+      await this.db.create('cluster_trajectory', {
+        from_cluster: fromCluster, to_cluster: toCluster,
+        action, confidence: 0.5, traversal_count: 1,
+      } as Record<string, unknown>);
+    }
+  }
+
+  /**
+   * Predict outcome cluster given current cluster + action.
+   */
+  async predictCluster(currentCluster: string, action: string): Promise<{ cluster_id: string; confidence: number } | null> {
+    const result = await this.db.query<{ to_cluster: string; confidence: number }>(
+      `SELECT to_cluster, confidence FROM cluster_trajectory WHERE from_cluster = $from AND action = $action ORDER BY confidence DESC LIMIT 1`,
+      { from: currentCluster, action },
+    );
+    return result.isOk() && result.value.length > 0
+      ? { cluster_id: result.value[0].to_cluster, confidence: result.value[0].confidence }
+      : null;
+  }
+
+  /**
+   * Get all active clusters with member counts.
+   */
+  async getActiveClusters(): Promise<Array<{ cluster_id: string; centroid: number[]; member_count: number; confidence: number }>> {
+    const result = await this.db.query<any>(
+      `SELECT cluster_id, centroid, member_count, confidence FROM cluster WHERE archived = false ORDER BY member_count DESC LIMIT 20`,
+    );
+    return result.isOk() ? result.value : [];
+  }
+
+  // ═══════════════════════════════════════════
   // UTILITIES
   // ═══════════════════════════════════════════
 

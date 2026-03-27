@@ -365,8 +365,10 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
 
       if (schedule.shouldGlobal) {
         this.lightCone.markGlobal();
+        const globalCycle = this.traceGraph.getCycle();
         await this.conceptSpace?.nameDimensions();
-        await this.substrateBridge.syncSubstrateToTraces(this.traceGraph.getCycle());
+        await this.conceptSpace?.materializeClusters(globalCycle);
+        await this.substrateBridge.syncSubstrateToTraces(globalCycle);
       }
 
       if (schedule.shouldDeep) {
@@ -848,6 +850,17 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
             await this.traceGraph.backpropagatePredictionError(traceId, spatialError * 0.5);
           }
         }
+      }
+    }
+
+    // CLUSTER-LEVEL TRAJECTORY: abstract action→outcome at cluster level
+    if (this.lastActionPrediction.traceIds.length > 0) {
+      const preCluster = await this.conceptSpace.getTraceCluster(this.lastActionPrediction.traceIds[0]);
+      const postTraces = await this.findTracesForTarget(action.target || '');
+      const postCluster = postTraces.length > 0
+        ? await this.conceptSpace.getTraceCluster(postTraces[0].trace_id) : null;
+      if (preCluster && postCluster) {
+        await this.conceptSpace.recordClusterTrajectory(preCluster, postCluster, action.method || 'unknown');
       }
     }
 

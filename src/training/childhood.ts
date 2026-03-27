@@ -30,24 +30,41 @@ import { AgentAction, ActionConsequence, WorldBridge } from '../kernel/agency.ty
 const TOTAL_TICKS = parseInt(process.argv[2] || '500', 10);
 const REPORT_INTERVAL = Math.max(10, Math.floor(TOTAL_TICKS / 20));
 const DEV_METRICS_INTERVAL = Math.max(25, Math.floor(TOTAL_TICKS / 10));
-const CONSULTATION_INTERVAL = 100; // LLM "adult" checks in every 100 ticks
 
 /**
- * WorldBridge: connects kernel's agency to the evolving world.
- * Kernel ACTS → bridge EXECUTES → world RESPONDS.
+ * CorrectiveWorldBridge: World IS the teacher.
+ *
+ * No separate "adult". The world provides learning signals through:
+ * 1. Natural consequences (push ball → it rolls) with valence
+ * 2. Amplified consequences — wrong predictions get stronger error signal
+ * 3. Reward shaping — correct cluster structure → ambient reward
+ * 4. Adversarial curriculum — present objects that stress weak clusters
+ *
+ * The child learns from EXPERIENCE, not from being told.
  */
-class EvolvingWorldBridge implements WorldBridge {
+class CorrectiveWorldBridge implements WorldBridge {
+  private lastPredictionWasWrong = false;
+  private adversarialObjects: string[] = [];
+
   constructor(
     private readonly world: EvolvingWorld,
     private readonly devMetrics: DevelopmentalMetricsService,
+    private readonly affect: AffectiveStateService,
+    private readonly conceptSpace: ConceptSpaceService,
   ) {}
 
   async executeAction(action: AgentAction): Promise<ActionConsequence[]> {
     const consequences = this.world.childAction(action.method || 'touch', action.target);
-    const valence = this.inferValence(consequences.map(c => c.content).join(' '));
+    let valence = this.inferValence(consequences.map(c => c.content).join(' '));
 
-    // Record action for developmental metrics
-    const isExploration = !action.target || Math.random() < 0.5; // heuristic
+    // AMPLIFIED CONSEQUENCES: if prediction was wrong, world response feels stronger
+    // Like touching something hot — the pain is proportional to how wrong you were
+    if (this.lastPredictionWasWrong) {
+      valence *= 1.5; // amplify both positive and negative
+      this.lastPredictionWasWrong = false;
+    }
+
+    const isExploration = !action.target || Math.random() < 0.5;
     this.devMetrics.recordAction(
       action.method || 'touch',
       action.target || 'unknown',
@@ -55,7 +72,6 @@ class EvolvingWorldBridge implements WorldBridge {
       isExploration,
     );
 
-    // Track pain
     if (valence < -0.1) {
       this.devMetrics.recordPainOnset(this.world.getState().tick);
     }
@@ -67,8 +83,89 @@ class EvolvingWorldBridge implements WorldBridge {
     }));
   }
 
-  getAvailableTargets(): string[] { return this.world.getObjectNames(); }
+  getAvailableTargets(): string[] {
+    const natural = this.world.getObjectNames();
+    // ADVERSARIAL CURRICULUM: inject objects that stress weak clusters
+    if (this.adversarialObjects.length > 0) {
+      // Prioritize adversarial objects (put them first)
+      const combined = [...this.adversarialObjects.filter(o => natural.includes(o)), ...natural];
+      return [...new Set(combined)];
+    }
+    return natural;
+  }
+
   getAvailableActions(): string[] { return this.world.getAvailableActions(); }
+
+  /** Signal from kernel that prediction was wrong (amplify next consequence). */
+  markPredictionWrong(): void { this.lastPredictionWasWrong = true; }
+
+  /**
+   * REWARD SHAPING: called periodically from training loop.
+   * Compares child's cluster structure vs ground truth categories.
+   * Correct clusters → reward. Wrong clusters → no penalty (just no reward).
+   */
+  async shapeReward(groundTruth: Array<{ name: string; properties: Record<string, string> }>): Promise<void> {
+    const clusters = await this.conceptSpace.getActiveClusters();
+    if (clusters.length === 0) return;
+
+    // Check if objects with shared properties end up in same clusters
+    // Group ground truth by shape (the most distinctive property)
+    const shapeGroups = new Map<string, string[]>();
+    for (const obj of groundTruth) {
+      const shape = obj.properties.shape || 'unknown';
+      if (!shapeGroups.has(shape)) shapeGroups.set(shape, []);
+      shapeGroups.get(shape)!.push(obj.name);
+    }
+
+    // For each shape group, check if child has clustered them together
+    let correctClusters = 0;
+    let totalChecks = 0;
+    for (const [, names] of shapeGroups) {
+      if (names.length < 2) continue;
+      totalChecks++;
+
+      // Get clusters for these objects
+      const objectClusters = new Set<string>();
+      for (const name of names) {
+        const cluster = await this.conceptSpace.getTraceCluster(name);
+        if (cluster) objectClusters.add(cluster);
+      }
+      // If all in same cluster → correct
+      if (objectClusters.size === 1) correctClusters++;
+    }
+
+    if (totalChecks > 0) {
+      const accuracy = correctClusters / totalChecks;
+      if (accuracy > 0.3) {
+        this.affect.reward(accuracy * 0.15); // subtle reward for correct clustering
+      }
+    }
+  }
+
+  /**
+   * ADVERSARIAL CURRICULUM: find weak clusters and present challenging objects.
+   * Called periodically. Sets objects for next ticks.
+   */
+  async planAdversarialExperiences(): Promise<void> {
+    const clusters = await this.conceptSpace.getActiveClusters();
+    if (clusters.length < 2) return;
+
+    // Find lowest-confidence cluster → its members need more experience
+    const weakest = clusters.reduce((a, b) => a.confidence < b.confidence ? a : b);
+    // Get members of weakest cluster
+    const members = await this.conceptSpace['db'].query<{ trace_id: string; content: string }>(
+      `SELECT in.trace_id AS trace_id, in.content AS content FROM belongs_to WHERE out.cluster_id = $cid LIMIT 5`,
+      { cid: weakest.cluster_id },
+    );
+
+    if (members.isOk() && members.value.length > 0) {
+      // Extract object names from trace content
+      const objects = this.world.getObjectNames();
+      this.adversarialObjects = members.value
+        .map(m => objects.find(o => m.content.toLowerCase().includes(o.toLowerCase())))
+        .filter((o): o is string => !!o);
+    }
+  }
 
   private inferValence(content: string): number {
     const lower = content.toLowerCase();
@@ -76,119 +173,6 @@ class EvolvingWorldBridge implements WorldBridge {
     if (lower.includes('молодец') || lower.includes('умница') || lower.includes('хорошо') || lower.includes('красив')) return 0.3;
     if (lower.includes('покатил') || lower.includes('плавает') || lower.includes('звенит')) return 0.1;
     return 0;
-  }
-}
-
-/**
- * Adult consultation: LLM reviews the child's world model and gives corrections.
- *
- * Like a parent sitting down with the child:
- * - "What do you know about the objects around you?"
- * - "Actually, мячик is round AND red, you missed the color"
- * - "When you push round things, they roll — did you notice that?"
- *
- * Corrective feedback is fed back as high-confidence events.
- * Uses Haiku (cheapest model) — this is a simple check-in, not deep reasoning.
- */
-async function adultConsultation(
-  tick: number,
-  world: EvolvingWorld,
-  db: SurrealService,
-  conceptSpace: ConceptSpaceService,
-  affect: AffectiveStateService,
-  devMetrics: DevelopmentalMetricsService,
-  llm: LlmClientService,
-  kernelLoop: KernelLoopService,
-): Promise<void> {
-  // Build summary of what child knows
-  const groundTruth = world.getGroundTruth();
-  const snapshot = await conceptSpace.snapshot();
-  const affectSnap = affect.getSnapshot();
-  const latestDev = devMetrics.getLatest();
-
-  // Gather child's beliefs about objects
-  const beliefs: string[] = [];
-  const gaps: string[] = [];
-  for (const obj of groundTruth) {
-    const traces = await db.query<{ content: string }>(
-      `SELECT content FROM trace WHERE content CONTAINS $name AND archived = false ORDER BY weight DESC LIMIT 3`,
-      { name: obj.name },
-    );
-    if (traces.isOk() && traces.value.length > 0) {
-      const known = traces.value.map(t => t.content).join('; ');
-      beliefs.push(`${obj.name}: ребёнок знает: ${known}`);
-      // Check what's missing
-      const knownText = known.toLowerCase();
-      const missing = Object.entries(obj.properties)
-        .filter(([, v]) => !knownText.includes(v.toLowerCase()))
-        .map(([k, v]) => `${k}=${v}`);
-      if (missing.length > 0) {
-        gaps.push(`${obj.name}: не знает: ${missing.join(', ')}`);
-      }
-    } else {
-      gaps.push(`${obj.name}: вообще не знает этот предмет`);
-    }
-  }
-
-  const prompt = [
-    `Ты — мама/учитель ребёнка. Ребёнку ${tick} тиков. Он изучает мир.`,
-    `Локация: ${world.getState().location}. Уровень мира: ${world.getLevel()}.`,
-    ``,
-    `Что ребёнок знает:`,
-    ...beliefs.slice(0, 10),
-    ``,
-    `Что ребёнок НЕ знает или путает:`,
-    ...gaps.slice(0, 10),
-    ``,
-    `Состояние: ${affectSnap.mode}, valence=${affectSnap.valence}, dimensions=${snapshot.dimension_count}`,
-    latestDev ? `Стадия: ${latestDev.stage}, health=${latestDev.overall_health}` : '',
-    ``,
-    `Дай 3-5 коротких корректирующих фраз на русском, как мама говорит ребёнку.`,
-    `Исправь ошибки, укажи на то что он пропустил, похвали за то что знает.`,
-    `Каждая фраза — одно предложение. Просто и ласково.`,
-  ].join('\n');
-
-  // Briefly unpause LLM for one consultation
-  llm.resume();
-  try {
-    const result = await llm.call<{ phrases: string[] }>({
-      operationType: 'self_assessment' as any,
-      priority: 'low' as any,
-      maxTokens: 300,
-      systemPrompt: 'Ты мама маленького ребёнка. Говори просто и ласково на русском. Отвечай JSON с полем phrases (массив строк).',
-      userMessage: prompt,
-      tools: [{
-        name: 'feedback',
-        description: 'Corrective feedback phrases',
-        input_schema: {
-          type: 'object' as const,
-          properties: {
-            phrases: { type: 'array' as const, items: { type: 'string' as const } },
-          },
-          required: ['phrases'],
-        },
-      }],
-      forceTool: 'feedback',
-    });
-
-    if (result.isOk() && result.value.data) {
-      const phrases = (result.value.data as any).phrases || [];
-      console.log(`\n  👩 МАМА (tick ${tick}):`);
-      for (const phrase of phrases.slice(0, 5)) {
-        console.log(`    "${phrase}"`);
-        // Feed correction back as high-value event
-        kernelLoop.pushEvent(`Мама говорит: "${phrase}"`, 'message');
-      }
-      // Process the mama's feedback through one pump cycle
-      await kernelLoop.pump();
-      // Reward for receiving adult guidance
-      affect.reward(0.2);
-      console.log(`    [${result.value.usage.input_tokens}+${result.value.usage.output_tokens} tokens]\n`);
-    }
-  } catch (e) {
-    console.log(`  [Consultation failed: ${(e as Error).message?.slice(0, 60)}]`);
-  } finally {
-    llm.pause(); // Back to training mode
   }
 }
 
@@ -210,7 +194,7 @@ async function main() {
   llm.pause();
 
   const world = new EvolvingWorld();
-  const bridge = new EvolvingWorldBridge(world, devMetrics);
+  const bridge = new CorrectiveWorldBridge(world, devMetrics, affect, conceptSpace);
 
   // Connect kernel to world — kernel can now ACT
   kernelLoop.setWorld(bridge);
@@ -244,13 +228,6 @@ async function main() {
       energy.sleep();
     }
 
-    // === ADULT CONSULTATION (rare LLM — corrective feedback) ===
-    // Like a parent checking in: "what do you know? what are you confused about?"
-    // Haiku reviews the child's world model and gives corrections.
-    if ((tick + 1) % CONSULTATION_INTERVAL === 0 && tick > 0) {
-      await adultConsultation(tick, world, db, conceptSpace, affect, devMetrics, llm, kernelLoop);
-    }
-
     totalMs += Date.now() - start;
 
     // === DEVELOPMENTAL METRICS (periodic) ===
@@ -272,10 +249,19 @@ async function main() {
       const accuracy = total > 0 ? correct / total : 0;
       devMetrics.recordAccuracy(tick, accuracy);
 
-      // Reward for accurate world model — child feels good when understanding improves
+      // REWARD SHAPING: reward from accurate world model (natural consequence)
       if (accuracy > 0.5) {
-        affect.reward(accuracy * 0.3);
+        affect.reward(accuracy * 0.2);
       }
+
+      // CLUSTER REWARD SHAPING: correct cluster structure → ambient reward
+      await bridge.shapeReward(groundTruth);
+
+      // ADVERSARIAL CURRICULUM: plan challenging experiences for next ticks
+      await bridge.planAdversarialExperiences();
+
+      // CLUSTER MATERIALIZATION: persist clusters as graph entities
+      await conceptSpace.materializeClusters(tick);
 
       // Take snapshot
       const snap = await devMetrics.snapshot(tick);
