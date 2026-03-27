@@ -222,6 +222,28 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
           } catch {}
         }
 
+        // Strengthen edges between co-occurring traces (Hebbian: fire together → wire together)
+        // This builds co_activation_count needed for schema detection
+        if (allSignals.length >= 2) {
+          const targetSets = allSignals.filter(s => s.targets.length > 0).map(s => s.targets);
+          for (let i = 0; i < Math.min(targetSets.length, 5); i++) {
+            for (let j = i + 1; j < Math.min(targetSets.length, 5); j++) {
+              for (const tA of targetSets[i].slice(0, 2)) {
+                for (const tB of targetSets[j].slice(0, 2)) {
+                  if (tA !== tB) {
+                    this.lightCone.queueWrite({
+                      table: 'activates', operation: 'execute',
+                      data: {},
+                      sql: `UPDATE activates SET weight = math::clamp(weight + 0.05, 0.01, 1.0), co_activation_count += 1 WHERE in.trace_id = $from AND out.trace_id = $to`,
+                      vars: { from: tA, to: tB },
+                    });
+                  }
+                }
+              }
+            }
+          }
+        }
+
         // FIX 1: Boost signal confidence for training — child experiences directly,
         // no need for multi-agent convergence on every mundane event.
         // In real operation think() runs stabilization; in pump() we compensate
@@ -256,21 +278,18 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
             for (const [key, delta] of configDeltas) {
               this.config.adjust(key, delta, 'affect:pump');
             }
-          }
-        }
 
-        // FIX 4: always feed affect even without commits (novelty from events)
-        if (allSignals.length > 0 && this.allCommits.length === 0) {
-          // Synthesize a minimal commit from strongest signal to kickstart affect
-          const strongest = allSignals.reduce((a, b) => a.confidence > b.confidence ? a : b);
-          this.affect.processCommits([{
-            commit_id: 'synthetic', cycle, type: 'perceptual',
-            source_agents: [strongest.agent_id], convergence_score: 0.3,
-            is_escalation: false,
-            changes: { traces_activated: strongest.targets, traces_suppressed: [], traces_created: [] },
-            novelty_cost: strongest.novelty_cost, prediction_error: 0,
-            maturity: 0.3, urgency: strongest.confidence, energy: 0.1,
-          }], await this.commitKernel.computeTimeSense());
+            // FIX: Reward from convergent commits (balance stress)
+            const convergentCount = commitResult.value.filter(c => c.convergence_score > 0.3).length;
+            if (convergentCount > 0) {
+              this.affect.reward(convergentCount * 0.1);
+            }
+            // Reward from low prediction error (child is understanding correctly)
+            const avgError = commitResult.value.reduce((s, c) => s + c.prediction_error, 0) / commitResult.value.length;
+            if (avgError < 0.1) {
+              this.affect.reward(0.05); // understanding → small reward
+            }
+          }
         }
       }
 
@@ -286,20 +305,23 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
           if (spreadBoost > 0.005) ht.weight = Math.min(1, ht.weight + spreadBoost);
           ht.weight *= decayRate;
         }
+
+        // Agency on MEDIUM cadence (every 5 ticks) — child acts frequently
+        await this.tryAct(this.traceGraph.getCycle());
       }
 
       if (schedule.shouldSlow) {
         this.lightCone.markSlow();
         const cycle = this.traceGraph.getCycle();
 
-        // Flush batched writes
+        // Flush batched writes + increment co_activation_count for schema detection
         const { writes, edgeUpdates } = this.lightCone.flushWrites();
         for (const w of writes) {
           if (w.sql) await this.traceGraph['db'].execute(w.sql, w.vars);
         }
         for (const eu of edgeUpdates) {
           await this.traceGraph['db'].execute(
-            `UPDATE activates SET weight = math::clamp(weight + $dw, 0.01, 1.0) WHERE in.trace_id = $from AND out.trace_id = $to`,
+            `UPDATE activates SET weight = math::clamp(weight + $dw, 0.01, 1.0), co_activation_count += 1 WHERE in.trace_id = $from AND out.trace_id = $to`,
             { dw: eu.deltaWeight, from: eu.from, to: eu.to },
           );
         }
