@@ -160,33 +160,38 @@ export class SensoryAgent implements CognitiveAgent {
   }
 
   /**
-   * Change detection: compare input against active traces.
-   * Returns what is NEW (changed) vs what is already KNOWN (unchanged).
+   * Change detection: compare current active trace state vs previous state.
+   * Novelty = how much trace weights shifted. Graph-based, not text-based.
    */
-  private detectChanges(input: string, context: AgentContext): {
+  private detectChanges(_input: string, context: AgentContext): {
     novelty: number;
     changed: string[];
     unchanged: string[];
   } {
-    const inputWords = new Set(input.toLowerCase().split(/\s+/).filter(w => w.length > 3));
     const changed: string[] = [];
     const unchanged: string[] = [];
 
+    // Compare trace weights vs previous snapshot
     for (const trace of context.active_traces) {
-      const traceWords = new Set(trace.content.toLowerCase().split(/\s+/).filter(w => w.length > 3));
-      let overlap = 0;
-      for (const w of inputWords) { if (traceWords.has(w)) overlap++; }
-      const similarity = inputWords.size > 0 ? overlap / inputWords.size : 0;
-
-      if (similarity > 0.3) {
-        unchanged.push(trace.content.slice(0, 50));
+      const prev = this.previousTraceWeights.get(trace.trace_id);
+      if (prev !== undefined) {
+        const delta = Math.abs(trace.weight - prev);
+        if (delta > 0.05) {
+          changed.push(trace.trace_id);
+        } else {
+          unchanged.push(trace.trace_id);
+        }
+      } else {
+        // Completely new trace in active set → novel
+        changed.push(trace.trace_id);
       }
     }
 
-    // Novelty = 1 - (known aspects / total aspects)
-    const novelty = context.active_traces.length > 0
-      ? Math.max(0.1, 1 - unchanged.length / Math.max(1, context.active_traces.length))
-      : 0.9;
+    // Novelty = ratio of changed/new traces in active set
+    const totalActive = context.active_traces.length;
+    const novelty = totalActive > 0
+      ? Math.max(0.1, changed.length / totalActive)
+      : 0.9; // no traces = everything is new
 
     return { novelty, changed, unchanged };
   }

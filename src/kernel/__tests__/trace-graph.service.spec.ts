@@ -15,6 +15,8 @@ const mockConceptSpace = {
   projectNewTrace: jest.fn().mockResolvedValue([0.1, 0.2, 0.3]),
   detectConflict: jest.fn().mockReturnValue(null),
   birthDimension: jest.fn().mockResolvedValue(undefined),
+  findNeighbors: jest.fn().mockResolvedValue([]),
+  distance: jest.fn().mockReturnValue(0.5),
 };
 
 function createService(): TraceGraphService {
@@ -223,7 +225,8 @@ describe('TraceGraphService', () => {
 
     it('reactivates existing trace when similar content found', async () => {
       const existing = makeTrace({ trace_id: 'T_existing', content: 'test signal content' });
-      // findTraceBySimilarity query returns a match (high word overlap)
+      // findNeighbors returns a spatial neighbor → findTraceBySimilarity finds a match
+      mockConceptSpace.findNeighbors.mockResolvedValueOnce([{ trace: existing, dist: 0.1 }]);
       mockDb.query.mockResolvedValue(ok([existing]));
 
       const result = await svc.ingestSignals([makeSignal({ content: 'test signal content' })]);

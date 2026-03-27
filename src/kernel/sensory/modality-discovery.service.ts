@@ -177,32 +177,36 @@ export class ModalityDiscoveryService {
    * High numeric_ratio → "data/metrics"
    * etc.
    */
+  /**
+   * Label modalities from their statistical fingerprint — no hardcoded heuristics.
+   * Labels are the dominant fingerprint feature (highest centroid component).
+   * The system doesn't know what "structured" or "language" means —
+   * it only knows which statistical feature dominates this cluster.
+   */
   async labelModalities(): Promise<void> {
+    const featureNames = [
+      'avg_token_len', 'unique_ratio', 'symbol_density', 'numeric_ratio',
+      'uppercase', 'line_count', 'avg_line_len', 'entropy',
+      'compression', 'time_gap', 'burst_rate',
+    ];
+
     for (const mod of this.modalities) {
       if (mod.label) continue;
-      if (mod.member_count < 5) continue; // need enough samples
+      if (mod.member_count < 3) continue;
 
+      // Label = dominant fingerprint feature (emergent, not hardcoded categories)
       const c = mod.centroid;
-      // Indices match fingerprinter.toVector() order
-      const symbolDensity = c[2] ?? 0;
-      const numericRatio = c[3] ?? 0;
-      const uniqueTokenRatio = c[1] ?? 0;
-      const entropy = c[7] ?? 0;
-      const lineCount = c[5] ?? 0;
-
-      if (symbolDensity > 0.1 && lineCount > 0.1) {
-        mod.label = 'structured'; // code-like
-      } else if (numericRatio > 0.15) {
-        mod.label = 'numeric'; // data/metrics
-      } else if (uniqueTokenRatio > 0.6 && symbolDensity < 0.05) {
-        mod.label = 'natural_language';
-      } else if (entropy < 0.3) {
-        mod.label = 'repetitive'; // logs, status
-      } else {
-        mod.label = `modality_${mod.id}`;
+      let maxIdx = 0;
+      let maxVal = -Infinity;
+      for (let i = 0; i < Math.min(c.length, featureNames.length); i++) {
+        if ((c[i] ?? 0) > maxVal) {
+          maxVal = c[i] ?? 0;
+          maxIdx = i;
+        }
       }
 
-      this.logger.log(`MODALITY LABELED: #${mod.id} → "${mod.label}" (${mod.member_count} events)`);
+      mod.label = `${featureNames[maxIdx] || 'feature'}_${mod.id}`;
+      this.logger.log(`MODALITY LABELED: #${mod.id} → "${mod.label}" (${mod.member_count} events, dominant=${featureNames[maxIdx]})`);
     }
   }
 

@@ -286,48 +286,52 @@ export class ConceptSpaceService {
   // ═══════════════════════════════════════════
 
   /**
-   * Compute initial position for a new trace based on content similarity
-   * to existing traces. New trace is placed NEAR similar existing traces.
+   * Compute initial position for a new trace.
+   *
+   * Graph-based: position near traces that were recently co-activated.
+   * If co-active neighbors exist, average their positions (Hebbian spatial placement).
+   * If no co-active neighbors, position near the centroid of the most recently
+   * active cluster. This is LEARNED placement, not text similarity.
    */
   async projectNewTrace(content: string): Promise<number[]> {
-    if (this.dimensions.length === 0) return []; // no dimensions yet
+    if (this.dimensions.length === 0) return [];
 
-    // Find similar existing traces
-    const active = await this.db.query<Trace>(
-      `SELECT trace_id, content, position FROM trace WHERE archived = false AND array::len(position) > 0 LIMIT 30`,
+    const dimCount = this.dimensions.length;
+
+    // Strategy 1: position near recently co-activated traces (Hebbian spatial)
+    const recentActive = await this.db.query<Trace>(
+      `SELECT trace_id, position, weight FROM trace
+       WHERE archived = false AND array::len(position) > 0
+       ORDER BY last_reactivated_cycle DESC LIMIT 10`,
     );
-    if (active.isErr() || active.value.length === 0) {
-      return new Array(this.dimensions.length).fill(0);
-    }
 
-    // Content similarity → weighted average of neighbor positions
-    const contentWords = new Set(content.toLowerCase().split(/\s+/).filter(w => w.length > 3));
-    let totalWeight = 0;
-    const position = new Array(this.dimensions.length).fill(0);
+    if (recentActive.isOk() && recentActive.value.length > 0) {
+      // Weighted average of recent active trace positions
+      const position = new Array(dimCount).fill(0);
+      let totalWeight = 0;
 
-    for (const trace of active.value) {
-      const traceWords = new Set((trace.content || '').toLowerCase().split(/\s+/).filter(w => w.length > 3));
-      let overlap = 0;
-      for (const w of contentWords) { if (traceWords.has(w)) overlap++; }
-      const similarity = contentWords.size > 0 ? overlap / contentWords.size : 0;
-
-      if (similarity > 0.2 && trace.position) {
-        const weight = similarity;
-        totalWeight += weight;
-        for (let d = 0; d < Math.min(position.length, trace.position.length); d++) {
-          position[d] += (trace.position[d] || 0) * weight;
+      for (const trace of recentActive.value) {
+        if (trace.position && trace.position.length > 0) {
+          const w = trace.weight || 0.1;
+          totalWeight += w;
+          for (let d = 0; d < Math.min(dimCount, trace.position.length); d++) {
+            position[d] += (trace.position[d] || 0) * w;
+          }
         }
       }
-    }
 
-    // Normalize
-    if (totalWeight > 0) {
-      for (let d = 0; d < position.length; d++) {
-        position[d] /= totalWeight;
+      if (totalWeight > 0) {
+        for (let d = 0; d < dimCount; d++) {
+          position[d] /= totalWeight;
+          // Add small noise to prevent exact overlap (forces later conflict detection)
+          position[d] += (Math.random() - 0.5) * 0.1;
+        }
+        return position;
       }
     }
 
-    return position;
+    // Strategy 2: center with noise (no context)
+    return new Array(dimCount).fill(0).map(() => (Math.random() - 0.5) * 0.5);
   }
 
   // ═══════════════════════════════════════════

@@ -1,18 +1,21 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Signal } from '../kernel.types';
 import { CognitiveAgent, AgentContext } from '../kernel-loop.service';
-import { ImportanceScorerService } from '../../cognitive/importance-scorer.service';
 import { AffectiveStateService } from '../affect/affective-state.service';
-import { ActivityLogEntry } from '../../common/types/memory.types';
+import { CognitiveConfigService } from '../../cognitive/cognitive-config.service';
 
 /**
  * AffectiveAgent (rank 3): "How does this FEEL? What matters?"
  *
- * NOT keyword matching. Reads real hormonal state from AffectiveStateService.
- * Produces signals about emotional significance, threat/reward, and urgency.
+ * Reads ONLY from the hormonal system — no text analysis, no keyword matching.
+ * The child is pre-linguistic. Affect comes from:
+ * - Hormonal state (cortisol, dopamine, NE, serotonin)
+ * - Pain/reward accumulators
+ * - Prediction error history
+ * - Energy level
  *
- * This agent's slow-path activation itself IS a signal:
- * when emotions are intense, processing is "expensive" → novelty_cost rises → time stretches.
+ * Pain/reward signals come from the WORLD (consequences of actions),
+ * not from parsing text content.
  */
 @Injectable()
 export class AffectiveAgent implements CognitiveAgent {
@@ -21,75 +24,61 @@ export class AffectiveAgent implements CognitiveAgent {
   private readonly logger = new Logger(AffectiveAgent.name);
 
   constructor(
-    private readonly importance: ImportanceScorerService,
     private readonly affectiveState: AffectiveStateService,
+    private readonly config: CognitiveConfigService,
   ) {}
 
-  async process(input: string, context: AgentContext): Promise<Signal[]> {
+  async process(_input: string, context: AgentContext): Promise<Signal[]> {
     const signals: Signal[] = [];
     const affect = this.affectiveState.getSnapshot();
     const targets = context.active_traces.slice(0, 3).map(t => t.trace_id);
 
-    // Importance scoring (substrate)
-    const importanceScore = this.importance.score({
-      type: context.is_reflection ? 'event' : 'interaction',
-      description: input.slice(0, 200),
-      context: {},
-      agent: 'DEUS',
-      day_key: '',
-      timestamp: '',
-    } as ActivityLogEntry);
-
-    // Detect explicit pain/reward from input
-    this.detectPainReward(input);
-
-    // Core signal: current affective state
+    // Core signal: current affective state (always produced)
     signals.push({
       agent_id: this.id,
       agent_rank: this.rank,
       type: 'affect',
-      content: `Affect: mode=${affect.mode}, valence=${affect.valence}, arousal=${affect.arousal}, pain=${affect.pain.intensity}`,
+      content: `Affect: mode=${affect.mode}, valence=${affect.valence}, arousal=${affect.arousal}`,
       payload: {
-        importance: importanceScore.score,
-        importance_factors: importanceScore.factors,
         charge: affect.valence,
         hormones: affect.hormones,
         pain: affect.pain,
         mode: affect.mode,
       },
-      confidence: 0.8,
-      // High arousal = expensive processing (time stretches)
+      confidence: 0.7 + affect.arousal * 0.2, // higher arousal → more confident affect signal
       novelty_cost: affect.arousal * 0.4 + Math.abs(affect.valence) * 0.2,
       used_slow_path: false,
       targets,
       cycle: context.cycle,
     });
 
-    // Pain signal — if pain is significant, escalate
-    if (affect.pain.intensity > 0.4) {
+    // Pain escalation — threshold from config, not hardcoded
+    const painThreshold = this.config.get('kernel.pain_escalation_threshold') ?? 0.4;
+    if (affect.pain.intensity > painThreshold) {
       signals.push({
         agent_id: this.id,
         agent_rank: this.rank,
         type: 'affect',
-        content: `PAIN: ${affect.pain.source} (intensity=${affect.pain.intensity.toFixed(2)}, ${affect.pain.chronic ? 'CHRONIC' : 'acute'})`,
+        content: `PAIN: intensity=${affect.pain.intensity.toFixed(2)}, ${affect.pain.chronic ? 'chronic' : 'acute'}`,
         payload: { pain: affect.pain, charge: -affect.pain.intensity },
-        confidence: affect.pain.intensity, // pain confidence = its intensity
-        novelty_cost: affect.pain.chronic ? 0.1 : 0.5, // chronic pain stops being novel
+        confidence: affect.pain.intensity,
+        novelty_cost: affect.pain.chronic ? 0.1 : 0.5,
         used_slow_path: false,
         targets,
         cycle: context.cycle,
       });
     }
 
-    // Stress signal — defensive mode
-    if (affect.hormones.cortisol > 0.5) {
+    // Stress signal — from hormone level, threshold from config
+    const stressThreshold = this.config.get('kernel.stress_hormone_threshold') ?? 0.6;
+    if (affect.hormones.cortisol > stressThreshold) {
       signals.push({
         agent_id: this.id,
         agent_rank: this.rank,
         type: 'affect',
-        content: `STRESS: cortisol=${affect.hormones.cortisol.toFixed(2)} — narrowing focus, being cautious`,
+        content: `STRESS: cortisol=${affect.hormones.cortisol.toFixed(2)}`,
         payload: { cortisol: affect.hormones.cortisol, mode: 'defensive' },
-        confidence: 0.7,
+        confidence: Math.min(1, affect.hormones.cortisol),
         novelty_cost: 0.2,
         used_slow_path: false,
         targets,
@@ -97,15 +86,16 @@ export class AffectiveAgent implements CognitiveAgent {
       });
     }
 
-    // Reward signal — exploration mode
-    if (affect.hormones.dopamine > 0.5) {
+    // Reward signal — from dopamine level
+    const rewardThreshold = this.config.get('kernel.reward_hormone_threshold') ?? 0.6;
+    if (affect.hormones.dopamine > rewardThreshold) {
       signals.push({
         agent_id: this.id,
         agent_rank: this.rank,
         type: 'affect',
-        content: `REWARD: dopamine=${affect.hormones.dopamine.toFixed(2)} — exploring, learning faster`,
+        content: `REWARD: dopamine=${affect.hormones.dopamine.toFixed(2)}`,
         payload: { dopamine: affect.hormones.dopamine, mode: 'explore' },
-        confidence: 0.7,
+        confidence: Math.min(1, affect.hormones.dopamine),
         novelty_cost: 0.1,
         used_slow_path: false,
         targets,
@@ -113,41 +103,9 @@ export class AffectiveAgent implements CognitiveAgent {
       });
     }
 
+    // NO detectPainReward() from text — pain/reward comes from world consequences
+    // through affect.inflictPain() and affect.reward() called by WorldBridge
+
     return signals;
-  }
-
-  /**
-   * Detect explicit pain/reward signals from input text.
-   * Injects into AffectiveStateService for hormonal processing.
-   */
-  private detectPainReward(input: string): void {
-    const lower = input.toLowerCase();
-
-    // Pain indicators
-    const painSignals = ['ошибк', 'error', 'fail', 'bug', 'broken', 'wrong', 'блокер', 'block', 'не работает', 'crash', 'проблем'];
-    for (const p of painSignals) {
-      if (lower.includes(p)) {
-        this.affectiveState.inflictPain(`external: ${p}`, 0.3);
-        break;
-      }
-    }
-
-    // Reward indicators
-    const rewardSignals = ['готово', 'done', 'success', 'работает', 'works', 'отлично', 'resolved', 'fixed', 'шикарно', 'perfect'];
-    for (const r of rewardSignals) {
-      if (lower.includes(r)) {
-        this.affectiveState.reward(0.3);
-        break;
-      }
-    }
-
-    // Operator frustration = pain
-    const frustrationSignals = ['wtf', 'ffs', 'нет не то', 'ты не понял', 'опять', 'блять', 'хуйня', 'нахуй'];
-    for (const f of frustrationSignals) {
-      if (lower.includes(f)) {
-        this.affectiveState.inflictPain('operator_frustration', 0.5);
-        break;
-      }
-    }
   }
 }

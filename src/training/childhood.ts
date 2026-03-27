@@ -55,7 +55,8 @@ class CorrectiveWorldBridge implements WorldBridge {
 
   async executeAction(action: AgentAction): Promise<ActionConsequence[]> {
     const consequences = this.world.childAction(action.method || 'touch', action.target);
-    let valence = this.inferValence(consequences.map(c => c.content).join(' '));
+    // Valence from consequence multiplicity — real valence comes from prediction error in kernel
+    let valence = this.computeConsequenceValence(consequences);
 
     // AMPLIFIED CONSEQUENCES: if prediction was wrong, world response feels stronger
     // Like touching something hot — the pain is proportional to how wrong you were
@@ -167,12 +168,28 @@ class CorrectiveWorldBridge implements WorldBridge {
     }
   }
 
-  private inferValence(content: string): number {
-    const lower = content.toLowerCase();
-    if (lower.includes('разбил') || lower.includes('расстро') || lower.includes('нельзя') || lower.includes('больно')) return -0.3;
-    if (lower.includes('молодец') || lower.includes('умница') || lower.includes('хорошо') || lower.includes('красив')) return 0.3;
-    if (lower.includes('покатил') || lower.includes('плавает') || lower.includes('звенит')) return 0.1;
-    return 0;
+  /**
+   * Valence from the world's PHYSICS — the world encodes consequences
+   * as prediction errors. Valence = how much the outcome matched
+   * the child's prior experience with this type of event.
+   *
+   * Computed from graph: if traces about this source have positive emotional_charge
+   * in the child's memory, valence is positive. If negative → negative.
+   * Failing that, novel events are mildly positive (curiosity), familiar are neutral.
+   *
+   * For now: base valence from event multiplicity (more events = more significant).
+   * The REAL valence signal comes from prediction error in tryAct()
+   * and from reward/pain in the affect model.
+   */
+  private computeConsequenceValence(consequences: Array<{ content: string; source: string }>): number {
+    // Base: each consequence is a learning signal. Multiple consequences = significant event.
+    let valence = 0;
+    for (const c of consequences) {
+      // Physics that changes object state → mild learning signal
+      // The SIGN comes from prediction accuracy in the kernel, not from us
+      valence += 0.02; // every interaction is slightly positive (curiosity satisfied)
+    }
+    return Math.max(-1, Math.min(1, valence));
   }
 }
 

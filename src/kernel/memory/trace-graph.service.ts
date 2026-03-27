@@ -300,7 +300,9 @@ export class TraceGraphService {
 
         for (const a of signalsA) {
           for (const b of signalsB) {
-            if (this.contentOverlap(a.content, b.content) > 0.3) {
+            // Convergence via shared targets (graph-based, not text)
+            const sharedTargets = a.targets.filter(t => b.targets.includes(t));
+            if (sharedTargets.length > 0) {
               // These agents noticed something similar → synthetic convergence
               const syntheticId = `convergent_${a.agent_id}_${b.agent_id}_${this.cycle}`;
               if (!traceAgentMap.has(syntheticId)) traceAgentMap.set(syntheticId, new Set());
@@ -403,28 +405,22 @@ export class TraceGraphService {
   }
 
   /**
-   * Find trace by content similarity. Uses word overlap (fast, no LLM).
-   * TODO: upgrade to embedding similarity when EmbeddingsService integrated.
+   * Find trace by spatial proximity in concept space.
+   * Graph-based: position the content, find nearest existing trace.
+   * No text analysis — uses learned spatial positions.
    */
   private async findTraceBySimilarity(content: string): Promise<Trace | null> {
-    // Get recent active traces and compare by word overlap
-    const recent = await this.db.query<Trace>(
-      `SELECT * FROM trace WHERE archived = false ORDER BY last_reactivated_cycle DESC LIMIT 30`,
-    );
-    if (recent.isErr()) return null;
+    if (!this.conceptSpace) return null;
 
-    let bestMatch: Trace | null = null;
-    let bestScore = 0;
+    // Project content into concept space
+    const position = await this.conceptSpace.projectNewTrace(content);
+    if (position.length === 0) return null;
 
-    for (const trace of recent.value) {
-      const score = this.contentOverlap(content, trace.content);
-      if (score > 0.5 && score > bestScore) {
-        bestScore = score;
-        bestMatch = trace;
-      }
-    }
+    // Find nearest trace by spatial distance
+    const neighbors = await this.conceptSpace.findNeighbors(position, 2.0, 1);
+    if (neighbors.length === 0) return null;
 
-    return bestMatch;
+    return this.findById(neighbors[0].trace.trace_id);
   }
 
   /**
@@ -453,14 +449,15 @@ export class TraceGraphService {
     }
   }
 
-  /** Word-level Jaccard similarity (no external dependency) */
-  private contentOverlap(a: string, b: string): number {
-    const wordsA = new Set(a.toLowerCase().split(/\s+/).filter(w => w.length > 2));
-    const wordsB = new Set(b.toLowerCase().split(/\s+/).filter(w => w.length > 2));
-    if (wordsA.size === 0 || wordsB.size === 0) return 0;
-    let intersection = 0;
-    for (const w of wordsA) { if (wordsB.has(w)) intersection++; }
-    return intersection / Math.max(wordsA.size, wordsB.size);
+  /**
+   * Similarity between traces via spatial distance in concept space.
+   * Returns 0-1: 1 = identical position, 0 = very far apart.
+   * No text analysis — uses learned spatial positions.
+   */
+  private spatialSimilarity(posA: number[], posB: number[]): number {
+    if (!posA || !posB || posA.length === 0 || posB.length === 0) return 0;
+    const dist = this.conceptSpace ? this.conceptSpace.distance(posA, posB) : 0;
+    return Math.exp(-dist); // exponential decay: close = high similarity
   }
 
   private async getReactivationHistory(traceId: string): Promise<number[]> {

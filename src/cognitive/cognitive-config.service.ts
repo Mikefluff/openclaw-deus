@@ -112,6 +112,9 @@ const DEFAULTS: Record<string, Omit<CognitiveParam, 'key'>> = {
   // --- Kernel: commit & stabilization ---
   'kernel.convergence_threshold': { value: 0.4, description: 'Min convergence score for commit', min: 0.1, max: 0.9, tunable: true },
   'kernel.escalation_threshold': { value: 0.9, description: 'Single-agent urgency for escalation commit', min: 0.7, max: 1.0, tunable: true },
+  'kernel.pain_escalation_threshold': { value: 0.4, description: 'Pain intensity for affect escalation signal', min: 0.1, max: 0.9, tunable: true },
+  'kernel.stress_hormone_threshold': { value: 0.6, description: 'Cortisol level for stress signal', min: 0.3, max: 0.9, tunable: true },
+  'kernel.reward_hormone_threshold': { value: 0.6, description: 'Dopamine level for reward signal', min: 0.3, max: 0.9, tunable: true },
   'kernel.energy_stable_threshold': { value: 0.1, description: 'Energy below this = converged', min: 0.01, max: 0.5, tunable: true },
   'kernel.max_iterations': { value: 12, description: 'Hard ceiling on kernel cycles', min: 3, max: 50, tunable: true },
   'kernel.hallucination_cycles': { value: 3, description: 'Cycles without orthogonal signals → stop', min: 1, max: 10, tunable: true },
