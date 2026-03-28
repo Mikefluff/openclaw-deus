@@ -251,14 +251,8 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
               this.energy.spend(this.energy.cost.commit, 'pump:commit');
             }
 
-            // Backprop prediction errors
-            for (const commit of commitResult.value) {
-              if (commit.prediction_error > 0.15) {
-                for (const traceId of commit.changes.traces_activated.slice(0, 3)) {
-                  await this.traceGraph.backpropagatePredictionError(traceId, commit.prediction_error);
-                }
-              }
-            }
+            // Prediction error backprop handled by SurrealDB EVENT (cognitive_backprop)
+            // on commit_log INSERT — zero JS round-trips
 
             // Affect: process commits → accumulators → hormones → config deltas
             const timeSense = await this.commitKernel.computeTimeSense();

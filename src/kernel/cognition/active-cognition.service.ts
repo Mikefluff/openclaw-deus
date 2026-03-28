@@ -173,8 +173,8 @@ export class ActiveCognitionService {
       { threshold: 0.3, limit: 10 },
     );
 
+    console.log('DEBUG chains:', chains.isErr() ? 'ERR' : JSON.stringify(chains.value));
     if (chains.isErr() || chains.value.length === 0) return signals;
-
     for (const chain of chains.value) {
       // Normalize field names: stored proc returns source_id/mid_id/mid_weight/first_weight
       const aId = chain.source_id ?? chain.a_id;
