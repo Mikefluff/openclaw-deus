@@ -281,8 +281,35 @@ async function main(): Promise<void> {
     const elapsed = Date.now() - start;
     phase1TotalMs += elapsed;
 
-    // Checkpoint
+    // Checkpoint + world progression + accuracy
     if ((tick + 1) % CHECKPOINT_INTERVAL === 0 || tick === PHASE1_TICKS - 1) {
+      // Compute accuracy for reward shaping
+      const groundTruth = world.getGroundTruth();
+      let correct = 0; let total = 0;
+      for (const obj of groundTruth) {
+        const tq = await db.query<Record<string, unknown>>(
+          `SELECT content FROM trace WHERE content CONTAINS $name AND archived = false LIMIT 3`,
+          { name: obj.name },
+        );
+        if (tq.isOk() && tq.value.length > 0) {
+          total++;
+          const texts = tq.value.map(t => (t.content as string || '').toLowerCase());
+          if (Object.values(obj.properties).some(p => texts.some(t => t.includes(p.toLowerCase())))) correct++;
+        }
+      }
+      const accuracy = total > 0 ? correct / total : 0;
+      devMetrics.recordAccuracy(tick, accuracy);
+      if (accuracy > 0.5) affect.reward(accuracy * 0.2);
+
+      // Developmental snapshot + world progression
+      const snap = await devMetrics.snapshot(tick);
+      const progressed = world.checkProgression(snap);
+      if (progressed) {
+        console.log(`  ★ WORLD LEVEL UP → ${world.getLevel()} at tick ${tick + 1}`);
+      }
+
+      // Cluster materialization
+      await conceptSpace.materializeClusters(tick);
       const avgMs = Math.round(phase1TotalMs / (tick + 1));
       const checkpoint = await collectCheckpoint(
         tick + 1, avgMs,
