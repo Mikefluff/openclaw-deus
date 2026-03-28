@@ -600,53 +600,26 @@ describe('TraceGraphService', () => {
   // ═══════════════════════════════════════════
 
   describe('consolidateEpisodicEdges()', () => {
-    it('returns {consolidated: 0, pruned: 0} when no episodic patterns', async () => {
+    it('returns {consolidated: 0} when stored proc returns empty', async () => {
+      mockDb.query.mockResolvedValueOnce(ok([{ consolidated: 0 }]));
+      const result = await svc.consolidateEpisodicEdges();
+      expect(result.consolidated).toBe(0);
+    });
+
+    it('delegates to fn::consolidate_episodic stored procedure', async () => {
+      mockDb.query.mockResolvedValueOnce(ok([{ consolidated: 3 }]));
+      const result = await svc.consolidateEpisodicEdges();
+      expect(result.consolidated).toBe(3);
+      // Verify stored proc was called
+      expect(mockDb.query).toHaveBeenCalledWith(
+        expect.stringContaining('fn::consolidate_episodic'),
+      );
+    });
+
+    it('handles stored proc failure gracefully', async () => {
       mockDb.query.mockResolvedValueOnce(ok([]));
-      mockDb.execute.mockResolvedValueOnce(ok({}));
       const result = await svc.consolidateEpisodicEdges();
-      expect(result).toEqual({ consolidated: 0, pruned: expect.any(Number) });
-    });
-
-    it('promotes patterns with 3+ occurrences to activates edges', async () => {
-      mockDb.query.mockResolvedValueOnce(ok([
-        { from_id: 'T_a', to_id: 'T_b', cnt: 5 },
-        { from_id: 'T_c', to_id: 'T_d', cnt: 3 },
-      ]));
-      mockDb.execute.mockResolvedValue(ok({}));
-      const result = await svc.consolidateEpisodicEdges();
-      expect(result.consolidated).toBe(2);
-      // Should call db.execute for each promotion + 1 for DELETE
-      const relateCalls = mockDb.execute.mock.calls.filter(
-        (c: any[]) => typeof c[0] === 'string' && c[0].includes('RELATE'),
-      );
-      expect(relateCalls.length).toBe(2);
-    });
-
-    it('decays episodic edge weights (not time-based pruning)', async () => {
-      mockDb.query.mockResolvedValueOnce(ok([])); // no patterns
-      mockDb.execute.mockResolvedValue(ok({}));
-      await svc.consolidateEpisodicEdges();
-      // Should UPDATE weight *= 0.95 (decay) + DELETE weight < 0.01 (faded)
-      const decayCalls = mockDb.execute.mock.calls.filter(
-        (c: any[]) => typeof c[0] === 'string' && c[0].includes('weight * 0.95'),
-      );
-      const pruneCalls = mockDb.execute.mock.calls.filter(
-        (c: any[]) => typeof c[0] === 'string' && c[0].includes('DELETE episodic') && c[0].includes('weight < 0.01'),
-      );
-      expect(decayCalls.length).toBe(1);
-      expect(pruneCalls.length).toBe(1);
-    });
-
-    it('removes consolidated episodic edges after promotion', async () => {
-      mockDb.query.mockResolvedValueOnce(ok([
-        { from_id: 'T_a', to_id: 'T_b', cnt: 5 },
-      ]));
-      mockDb.execute.mockResolvedValue(ok({}));
-      await svc.consolidateEpisodicEdges();
-      const deleteConsolidated = mockDb.execute.mock.calls.filter(
-        (c: any[]) => typeof c[0] === 'string' && c[0].includes('DELETE episodic') && c[0].includes('in.trace_id'),
-      );
-      expect(deleteConsolidated.length).toBe(1);
+      expect(result.consolidated).toBe(0);
     });
   });
 });

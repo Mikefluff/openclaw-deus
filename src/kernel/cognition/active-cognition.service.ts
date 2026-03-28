@@ -167,34 +167,33 @@ export class ActiveCognitionService {
   async activeInference(cycle: number): Promise<Signal[]> {
     const signals: Signal[] = [];
 
-    // Find pairs of strongly connected traces
+    // Find strong activation chains (DB-side filtering via stored proc)
     const chains = await this.db.query<any>(
-      `SELECT
-        in.content AS premise_a,
-        out.content AS conclusion,
-        weight AS strength,
-        in.trace_id AS a_id,
-        out.trace_id AS b_id
-       FROM activates
-       WHERE weight > 0.5
-         AND in.archived = false AND out.archived = false
-         AND in.weight > 0.3 AND out.weight > 0.3
-       ORDER BY weight DESC LIMIT 5`,
+      `RETURN fn::active_inference($threshold, $limit)`,
+      { threshold: 0.3, limit: 10 },
     );
 
     if (chains.isErr() || chains.value.length === 0) return signals;
 
     for (const chain of chains.value) {
+      // Normalize field names: stored proc uses source_id/mid_id/first_weight
+      const aId = chain.source_id ?? chain.a_id;
+      const bId = chain.mid_id ?? chain.b_id;
+      const premiseContent = chain.source_content ?? chain.premise_a;
+      const strength = chain.first_weight ?? chain.strength ?? 0;
+
+      if (!aId || !bId) continue;
+
       // Check if conclusion's weight is lower than premise suggests
       // If strong edge but weak conclusion → inference opportunity
       const conclusionTrace = await this.db.query<any>(
         'SELECT weight, confidence FROM trace WHERE trace_id = $tid LIMIT 1',
-        { tid: chain.b_id },
+        { tid: bId },
       );
 
       if (conclusionTrace.isOk() && conclusionTrace.value.length > 0) {
         const cWeight = conclusionTrace.value[0].weight;
-        const expectedWeight = chain.strength * 0.7; // expected from edge strength
+        const expectedWeight = strength * 0.7; // expected from edge strength
 
         if (cWeight < expectedWeight - 0.1) {
           // Conclusion weaker than expected → inference: should be stronger
@@ -202,19 +201,19 @@ export class ActiveCognitionService {
             agent_id: 'inference',
             agent_rank: 0,
             type: 'prediction',
-            content: `Inference: "${chain.premise_a?.slice(0, 40)}" strongly implies "${chain.conclusion?.slice(0, 40)}" (edge=${chain.strength.toFixed(2)}) but conclusion is weak (${cWeight.toFixed(2)})`,
+            content: `Inference: "${premiseContent?.slice(0, 40)}" strongly implies (edge=${strength.toFixed(2)}) but conclusion is weak (${cWeight.toFixed(2)})`,
             payload: {
-              premise_trace: chain.a_id,
-              conclusion_trace: chain.b_id,
-              edge_strength: chain.strength,
+              premise_trace: aId,
+              conclusion_trace: bId,
+              edge_strength: strength,
               expected_weight: expectedWeight,
               actual_weight: cWeight,
               inference: true,
             },
-            confidence: chain.strength * 0.6,
+            confidence: strength * 0.6,
             novelty_cost: 0.15,
             used_slow_path: false,
-            targets: [chain.a_id, chain.b_id],
+            targets: [aId, bId],
             cycle,
           });
         }
@@ -241,18 +240,10 @@ export class ActiveCognitionService {
   async detectSchemas(cycle: number): Promise<Signal[]> {
     const signals: Signal[] = [];
 
-    // Find clusters of traces that frequently co-activate
+    // Find clusters of traces that frequently co-activate (DB-side filtering)
     const hotEdges = await this.db.query<any>(
-      `SELECT
-        in.content AS a_content,
-        out.content AS b_content,
-        co_activation_count,
-        weight,
-        in.trace_id AS a_id,
-        out.trace_id AS b_id
-       FROM activates
-       WHERE co_activation_count > 2
-       ORDER BY co_activation_count DESC LIMIT 10`,
+      `RETURN fn::detect_schemas_native($min, $limit)`,
+      { min: 2, limit: 10 },
     );
 
     if (hotEdges.isErr() || hotEdges.value.length === 0) return signals;

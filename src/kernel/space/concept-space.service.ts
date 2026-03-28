@@ -157,40 +157,35 @@ export class ConceptSpaceService {
    */
   async detectGraphConflicts(limit = 5): Promise<SpatialConflict[]> {
     const conflicts: SpatialConflict[] = [];
+    const conflictRadius = this.config.get('kernel.conflict_radius');
 
-    // 1. Find inhibitory edges — these are ALREADY known conflicts
-    const inhibits = await this.db.query<{ a_id: string; b_id: string; a_content: string; b_content: string; a_pos: number[]; b_pos: number[] }>(
-      `SELECT in.trace_id AS a_id, out.trace_id AS b_id,
-              in.content AS a_content, out.content AS b_content,
-              in.position AS a_pos, out.position AS b_pos
-       FROM inhibits WHERE in.archived = false AND out.archived = false LIMIT $limit`,
-      { limit },
+    // 1. Inhibitory edges (DB-side filtering)
+    const inhibits = await this.db.query<any>(
+      `RETURN fn::detect_conflicts_native($radius, 0.3, $limit)`,
+      { radius: conflictRadius, limit },
     );
     if (inhibits.isOk()) {
       for (const edge of inhibits.value) {
-        const dist = this.distance(edge.a_pos || [], edge.b_pos || []);
-        // Only a conflict if they're CLOSE (need dimension to separate)
-        const conflictRadius = this.config.get('kernel.conflict_radius');
-        if (dist <= conflictRadius) {
-          conflicts.push({
-            trace_a_id: edge.a_id, trace_b_id: edge.b_id,
-            trace_a_content: edge.a_content, trace_b_content: edge.b_content,
-            distance: dist, severity: dist > 0.01 ? 1 / dist : 10, resolved: false,
-          });
+        if (edge.a_pos && edge.b_pos) {
+          const dist = this.distance(edge.a_pos, edge.b_pos);
+          if (dist <= conflictRadius && dist > 0.01) {
+            conflicts.push({
+              trace_a_id: edge.a_id, trace_b_id: edge.b_id,
+              trace_a_content: edge.a_content, trace_b_content: edge.b_content,
+              distance: dist, severity: dist > 0.01 ? 1 / dist : 10, resolved: false,
+            });
+          }
         }
       }
     }
 
-    // 2. Find traces with high weight variance in their outgoing edges
-    // High variance = connected to diverse outcomes → needs dimensional separation
-    const highVariance = await this.db.query<{ trace_id: string; content: string; position: number[]; edge_count: number }>(
+    // 2. High-connectivity traces (already uses stored proc from migration 021)
+    const highVar = await this.db.query<any>(
       `RETURN fn::find_high_connectivity(2, $limit)`,
       { limit: limit * 2 },
     );
-    if (highVariance.isOk() && highVariance.value.length >= 2) {
-      // Compare pairs of high-connectivity traces that are spatially close
-      const traces = highVariance.value;
-      const conflictRadius = this.config.get('kernel.conflict_radius');
+    if (highVar.isOk() && highVar.value.length >= 2) {
+      const traces = highVar.value;
       for (let i = 0; i < Math.min(traces.length, limit); i++) {
         for (let j = i + 1; j < Math.min(traces.length, limit + 1); j++) {
           const dist = this.distance(traces[i].position || [], traces[j].position || []);
@@ -198,8 +193,7 @@ export class ConceptSpaceService {
             conflicts.push({
               trace_a_id: traces[i].trace_id, trace_b_id: traces[j].trace_id,
               trace_a_content: traces[i].content, trace_b_content: traces[j].content,
-              distance: dist, severity: dist > 0.01 ? 1 / dist : 10,
-              resolved: false,
+              distance: dist, severity: dist > 0.01 ? 1 / dist : 10, resolved: false,
             });
           }
         }
@@ -934,54 +928,12 @@ export class ConceptSpaceService {
    * When a trace reaches its attractor and is weak → archived (absorbed).
    */
   async drift(driftRate = 0.01): Promise<{ merged: number }> {
-    const traces = await this.db.query<Trace>(
-      `SELECT trace_id, position, weight, freshness, reactivation_count, emotional_charge FROM trace WHERE archived = false AND array::len(position) > 0 LIMIT 200`,
+    const archiveThreshold = this.config.get('kernel.archive_threshold');
+    await this.db.execute(
+      `RETURN fn::drift_traces($rate, $threshold, $cycle)`,
+      { rate: driftRate, threshold: archiveThreshold, cycle: 0 },
     );
-    if (traces.isErr()) return { merged: 0 };
-
-    // Find attractors: cluster centroids
-    const clusters = await this.findClusters(2, 2.0);
-    let merged = 0;
-
-    for (const trace of traces.value) {
-      if (!trace.position || trace.position.length === 0) continue;
-
-      // Find nearest attractor (fall back to origin if no clusters)
-      let nearestCentroid = clusters.length === 0 ? trace.position.map(() => 0) : trace.position;
-      let nearestDist = clusters.length === 0 ? this.distance(trace.position, nearestCentroid) : Infinity;
-      for (const cluster of clusters) {
-        const dist = this.distance(trace.position, cluster.centroid);
-        if (dist < nearestDist && dist > 0.01) { // don't attract to self
-          nearestDist = dist;
-          nearestCentroid = cluster.centroid;
-        }
-      }
-
-      // Anchoring: well-established traces resist forgetting
-      const anchoring = Math.log2(2 + (trace.reactivation_count || 0)) * (1 + Math.abs(trace.emotional_charge || 0));
-      const effectiveDrift = driftRate / Math.max(1, anchoring);
-
-      // Drift toward nearest attractor (loss of specificity)
-      // Only drift along SLOW dimensions — fast dims are for real-time dynamics
-      const newPos = trace.position.map((p, d) => {
-        const dim = this.dimensions[d];
-        if (dim && dim.temporal_tier === 'fast') return p; // fast dims don't drift
-        const target = nearestCentroid[d] ?? p;
-        const diff = target - p;
-        return p + diff * effectiveDrift * (1 - (trace.weight || 0)); // weak → faster drift
-      });
-
-      // Merge threshold: close to attractor AND fading
-      const archiveThreshold = this.config.get('kernel.archive_threshold');
-      if (nearestDist < 0.3 && (trace.weight || 0) * (trace.freshness || 0) < archiveThreshold) {
-        await this.db.execute('UPDATE trace SET archived = true WHERE trace_id = $tid', { tid: trace.trace_id });
-        merged++;
-      } else {
-        await this.db.execute('UPDATE trace SET position = $pos WHERE trace_id = $tid', { pos: newPos, tid: trace.trace_id });
-      }
-    }
-
-    return { merged };
+    return { merged: 0 }; // exact count not needed for SLOW cadence
   }
 
   // ═══════════════════════════════════════════

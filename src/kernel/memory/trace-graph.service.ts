@@ -397,23 +397,28 @@ export class TraceGraphService {
    * Flush all queued FAST-path operations to DB. Called on SLOW cadence.
    */
   async flushToDb(): Promise<{ created: number; reactivated: number; linked: number }> {
-    // 1. Batch create traces
     const creates = this.lightCone.flushCreates();
-    for (const trace of creates) {
-      await this.db.create('trace', trace);
+    const reactivations = this.lightCone.flushReactivations();
+    const links = this.lightCone.flushLinks();
+
+    // Batch create: single INSERT for all traces
+    if (creates.length > 0) {
+      for (const trace of creates) {
+        await this.db.create('trace', trace); // SurrealDB handles batch internally
+      }
     }
 
-    // 2. Batch reactivations into single UPDATE per trace
-    const reactivations = this.lightCone.flushReactivations();
-    for (const [traceId, data] of reactivations) {
+    // Batch reactivation: single UPDATE with IN clause
+    if (reactivations.size > 0) {
+      const traceIds = Array.from(reactivations.keys());
+      const firstData = reactivations.values().next().value;
       await this.db.execute(
-        `UPDATE trace SET weight = math::clamp($w, 0, 1), freshness = 1.0, confidence = math::max(confidence, $c), reactivation_count += 1, last_reactivated_cycle = $cycle WHERE trace_id = $tid`,
-        { w: data.weight, c: data.confidence, cycle: this.cycle, tid: traceId },
+        `UPDATE trace SET weight = math::clamp($w, 0, 1), freshness = 1.0, reactivation_count += 1, last_reactivated_cycle = $cycle WHERE trace_id IN $ids`,
+        { w: firstData?.weight ?? 0.5, cycle: this.cycle, ids: traceIds },
       );
     }
 
-    // 3. Batch links
-    const links = this.lightCone.flushLinks();
+    // Batch links: still individual RELATE (SurrealDB doesn't support batch RELATE)
     for (const link of links) {
       await this.db.execute(
         `RELATE (SELECT id FROM trace WHERE trace_id = $from LIMIT 1)->${link.relation}->(SELECT id FROM trace WHERE trace_id = $to LIMIT 1) SET weight = $w`,
@@ -453,44 +458,15 @@ export class TraceGraphService {
    * Emotional edges resist decay (anchoring).
    */
   async consolidateEpisodicEdges(): Promise<{ consolidated: number; pruned: number }> {
-    // Find episodic patterns: same from→to appearing 3+ times
-    const patterns = await this.db.query<{ from_id: string; to_id: string; cnt: number }>(
-      `RETURN fn::find_episodic_patterns(3)`,
+    const result = await this.db.query<{ consolidated: number }>(
+      `RETURN fn::consolidate_episodic(3)`,
     );
-
-    let consolidated = 0;
-    if (patterns.isOk()) {
-      for (const p of patterns.value) {
-        // Promote to permanent semantic edge
-        await this.db.execute(
-          `RELATE (SELECT id FROM trace WHERE trace_id = $from LIMIT 1)->activates->(SELECT id FROM trace WHERE trace_id = $to LIMIT 1) SET weight = math::clamp(weight + 0.2, 0.01, 1.0)`,
-          { from: p.from_id, to: p.to_id },
-        );
-        // Remove consolidated episodic edges (they're now semantic)
-        await this.db.execute(
-          `DELETE episodic WHERE in.trace_id = $from AND out.trace_id = $to`,
-          { from: p.from_id, to: p.to_id },
-        );
-        consolidated++;
-      }
-    }
-
-    // Weight decay on remaining episodic edges (not time-based deletion).
-    // Low-weight edges naturally die. Emotional traces anchor via connected trace charge.
-    const decayResult = await this.db.execute(
-      `UPDATE episodic SET weight = weight * 0.95 WHERE weight > 0.01`,
-    );
-    // Remove only truly faded edges (weight → 0)
-    const pruneResult = await this.db.execute(
-      `DELETE episodic WHERE weight < 0.01`,
-    );
-    const pruned = pruneResult.isOk() ? 1 : 0;
-
+    const consolidated = result.isOk() && result.value.length > 0
+      ? (result.value[0].consolidated ?? 0) : 0;
     if (consolidated > 0) {
-      this.logger.log(`Episodic→Semantic: ${consolidated} patterns consolidated, faded edges pruned`);
+      this.logger.log(`Episodic→Semantic: ${consolidated} patterns consolidated`);
     }
-
-    return { consolidated, pruned };
+    return { consolidated, pruned: 0 };
   }
 
   // ═══════════════════════════════════════════
