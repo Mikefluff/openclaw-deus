@@ -270,16 +270,14 @@ describe('ActiveCognitionService', () => {
 
     it('generates inference signal when conclusion is weaker than expected', async () => {
       mockDb.query
-        // chains query
+        // chains query — mid_weight included in stored proc result (no follow-up query)
         .mockResolvedValueOnce(ok([{
-          premise_a: 'all humans are mortal',
-          conclusion: 'socrates is mortal',
-          strength: 0.8,
-          a_id: 'T_premise',
-          b_id: 'T_conclusion',
-        }]))
-        // conclusion trace query — weight lower than expected (0.8 * 0.7 = 0.56 expected, 0.2 actual)
-        .mockResolvedValueOnce(ok([{ weight: 0.2, confidence: 0.3 }]));
+          source_id: 'T_premise',
+          mid_id: 'T_conclusion',
+          source_content: 'all humans are mortal',
+          first_weight: 0.8,
+          mid_weight: 0.2, // lower than expected (0.8 * 0.7 = 0.56 expected, 0.2 actual)
+        }]));
 
       const signals = await svc.activeInference(5);
       expect(signals.length).toBe(1);
