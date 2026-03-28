@@ -176,7 +176,7 @@ export class ActiveCognitionService {
     if (chains.isErr() || chains.value.length === 0) return signals;
 
     for (const chain of chains.value) {
-      // Normalize field names: stored proc uses source_id/mid_id/first_weight
+      // Normalize field names: stored proc returns source_id/mid_id/mid_weight/first_weight
       const aId = chain.source_id ?? chain.a_id;
       const bId = chain.mid_id ?? chain.b_id;
       const premiseContent = chain.source_content ?? chain.premise_a;
@@ -184,39 +184,31 @@ export class ActiveCognitionService {
 
       if (!aId || !bId) continue;
 
-      // Check if conclusion's weight is lower than premise suggests
-      // If strong edge but weak conclusion → inference opportunity
-      const conclusionTrace = await this.db.query<any>(
-        'SELECT weight, confidence FROM trace WHERE trace_id = $tid LIMIT 1',
-        { tid: bId },
-      );
+      // mid_weight is now included in stored proc result — no follow-up query needed
+      const cWeight = chain.mid_weight ?? 0;
+      const expectedWeight = strength * 0.7; // expected from edge strength
 
-      if (conclusionTrace.isOk() && conclusionTrace.value.length > 0) {
-        const cWeight = conclusionTrace.value[0].weight;
-        const expectedWeight = strength * 0.7; // expected from edge strength
-
-        if (cWeight < expectedWeight - 0.1) {
-          // Conclusion weaker than expected → inference: should be stronger
-          signals.push({
-            agent_id: 'inference',
-            agent_rank: 0,
-            type: 'prediction',
-            content: `Inference: "${premiseContent?.slice(0, 40)}" strongly implies (edge=${strength.toFixed(2)}) but conclusion is weak (${cWeight.toFixed(2)})`,
-            payload: {
-              premise_trace: aId,
-              conclusion_trace: bId,
-              edge_strength: strength,
-              expected_weight: expectedWeight,
-              actual_weight: cWeight,
-              inference: true,
-            },
-            confidence: strength * 0.6,
-            novelty_cost: 0.15,
-            used_slow_path: false,
-            targets: [aId, bId],
-            cycle,
-          });
-        }
+      if (cWeight < expectedWeight - 0.1) {
+        // Conclusion weaker than expected → inference: should be stronger
+        signals.push({
+          agent_id: 'inference',
+          agent_rank: 0,
+          type: 'prediction',
+          content: `Inference: "${premiseContent?.slice(0, 40)}" strongly implies (edge=${strength.toFixed(2)}) but conclusion is weak (${cWeight.toFixed(2)})`,
+          payload: {
+            premise_trace: aId,
+            conclusion_trace: bId,
+            edge_strength: strength,
+            expected_weight: expectedWeight,
+            actual_weight: cWeight,
+            inference: true,
+          },
+          confidence: strength * 0.6,
+          novelty_cost: 0.15,
+          used_slow_path: false,
+          targets: [aId, bId],
+          cycle,
+        });
       }
     }
 

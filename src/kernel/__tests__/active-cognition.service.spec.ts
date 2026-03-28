@@ -296,11 +296,12 @@ describe('ActiveCognitionService', () => {
           premise_a: 'A',
           conclusion: 'B',
           strength: 0.6,
-          a_id: 'T_a',
-          b_id: 'T_b',
-        }]))
-        // weight matches: 0.6 * 0.7 = 0.42, actual = 0.5 → not weak
-        .mockResolvedValueOnce(ok([{ weight: 0.5, confidence: 0.7 }]));
+          source_id: 'T_a',
+          mid_id: 'T_b',
+          source_content: 'premise',
+          first_weight: 0.6,
+          mid_weight: 0.5, // 0.6 * 0.7 = 0.42, actual 0.5 → not weak
+        }]));
 
       const signals = await svc.activeInference(5);
       expect(signals).toEqual([]);
@@ -313,15 +314,13 @@ describe('ActiveCognitionService', () => {
     });
 
     it('inference confidence is proportional to edge strength', async () => {
-      mockDb.query
-        .mockResolvedValueOnce(ok([{
-          premise_a: 'strong premise',
-          conclusion: 'weak conclusion',
-          strength: 0.9,
-          a_id: 'T_strong',
-          b_id: 'T_weak',
-        }]))
-        .mockResolvedValueOnce(ok([{ weight: 0.1, confidence: 0.2 }]));
+      mockDb.query.mockResolvedValueOnce(ok([{
+        source_id: 'T_strong',
+        mid_id: 'T_weak',
+        source_content: 'strong premise',
+        first_weight: 0.9,
+        mid_weight: 0.1, // weak conclusion → inference signal
+      }]));
 
       const signals = await svc.activeInference(5);
       expect(signals[0].confidence).toBeCloseTo(0.9 * 0.6, 2);

@@ -418,12 +418,24 @@ export class TraceGraphService {
       );
     }
 
-    // Batch links: still individual RELATE (SurrealDB doesn't support batch RELATE)
-    for (const link of links) {
-      await this.db.execute(
-        `RELATE (SELECT id FROM trace WHERE trace_id = $from LIMIT 1)->${link.relation}->(SELECT id FROM trace WHERE trace_id = $to LIMIT 1) SET weight = $w`,
-        { from: link.from, to: link.to, w: link.weight },
-      );
+    // Batch links: use stored proc for activates (most common), individual for rare types
+    if (links.length > 0) {
+      const activateLinks = links.filter(l => l.relation === 'activates');
+      const otherLinks = links.filter(l => l.relation !== 'activates');
+
+      if (activateLinks.length > 0) {
+        await this.db.execute(
+          `RETURN fn::batch_create_links($links)`,
+          { links: activateLinks.map(l => ({ from: l.from, to: l.to, weight: l.weight })) },
+        );
+      }
+      // Other relation types still individual (rare)
+      for (const link of otherLinks) {
+        await this.db.execute(
+          `RELATE (SELECT id FROM trace WHERE trace_id = $from LIMIT 1)->${link.relation}->(SELECT id FROM trace WHERE trace_id = $to LIMIT 1) SET weight = $w`,
+          { from: link.from, to: link.to, w: link.weight },
+        );
+      }
     }
 
     return { created: creates.length, reactivated: reactivations.size, linked: links.length };

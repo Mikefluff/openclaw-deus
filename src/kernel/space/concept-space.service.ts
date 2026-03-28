@@ -482,12 +482,11 @@ export class ConceptSpaceService {
           `UPDATE cluster SET centroid = $centroid, radius = $radius, member_count = $count, last_updated_cycle = $cycle, confidence = $conf WHERE cluster_id = $cid`,
           { centroid: cluster.centroid, radius: cluster.radius, count: cluster.traces.length, cycle, conf: Math.min(1, cluster.traces.length / 10), cid: matchedId },
         );
-        // Update membership edges
-        for (const traceId of cluster.traces) {
+        // Batch membership edges via stored proc (replaces per-trace N+1)
+        if (cluster.traces.length > 0) {
           await this.db.execute(
-            `DELETE belongs_to WHERE in.trace_id = $tid AND out.cluster_id = $cid;
-             RELATE (SELECT id FROM trace WHERE trace_id = $tid LIMIT 1)->belongs_to->(SELECT id FROM cluster WHERE cluster_id = $cid LIMIT 1) SET membership_strength = 1.0, since_cycle = $cycle`,
-            { tid: traceId, cid: matchedId, cycle },
+            `RETURN fn::batch_cluster_membership($cid, $tids, $cycle)`,
+            { cid: matchedId, tids: cluster.traces, cycle },
           );
         }
         updated++;
@@ -504,34 +503,39 @@ export class ConceptSpaceService {
           archived: false,
         } as Record<string, unknown>);
 
-        // Create membership edges
-        for (const traceId of cluster.traces) {
+        // Batch membership edges via stored proc (replaces per-trace N+1)
+        if (cluster.traces.length > 0) {
           await this.db.execute(
-            `RELATE (SELECT id FROM trace WHERE trace_id = $tid LIMIT 1)->belongs_to->(SELECT id FROM cluster WHERE cluster_id = $cid LIMIT 1) SET membership_strength = 1.0, since_cycle = $cycle`,
-            { tid: traceId, cid: clusterId, cycle },
+            `RETURN fn::batch_cluster_membership($cid, $tids, $cycle)`,
+            { cid: clusterId, tids: cluster.traces, cycle },
           );
         }
         created++;
       }
     }
 
-    // Detect hierarchy: if cluster A centroid is inside cluster B radius
+    // Detect hierarchy: fetch all clusters in one call, compare in JS (acceptable for small K)
     if (clusters.length >= 2) {
       const allClusters = await this.db.query<{ cluster_id: string; centroid: number[]; radius: number }>(
-        `SELECT cluster_id, centroid, radius FROM cluster WHERE archived = false`,
+        `RETURN fn::detect_cluster_hierarchy()`,
       );
       if (allClusters.isOk()) {
+        // Collect all hierarchy RELATEs, then batch them
+        const hierarchyPairs: Array<{ child: string; parent: string }> = [];
         for (const a of allClusters.value) {
           for (const b of allClusters.value) {
             if (a.cluster_id === b.cluster_id) continue;
             if (a.radius < b.radius && this.distance(a.centroid, b.centroid) < b.radius) {
-              // A is inside B → A is a sub-cluster of B
-              await this.db.execute(
-                `RELATE (SELECT id FROM cluster WHERE cluster_id = $child LIMIT 1)->contains->(SELECT id FROM cluster WHERE cluster_id = $parent LIMIT 1) SET hierarchy_level = 1`,
-                { child: a.cluster_id, parent: b.cluster_id },
-              );
+              hierarchyPairs.push({ child: a.cluster_id, parent: b.cluster_id });
             }
           }
+        }
+        // Single RELATE per hierarchy pair (small K — acceptable)
+        for (const pair of hierarchyPairs) {
+          await this.db.execute(
+            `RELATE (SELECT id FROM cluster WHERE cluster_id = $child LIMIT 1)->contains->(SELECT id FROM cluster WHERE cluster_id = $parent LIMIT 1) SET hierarchy_level = 1`,
+            { child: pair.child, parent: pair.parent },
+          );
         }
       }
     }

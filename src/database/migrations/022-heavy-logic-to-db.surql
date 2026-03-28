@@ -77,11 +77,13 @@ DEFINE FUNCTION IF NOT EXISTS fn::detect_conflicts_native($conflict_radius: floa
 
 DEFINE FUNCTION IF NOT EXISTS fn::active_inference($strength_threshold: float, $limit: int) {
   -- Find strong 2-hop paths: A→B→C where both edges have high weight
+  -- Includes mid trace weight/confidence so JS needs zero follow-up queries
   LET $chains = (SELECT
-    in.trace_id AS source_id, in.content AS source_content,
-    out.trace_id AS mid_id,
-    out->activates[WHERE weight > $strength_threshold]->trace.trace_id AS target_ids,
-    out->activates[WHERE weight > $strength_threshold]->trace.content AS target_contents,
+    in.trace_id AS source_id, in.content AS source_content, in.weight AS source_weight,
+    out.trace_id AS mid_id, out.weight AS mid_weight, out.confidence AS mid_confidence,
+    out->activates[WHERE weight > $strength_threshold].out.trace_id AS target_ids,
+    out->activates[WHERE weight > $strength_threshold].out.content AS target_contents,
+    out->activates[WHERE weight > $strength_threshold].out.weight AS target_weights,
     weight AS first_weight
   FROM activates
   WHERE weight > $strength_threshold
@@ -113,8 +115,11 @@ DEFINE FUNCTION IF NOT EXISTS fn::detect_schemas_native($min_coactivation: int, 
 -- ═══════════════════════════════════════════
 
 DEFINE FUNCTION IF NOT EXISTS fn::consolidate_episodic($min_count: int) {
-  -- Find patterns
-  LET $patterns = fn::find_episodic_patterns($min_count);
+  -- Find patterns (inlined — no longer calls fn::find_episodic_patterns)
+  LET $patterns = (SELECT * FROM (
+    SELECT in.trace_id AS from_id, out.trace_id AS to_id, count() AS cnt
+    FROM episodic GROUP BY in, out
+  ) WHERE cnt >= $min_count LIMIT 20);
 
   -- Promote each pattern to semantic edge
   FOR $p IN $patterns {
@@ -132,3 +137,44 @@ DEFINE FUNCTION IF NOT EXISTS fn::consolidate_episodic($min_count: int) {
 
   RETURN { consolidated: array::len($patterns) };
 };
+
+-- ═══════════════════════════════════════════
+-- 9. BATCH CLUSTER MEMBERSHIP (replaces JS N+1 RELATE per trace)
+-- ═══════════════════════════════════════════
+
+DEFINE FUNCTION IF NOT EXISTS fn::batch_cluster_membership($cluster_id: string, $trace_ids: array, $cycle: int) {
+  FOR $tid IN $trace_ids {
+    RELATE (SELECT id FROM trace WHERE trace_id = $tid LIMIT 1)->belongs_to->(SELECT id FROM cluster WHERE cluster_id = $cluster_id LIMIT 1)
+      SET membership_strength = 1.0, since_cycle = $cycle;
+  };
+  RETURN { linked: array::len($trace_ids) };
+};
+
+-- ═══════════════════════════════════════════
+-- 10. BATCH CREATE LINKS (replaces JS N+1 RELATE per link)
+-- ═══════════════════════════════════════════
+
+DEFINE FUNCTION IF NOT EXISTS fn::batch_create_links($links: array) {
+  FOR $link IN $links {
+    RELATE (SELECT id FROM trace WHERE trace_id = $link.from LIMIT 1)->activates->(SELECT id FROM trace WHERE trace_id = $link.to LIMIT 1)
+      SET weight = $link.weight;
+  };
+  RETURN { created: array::len($links) };
+};
+
+-- ═══════════════════════════════════════════
+-- 11. DETECT CLUSTER HIERARCHY (returns all clusters for JS comparison)
+-- ═══════════════════════════════════════════
+
+DEFINE FUNCTION IF NOT EXISTS fn::detect_cluster_hierarchy() {
+  LET $clusters = (SELECT cluster_id, centroid, radius FROM cluster WHERE archived = false);
+  RETURN $clusters;
+};
+
+-- ═══════════════════════════════════════════
+-- CLEANUP: Remove orphaned stored procedures
+-- ═══════════════════════════════════════════
+
+REMOVE FUNCTION IF EXISTS fn::find_episodic_patterns;
+REMOVE FUNCTION IF EXISTS fn::find_clusters_native;
+REMOVE FUNCTION IF EXISTS fn::find_convergent_clusters;
