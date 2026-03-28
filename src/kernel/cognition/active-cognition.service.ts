@@ -320,68 +320,69 @@ export class ActiveCognitionService {
   }
 
   /**
-   * Detect property abstractions: when 3+ traces share common words,
-   * the shared words might represent an emergent property/category.
+   * Detect property abstractions from GRAPH CO-ACTIVATION PATTERNS.
    *
-   * Like a child seeing ball+plate+wheel and abstracting "круглое".
+   * No text processing! The child doesn't split words.
+   * Instead: traces that share many co-activation edges form a convergence hub.
+   * High co-activation count across 3+ traces = emergent property/category.
+   *
+   * Like a child seeing ball+plate+wheel co-activating with the same
+   * downstream traces → abstracts the shared activation pattern.
    */
   private async detectPropertyAbstractions(cycle: number, signals: Signal[]): Promise<void> {
-    // Get recent active traces
-    const active = await this.db.query<any>(
-      `SELECT trace_id, content, weight FROM trace WHERE archived = false AND suppressed = false AND weight > 0.3 ORDER BY weight DESC LIMIT 20`,
+    // Find traces that are hubs of co-activation (connected to 3+ other traces via strong edges)
+    const hubs = await this.db.query<any>(
+      `SELECT in AS hub_id, count() AS edge_count, math::sum(weight) AS total_weight
+       FROM activates
+       WHERE weight > 0.3
+       GROUP BY in
+       HAVING count() >= 3
+       ORDER BY count() DESC
+       LIMIT 10`,
     );
-    if (active.isErr() || active.value.length < 3) return;
+    if (hubs.isErr() || hubs.value.length === 0) return;
 
-    // Find words that appear in 3+ traces
-    const wordTraceMap = new Map<string, string[]>();
-    for (const trace of active.value) {
-      const words = (trace.content || '').toLowerCase().split(/\s+/).filter((w: string) => w.length > 3);
-      for (const word of words) {
-        if (!wordTraceMap.has(word)) wordTraceMap.set(word, []);
-        wordTraceMap.get(word)!.push(trace.trace_id);
-      }
-    }
+    for (const hub of hubs.value) {
+      const hubId = hub.hub_id;
+      if (!hubId) continue;
 
-    // Words appearing in 3+ traces = candidate abstractions
-    for (const [word, traceIds] of wordTraceMap) {
-      if (traceIds.length >= 3) {
-        // Check if abstract trace already exists for this word
-        const existing = await this.db.query<any>(
-          `SELECT trace_id FROM trace WHERE content CONTAINS $pattern AND archived = false LIMIT 1`,
-          { pattern: `[PROPERTY] ${word}` },
-        );
-        if (existing.isOk() && existing.value.length > 0) continue;
+      // Check if property abstraction already exists for this hub
+      const existing = await this.db.query<any>(
+        `SELECT trace_id FROM trace WHERE content CONTAINS $pattern AND archived = false LIMIT 1`,
+        { pattern: `[PROPERTY] hub_${hub.edge_count}` },
+      );
+      if (existing.isOk() && existing.value.length > 0) continue;
 
-        // Create property abstraction
-        const result = await this.traceGraph.createTrace({
-          source_type: 'signal',
-          content: `[PROPERTY] ${word} (shared by ${traceIds.length} traces)`,
-          initial_weight: 0.5,
-          confidence: Math.min(0.8, traceIds.length * 0.15),
-          emotional_charge: 0.05,
+      const propertyName = `hub_${hub.edge_count}_cycle${cycle}`;
+
+      // Create property abstraction from graph convergence
+      const result = await this.traceGraph.createTrace({
+        source_type: 'signal',
+        content: `[PROPERTY] ${propertyName} (${hub.edge_count} co-activations, strength=${(hub.total_weight as number).toFixed(2)})`,
+        initial_weight: 0.5,
+        confidence: Math.min(0.8, hub.edge_count * 0.15),
+        emotional_charge: 0.05,
+      });
+
+      if (result.isOk()) {
+        // Link the hub trace to the new property abstraction
+        await this.traceGraph.link(hubId, result.value.trace_id, 'activates', 0.4);
+        await this.traceGraph.link(result.value.trace_id, hubId, 'activates', 0.2);
+
+        this.logger.log(`PROPERTY EMERGED: "${propertyName}" (${hub.edge_count} co-activations)`);
+
+        signals.push({
+          agent_id: 'schema',
+          agent_rank: 0,
+          type: 'strategy',
+          content: `Property "${propertyName}" emerged from ${hub.edge_count} co-activations`,
+          payload: { property: propertyName, instances: hub.edge_count, abstraction: true },
+          confidence: 0.6,
+          novelty_cost: 0.2,
+          used_slow_path: false,
+          targets: [result.value.trace_id],
+          cycle,
         });
-
-        if (result.isOk()) {
-          // Link all instances to the property
-          for (const tid of traceIds.slice(0, 5)) {
-            await this.traceGraph.link(tid, result.value.trace_id, 'activates', 0.4);
-            await this.traceGraph.link(result.value.trace_id, tid, 'activates', 0.2);
-          }
-          this.logger.log(`PROPERTY EMERGED: "${word}" (shared by ${traceIds.length} instances)`);
-
-          signals.push({
-            agent_id: 'schema',
-            agent_rank: 0,
-            type: 'strategy',
-            content: `Property "${word}" emerged across ${traceIds.length} traces`,
-            payload: { property: word, instances: traceIds.length, abstraction: true },
-            confidence: 0.6,
-            novelty_cost: 0.2,
-            used_slow_path: false,
-            targets: [result.value.trace_id],
-            cycle,
-          });
-        }
       }
     }
   }

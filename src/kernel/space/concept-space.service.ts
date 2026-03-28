@@ -350,44 +350,39 @@ export class ConceptSpaceService {
    * Called periodically (nightly or after enough data).
    */
   async nameDimensions(): Promise<void> {
-    for (const dim of this.dimensions) {
-      if (dim.label) continue; // already named
+    const unnamedDims = this.dimensions.filter(d => !d.label);
+    if (unnamedDims.length === 0) return;
 
-      // Find traces at extremes of this dimension (sort in app code — SurrealDB 3.0 can't ORDER BY array index)
-      const allTraces = await this.db.query<Trace>(
-        `SELECT trace_id, content, position FROM trace WHERE archived = false AND array::len(position) > $dimId LIMIT 50`,
-        { dimId: dim.id },
-      );
-      if (allTraces.isErr() || allTraces.value.length < 4) continue;
+    // Single query: get all traces with positions
+    const allTraces = await this.db.query<Trace>(
+      `SELECT trace_id, content, position FROM trace WHERE archived = false AND array::len(position) > 0 LIMIT 100`,
+    );
+    if (allTraces.isErr() || allTraces.value.length < 4) return;
 
+    for (const dim of unnamedDims) {
+      // JS sorting is fine (pure math on in-memory data)
       const sorted = allTraces.value
         .filter(t => t.position && t.position.length > dim.id)
         .sort((a, b) => (b.position[dim.id] || 0) - (a.position[dim.id] || 0));
 
-      const positive = { value: sorted.slice(0, 3) };
-      const negative = { value: sorted.slice(-3).reverse() };
+      const positive = sorted.slice(0, 3);
+      const negative = sorted.slice(-3).reverse();
+      if (positive.length < 2 || negative.length < 2) continue;
 
-      if (positive.value.length < 2 || negative.value.length < 2) continue;
+      // Label from trace IDs (graph-based, not text)
+      dim.label = `dim_${dim.id}_cycle${dim.born_at_cycle}`;
+      dim.positive_exemplars = positive.map(t => t.trace_id);
+      dim.negative_exemplars = negative.map(t => t.trace_id);
+    }
 
-      // Extract shared words at each pole
-      const posWords = this.sharedWords(positive.value.map(t => t.content));
-      const negWords = this.sharedWords(negative.value.map(t => t.content));
+    // Batch update ALL dimensions in one pass
+    for (const dim of unnamedDims.filter(d => d.label)) {
+      await this.db.execute(
+        `UPDATE concept_dimension SET label = $label, positive_exemplars = $pos, negative_exemplars = $neg, temporal_tier = $tier WHERE dimension_id = $did`,
+        { label: dim.label, pos: dim.positive_exemplars, neg: dim.negative_exemplars, tier: dim.temporal_tier || 'slow', did: dim.id },
+      );
 
-      if (posWords.length > 0 || negWords.length > 0) {
-        const posLabel = posWords.join('+') || '?';
-        const negLabel = negWords.join('+') || '?';
-        dim.label = `${posLabel} ↔ ${negLabel}`;
-        dim.positive_exemplars = positive.value.map(t => t.trace_id);
-        dim.negative_exemplars = negative.value.map(t => t.trace_id);
-
-        // Update in DB
-        await this.db.execute(
-          `UPDATE concept_dimension SET label = $label, positive_exemplars = $pos, negative_exemplars = $neg, temporal_tier = $tier WHERE dimension_id = $did`,
-          { label: dim.label, pos: dim.positive_exemplars, neg: dim.negative_exemplars, tier: dim.temporal_tier, did: dim.id },
-        );
-
-        this.logger.log(`DIMENSION NAMED: axis_${dim.id} = "${dim.label}"`);
-      }
+      this.logger.log(`DIMENSION NAMED: axis_${dim.id} = "${dim.label}"`);
     }
   }
 
@@ -426,14 +421,13 @@ export class ConceptSpaceService {
 
       if (cluster.length >= minSize) {
         const centroid = this.computeCentroid(cluster.map(t => t.position || []));
-        const shared = this.sharedWords(cluster.map(t => t.content));
         const maxDist = Math.max(...cluster.map(t => this.distance(t.position || [], centroid)));
 
         clusters.push({
           centroid,
           traces: cluster.map(t => t.trace_id),
           radius: maxDist,
-          shared_words: shared,
+          shared_words: [],
         });
       }
     }
@@ -566,23 +560,12 @@ export class ConceptSpaceService {
   async recordClusterTrajectory(fromCluster: string, toCluster: string, action: string): Promise<void> {
     if (!fromCluster || !toCluster || fromCluster === toCluster) return;
 
-    // Upsert: increment traversal_count if exists, create if not
-    const existing = await this.db.query<{ id: string }>(
-      `SELECT id FROM cluster_trajectory WHERE from_cluster = $from AND to_cluster = $to AND action = $action LIMIT 1`,
+    // Single upsert: update if exists, create if not
+    await this.db.execute(
+      `UPSERT cluster_trajectory SET traversal_count += 1, confidence = math::clamp(confidence + 0.05, 0, 1)
+       WHERE from_cluster = $from AND to_cluster = $to AND action = $action`,
       { from: fromCluster, to: toCluster, action },
     );
-
-    if (existing.isOk() && existing.value.length > 0) {
-      await this.db.execute(
-        `UPDATE cluster_trajectory SET traversal_count += 1, confidence = math::clamp(confidence + 0.05, 0, 1) WHERE from_cluster = $from AND to_cluster = $to AND action = $action`,
-        { from: fromCluster, to: toCluster, action },
-      );
-    } else {
-      await this.db.create('cluster_trajectory', {
-        from_cluster: fromCluster, to_cluster: toCluster,
-        action, confidence: 0.5, traversal_count: 1,
-      } as Record<string, unknown>);
-    }
   }
 
   /**
@@ -607,25 +590,33 @@ export class ConceptSpaceService {
   async findLexicalLabel(position: number[]): Promise<string | null> {
     if (position.length === 0) return null;
 
-    const lexical = await this.db.query<Trace>(
-      `SELECT trace_id, content, position, weight FROM trace
+    // Try native KNN first
+    const knnResult = await this.db.query<Trace>(
+      `SELECT trace_id, content FROM trace
        WHERE source_type = 'lexical' AND archived = false AND weight > 0.3
-       ORDER BY weight DESC LIMIT 20`,
+       ORDER BY position <|1|> $pos
+       LIMIT 1`,
+      { pos: position },
+    );
+    if (knnResult.isOk() && knnResult.value.length > 0) {
+      return this.extractWord(knnResult.value[0].content);
+    }
+
+    // Fallback: JS distance (for SurrealDB versions without KNN+filters)
+    const lexical = await this.db.query<Trace>(
+      `SELECT trace_id, content, position FROM trace
+       WHERE source_type = 'lexical' AND archived = false AND weight > 0.3
+       ORDER BY weight DESC LIMIT 10`,
     );
     if (lexical.isErr() || lexical.value.length === 0) return null;
 
     let bestTrace: Trace | null = null;
     let bestDist = Infinity;
-
     for (const t of lexical.value) {
       if (!t.position || t.position.length === 0) continue;
       const dist = this.distance(position, t.position);
-      if (dist < bestDist) {
-        bestDist = dist;
-        bestTrace = t;
-      }
+      if (dist < bestDist) { bestDist = dist; bestTrace = t; }
     }
-
     if (!bestTrace || bestDist > 3.0) return null;
     return this.extractWord(bestTrace.content);
   }
@@ -668,20 +659,8 @@ export class ConceptSpaceService {
     return centroid;
   }
 
-  private sharedWords(contents: string[]): string[] {
-    if (contents.length < 2) return [];
-    const wordSets = contents.map(c =>
-      new Set(c.toLowerCase().split(/\s+/).filter(w => w.length > 3)),
-    );
-
-    const shared: string[] = [];
-    for (const word of wordSets[0]) {
-      if (wordSets.every(s => s.has(word))) {
-        shared.push(word);
-      }
-    }
-    return shared;
-  }
+  // sharedWords() removed: text processing violates pre-linguistic principle.
+  // Spatial clusters are validated by proximity and co-activation, not text overlap.
 
   // ═══════════════════════════════════════════
   // WORLD SNAPSHOT (concept space IS the world model)
@@ -750,7 +729,7 @@ export class ConceptSpaceService {
       centroid,
       traces: selfTraces.value.map(t => t.trace_id),
       radius: maxDist,
-      shared_words: this.sharedWords(selfTraces.value.map(t => t.content)),
+      shared_words: [],
     };
   }
 
@@ -784,22 +763,16 @@ export class ConceptSpaceService {
   // ═══════════════════════════════════════════
 
   async recordTrajectory(fromTraceId: string, toTraceId: string, action: string): Promise<void> {
-    const fromTrace = await this.db.query<Trace>('SELECT position FROM trace WHERE trace_id = $tid LIMIT 1', { tid: fromTraceId });
-    const toTrace = await this.db.query<Trace>('SELECT position FROM trace WHERE trace_id = $tid LIMIT 1', { tid: toTraceId });
-
-    if (fromTrace.isErr() || toTrace.isErr()) return;
-    const fromPos = fromTrace.value[0]?.position || [];
-    const toPos = toTrace.value[0]?.position || [];
-
-    await this.db.create('trajectory', {
-      from_trace_id: fromTraceId,
-      to_trace_id: toTraceId,
-      from_position: fromPos,
-      to_position: toPos,
-      action,
-      confidence: 0.5,
-      traversal_count: 1,
-    } as Record<string, unknown>);
+    await this.db.execute(
+      `LET $from = (SELECT position FROM trace WHERE trace_id = $fid LIMIT 1);
+       LET $to = (SELECT position FROM trace WHERE trace_id = $tid LIMIT 1);
+       IF $from AND $to THEN
+         CREATE trajectory SET from_trace_id = $fid, to_trace_id = $tid,
+           from_position = $from[0].position, to_position = $to[0].position,
+           action = $action, confidence = 0.5, traversal_count = 1
+       END`,
+      { fid: fromTraceId, tid: toTraceId, action },
+    );
   }
 
   private async getTrajectories(): Promise<Trajectory[]> {
