@@ -85,3 +85,37 @@ DEFINE TABLE IF NOT EXISTS cognitive_state AS
   FROM trace
   WHERE archived = false
   GROUP ALL;
+
+-- ═══════════════════════════════════════════
+-- 6. COGNITIVE SCOPE (stored procedure)
+-- Determines processing depth + spread from cognitive state
+-- No time, no ticks — pure cognitive dynamics
+-- ═══════════════════════════════════════════
+
+DEFINE FUNCTION IF NOT EXISTS fn::compute_cognitive_scope() {
+  LET $traces = (SELECT count() AS c FROM trace WHERE archived = false GROUP ALL);
+  LET $dims = (SELECT count() AS c FROM concept_dimension GROUP ALL);
+  LET $recent_commits = (SELECT count() AS c, math::mean(prediction_error) AS avg_err 
+    FROM commit_log ORDER BY cycle DESC LIMIT 20 GROUP ALL);
+  LET $hot_edges = (SELECT count() AS c FROM activates WHERE co_activation_count > 3 GROUP ALL);
+  
+  LET $trace_count = $traces[0].c OR 0;
+  LET $dim_count = $dims[0].c OR 0;
+  LET $avg_error = $recent_commits[0].avg_err OR 0;
+  LET $hot_count = $hot_edges[0].c OR 0;
+  
+  RETURN {
+    trace_count: $trace_count,
+    dimension_count: $dim_count,
+    avg_prediction_error: $avg_error,
+    hot_edge_count: $hot_count,
+    suggested_depth: IF $avg_error > 0.3 THEN 5 
+      ELSE IF $hot_count > 10 THEN 3
+      ELSE IF $trace_count > 500 THEN 2
+      ELSE 1 END,
+    suggested_spread: IF $hot_count > 20 THEN 50
+      ELSE IF $dim_count > 20 THEN 20
+      ELSE IF $trace_count > 100 THEN 10
+      ELSE 3 END
+  };
+};

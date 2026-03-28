@@ -88,6 +88,7 @@ function setupService(): {
     reward: jest.fn(),
     pain: jest.fn(),
     cost: { llm_call: 0.08, trace_create: 0.005, reflection_cycle: 0.01, commit: 0.005, exploration_action: 0.03, exploitation_action: 0.01 },
+    getState: jest.fn().mockReturnValue({ current: 0.8, max: 1.0, fatigue_level: 0.1, total_energy_spent: 1.0 }),
   };
 
   const mockRawStream = { ingest: jest.fn().mockResolvedValue([]) };
@@ -172,6 +173,13 @@ function setupService(): {
   (service as any).sensorimotorPredictor = mockSensorimotorPredictor;
   (service as any).activeCognition = mockActiveCognition;
   (service as any).substrateBridge = mockSubstrateBridge;
+  (service as any).cognitiveCone = {
+    computeScope: jest.fn().mockReturnValue({ depth: 3, spread: 10, reason: 'test' }),
+    recordActivation: jest.fn(),
+    recordNewTrace: jest.fn(),
+    recordSleep: jest.fn(),
+    getLastScope: jest.fn().mockReturnValue({ depth: 1, spread: 3, reason: 'local' }),
+  };
   (service as any).worldBridge = null; // no world by default
   (service as any).verbalProductions = [];
   (service as any).actionHistory = [];

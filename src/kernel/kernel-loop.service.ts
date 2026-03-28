@@ -15,6 +15,7 @@ import { NarrativeService } from './narrative/narrative.service';
 import { RawStreamService } from './sensory/raw-stream.service';
 import { AgentAction, WorldBridge, ActionConsequence } from './agency.types';
 import { LightConeService } from './light-cone.service';
+import { CognitiveConeService } from './cognitive-cone.service';
 import { ConceptSpaceService } from './space/concept-space.service';
 import { SensorimotorPredictorService } from './sensorimotor-predictor.service';
 import { EnergyService } from './energy.service';
@@ -110,6 +111,7 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
     private readonly lightCone: LightConeService,
     private readonly conceptSpace: ConceptSpaceService,
     private readonly sensorimotorPredictor: SensorimotorPredictorService,
+    private readonly cognitiveCone: CognitiveConeService,
   ) {}
 
   onModuleInit(): void {
@@ -275,10 +277,22 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
         }
       }
 
-      // Light-cone layered processing
-      if (schedule.shouldMedium) {
-        this.lightCone.markMedium();
-        const hotTraces = this.lightCone.getHotTraces(10);
+      // ═══════════════════════════════════════════
+      // COGNITIVE CONE: depth + spread, not time
+      // Processing scope determined by cognitive state, not tick counter
+      // ═══════════════════════════════════════════
+
+      const scope = this.cognitiveCone.computeScope(
+        this.affect.getSnapshot(),
+        this.energy.getState(),
+        this.conceptSpace.getDimensionCount(),
+      );
+
+      const cycle = this.traceGraph.getCycle();
+
+      // LOCAL (depth 1, always): hot trace modulation
+      {
+        const hotTraces = this.lightCone.getHotTraces(scope.spread);
         const affectSnap = this.affect.getSnapshot();
         const spreadBoost = affectSnap.hormones.norepinephrine * 0.03;
         const decayRate = 1 - affectSnap.hormones.serotonin * 0.01;
@@ -287,28 +301,16 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
           if (spreadBoost > 0.005) ht.weight = Math.min(1, ht.weight + spreadBoost);
           ht.weight *= decayRate;
         }
-
-        // Agency on MEDIUM cadence (every 5 ticks) — child acts frequently
-        await this.tryAct(this.traceGraph.getCycle());
-
-        // Verbal production on MEDIUM cadence — child tries to name things
-        await this.trySpeak(this.traceGraph.getCycle());
       }
 
-      if (schedule.shouldSlow) {
-        this.lightCone.markSlow();
-        const cycle = this.traceGraph.getCycle();
+      // ATTEND (depth 2+): agency + speech + DB sync
+      if (scope.depth >= 2) {
+        await this.tryAct(cycle);
+        await this.trySpeak(cycle);
 
-        // Sync hot trace count for concept-space projection spread estimation
-        this.conceptSpace.setHotTraceCount(this.lightCone.getHotTraceCount());
-
-        // Batch flush all in-memory operations to DB (traces, links, reactivations)
+        // Flush in-memory to DB (SurrealDB events cascade from here)
         await this.traceGraph.flushToDb();
-
-        // Flush sensorimotor transitions queued during FAST/MEDIUM paths
         await this.sensorimotorPredictor.flushTransitions();
-
-        // Flush batched writes + increment co_activation_count for schema detection
         const { writes, edgeUpdates } = this.lightCone.flushWrites();
         for (const w of writes) {
           if (w.sql) await this.traceGraph['db'].execute(w.sql, w.vars);
@@ -319,11 +321,12 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
             { dw: eu.deltaWeight, from: eu.from, to: eu.to },
           );
         }
+      }
 
-        // Agency
-        await this.tryAct(cycle);
+      // REFLECT (depth 3+): active cognition + predictor training + forgetting
+      if (scope.depth >= 3) {
+        this.conceptSpace.setHotTraceCount(this.lightCone.getHotTraceCount());
 
-        // FIX 3: Active cognition on SLOW cadence (schemas, inference, curiosity)
         const [replaySignals, curiositySignals, inferenceSignals, schemaSignals] = await Promise.all([
           this.activeCognition.replayEpisode(cycle),
           this.activeCognition.generateCuriosity(cycle),
@@ -343,38 +346,32 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
           }
         }
 
-        // Graph-based conflict detection → dimension birth
+        // Conflict detection → dimension birth
         const graphConflicts = await this.conceptSpace.detectGraphConflicts(3);
         for (const conflict of graphConflicts) {
           await this.conceptSpace.birthDimension(conflict, cycle);
+          this.cognitiveCone.recordActivation(conflict.severity); // triggers wider scope next time
         }
 
-        // Train sensorimotor predictor from transition buffer
-        await this.sensorimotorPredictor.trainOnBatch(10);
-
-        // Update predictor dimension when concept space grows
+        // Predictor training
+        await this.sensorimotorPredictor.trainOnBatch(Math.max(5, scope.spread / 5));
         this.sensorimotorPredictor.updatePosDim(this.conceptSpace.getDimensionCount());
 
-        // FIX 2: energy for reflection
-        this.energy.spend(this.energy.cost.reflection_cycle, 'pump:reflection');
-
-        // Forgetting + spatial drift
+        this.energy.spend(this.energy.cost.reflection_cycle, 'pump:reflect');
         await this.traceGraph.forget();
         await this.conceptSpace.drift();
       }
 
-      if (schedule.shouldGlobal) {
-        this.lightCone.markGlobal();
-        const globalCycle = this.traceGraph.getCycle();
-        await this.conceptSpace?.nameDimensions();
-        await this.conceptSpace?.materializeClusters(globalCycle);
-        await this.substrateBridge.syncSubstrateToTraces(globalCycle);
-        // Consolidate episodic → semantic edges (AriGraph-inspired)
+      // RESTRUCTURE (depth 5+): dimension naming + cluster materialization
+      if (scope.depth >= 5) {
+        await this.conceptSpace.nameDimensions();
+        await this.conceptSpace.materializeClusters(cycle);
+        await this.substrateBridge.syncSubstrateToTraces(cycle);
         await this.traceGraph.consolidateEpisodicEdges();
       }
 
-      if (schedule.shouldDeep) {
-        this.lightCone.markDeep();
+      // CONSOLIDATE (depth 10+): narrative + world model rebuild
+      if (scope.depth >= 10) {
         await this.narrative.compact();
         await this.substrateBridge.applyCommitsToWorldModel(this.allCommits.slice(-50));
       }

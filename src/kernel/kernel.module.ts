@@ -20,6 +20,7 @@ import { EnergyService } from './energy.service';
 import { LightConeService } from './light-cone.service';
 import { DevelopmentalMetricsService } from './developmental-metrics.service';
 import { SensorimotorPredictorService } from './sensorimotor-predictor.service';
+import { CognitiveConeService } from './cognitive-cone.service';
 import { WorldModelModule } from '../world-model/world-model.module';
 import { IntentionModule } from '../intention/intention.module';
 import { KnowledgeModule } from '../knowledge/knowledge.module';
@@ -55,6 +56,7 @@ import { PolicyModule } from '../policy/policy.module';
     LightConeService,
     DevelopmentalMetricsService,
     SensorimotorPredictorService,
+    CognitiveConeService,
     SensoryAgent,
     PredictiveAgent,
     AffectiveAgent,
@@ -76,6 +78,7 @@ import { PolicyModule } from '../policy/policy.module';
     LightConeService,
     DevelopmentalMetricsService,
     SensorimotorPredictorService,
+    CognitiveConeService,
   ],
 })
 export class KernelModule implements OnModuleInit {
