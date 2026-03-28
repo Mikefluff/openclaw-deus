@@ -243,7 +243,7 @@ async function main() {
 
     // === PUSH events to kernel queue (non-blocking) ===
     for (const event of events) {
-      kernelLoop.pushEvent(event.content);
+      kernelLoop.pushEvent(event.content, 'message', event.source);
     }
 
     // === PUMP: kernel processes all queued events + light-cone tick ===

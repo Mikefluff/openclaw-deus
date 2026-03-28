@@ -217,7 +217,7 @@ async function main() {
     const start = Date.now();
 
     const events = physWorld.tick();
-    for (const event of events) { kernelLoop.pushEvent(event.content); }
+    for (const event of events) { kernelLoop.pushEvent(event.content, 'message', event.source); }
     await kernelLoop.pump();
 
     if (energy.needsSleep()) { devMetrics.recordSleep(tick); energy.sleep(); }
@@ -274,7 +274,7 @@ async function main() {
     const start = Date.now();
 
     const events = socialWorld.tick();
-    for (const event of events) { kernelLoop.pushEvent(event.content); }
+    for (const event of events) { kernelLoop.pushEvent(event.content, 'message', event.source); }
     await kernelLoop.pump();
 
     if (energy.needsSleep()) { devMetrics.recordSleep(tick); energy.sleep(); }

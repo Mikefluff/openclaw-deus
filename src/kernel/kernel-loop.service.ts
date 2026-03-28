@@ -171,8 +171,8 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
    * For training: world pushes events, kernel processes at its own pace.
    * Returns immediately — no blocking.
    */
-  pushEvent(content: string, type: 'message' | 'system' = 'message'): void {
-    this.eventQueue.push({ type, content, timestamp: Date.now() });
+  pushEvent(content: string, type: 'message' | 'system' = 'message', source?: string): void {
+    this.eventQueue.push({ type, content, timestamp: Date.now(), payload: source ? { source } : undefined });
   }
 
   /**
@@ -211,7 +211,9 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
         // Ingest all events through raw stream
         const allSignals: Signal[] = [];
         for (const event of events) {
-          const rawEvent = RawStreamService.stringToEvent(event.content, event.type);
+          // Pass source from world events (mama_speech, physics, etc) so raw-stream can detect lexical events
+          const eventSource = (event.payload as any)?.source || event.type;
+          const rawEvent = RawStreamService.stringToEvent(event.content, eventSource);
           const signals = await this.rawStream.ingest(rawEvent, cycle);
           allSignals.push(...signals);
         }

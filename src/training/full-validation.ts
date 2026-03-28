@@ -269,7 +269,7 @@ async function main(): Promise<void> {
 
     const events = world.tick();
     for (const event of events) {
-      kernelLoop.pushEvent(event.content);
+      kernelLoop.pushEvent(event.content, 'message', event.source);
     }
     await kernelLoop.pump();
 
@@ -380,7 +380,7 @@ async function main(): Promise<void> {
 
     const events = socialWorld.tick();
     for (const event of events) {
-      kernelLoop.pushEvent(event.content);
+      kernelLoop.pushEvent(event.content, 'message', event.source);
     }
     await kernelLoop.pump();
 
