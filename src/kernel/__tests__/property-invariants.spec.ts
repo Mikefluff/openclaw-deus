@@ -13,9 +13,49 @@ import { CommitDelta, TimeSense } from '../kernel.types';
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 
+// Graph-based mock: nn_forward returns hormone values in [0,1], config in [-1,1], mode probs
+function mockGraphResponses(db: any) {
+  // Each processCommits call triggers 3 query calls (hormones, config, mode softmax)
+  // Use mockImplementation to always return valid graph responses
+  db.query.mockImplementation((sql: string) => {
+    if (sql.includes('nn_forward') && sql.includes('hidden')) {
+      return Promise.resolve({ isOk: () => true, value: [
+        { node_id: 'hormone:cortisol', value: 0.3 + Math.random() * 0.4 },
+        { node_id: 'hormone:dopamine', value: 0.3 + Math.random() * 0.4 },
+        { node_id: 'hormone:norepinephrine', value: 0.3 + Math.random() * 0.4 },
+        { node_id: 'hormone:serotonin', value: 0.3 + Math.random() * 0.4 },
+      ]});
+    }
+    if (sql.includes('nn_forward') && sql.includes('output')) {
+      return Promise.resolve({ isOk: () => true, value: [
+        { node_id: 'config:convergence_threshold', value: (Math.random() - 0.5) * 0.5 },
+        { node_id: 'config:spread_factor', value: (Math.random() - 0.5) * 0.5 },
+        { node_id: 'config:hebbian_lr', value: (Math.random() - 0.5) * 0.5 },
+        { node_id: 'config:energy_threshold', value: (Math.random() - 0.5) * 0.5 },
+        { node_id: 'config:activation_boost', value: (Math.random() - 0.5) * 0.5 },
+        { node_id: 'config:freshness_decay', value: (Math.random() - 0.5) * 0.5 },
+      ]});
+    }
+    if (sql.includes('nn_softmax')) {
+      // Generate valid softmax probabilities
+      const raw = [Math.random(), Math.random(), Math.random(), Math.random()];
+      const sum = raw.reduce((s, v) => s + v, 0);
+      const probs = raw.map(v => v / sum);
+      return Promise.resolve({ isOk: () => true, value: [
+        { node_id: 'mode:explore', value: probs[0] },
+        { node_id: 'mode:exploit', value: probs[1] },
+        { node_id: 'mode:defensive', value: probs[2] },
+        { node_id: 'mode:resting', value: probs[3] },
+      ]});
+    }
+    return Promise.resolve({ isOk: () => true, value: [] });
+  });
+}
+
 const mockDb = {
   query: jest.fn().mockResolvedValue({ isOk: () => true, value: [] }),
   create: jest.fn().mockResolvedValue({ isOk: () => true, value: {} }),
+  execute: jest.fn().mockResolvedValue({ isOk: () => true, value: {} }),
 };
 
 const mockConfig = {
@@ -62,9 +102,8 @@ function makeTimeSense(overrides: Partial<TimeSense> = {}): TimeSense {
 }
 
 function createAffectiveService(): AffectiveStateService {
-  const svc = new AffectiveStateService(mockDb as any, mockConfig as any);
-  (svc as any).initWeights();
-  return svc;
+  mockGraphResponses(mockDb);
+  return new AffectiveStateService(mockDb as any, mockConfig as any);
 }
 
 /** Random float in [lo, hi] */
@@ -214,9 +253,9 @@ describe('Property: Energy always in [0, max_energy]', () => {
 // ═══════════════════════════════════════════
 
 describe('Property: Hormone levels in [0, 1] after affect processing', () => {
-  it('all hormones in [0, 1] after single commit', () => {
+  it('all hormones in [0, 1] after single commit', async () => {
     const svc = createAffectiveService();
-    svc.processCommits([makeCommit()], makeTimeSense());
+    await svc.processCommits([makeCommit()], makeTimeSense());
     const snap = svc.getSnapshot();
     expect(snap.hormones.cortisol).toBeGreaterThanOrEqual(0);
     expect(snap.hormones.cortisol).toBeLessThanOrEqual(1);
@@ -228,7 +267,7 @@ describe('Property: Hormone levels in [0, 1] after affect processing', () => {
     expect(snap.hormones.serotonin).toBeLessThanOrEqual(1);
   });
 
-  it('hormones stay in [0, 1] after many extreme commits', () => {
+  it('hormones stay in [0, 1] after many extreme commits', async () => {
     const svc = createAffectiveService();
     for (let i = 0; i < 100; i++) {
       const commit = makeCommit({
@@ -243,7 +282,7 @@ describe('Property: Hormone levels in [0, 1] after affect processing', () => {
         prediction_error_rate: rand(0, 1),
         tempo: rand(0, 2),
       });
-      svc.processCommits([commit], ts);
+      await svc.processCommits([commit], ts);
       const snap = svc.getSnapshot();
       expect(snap.hormones.cortisol).toBeGreaterThanOrEqual(0);
       expect(snap.hormones.cortisol).toBeLessThanOrEqual(1);
@@ -256,10 +295,10 @@ describe('Property: Hormone levels in [0, 1] after affect processing', () => {
     }
   });
 
-  it('hormones stay in [0, 1] after many zero-activity commits', () => {
+  it('hormones stay in [0, 1] after many zero-activity commits', async () => {
     const svc = createAffectiveService();
     for (let i = 0; i < 50; i++) {
-      svc.processCommits([], makeTimeSense({ tempo: 0, novelty_rate: 0, prediction_error_rate: 0 }));
+      await svc.processCommits([], makeTimeSense({ tempo: 0, novelty_rate: 0, prediction_error_rate: 0 }));
       const snap = svc.getSnapshot();
       expect(snap.hormones.cortisol).toBeGreaterThanOrEqual(0);
       expect(snap.hormones.cortisol).toBeLessThanOrEqual(1);
@@ -338,15 +377,15 @@ describe('Property: Euclidean distance satisfies triangle inequality', () => {
 // ═══════════════════════════════════════════
 
 describe('Property: Affect mode probabilities sum to ~1.0', () => {
-  it('mode probabilities sum to 1 after initial processing', () => {
+  it('mode probabilities sum to 1 after initial processing', async () => {
     const svc = createAffectiveService();
-    svc.processCommits([makeCommit()], makeTimeSense());
+    await svc.processCommits([makeCommit()], makeTimeSense());
     const snap = svc.getSnapshot();
     const sum = snap.mode_probabilities.reduce((s, p) => s + p, 0);
     expect(sum).toBeCloseTo(1.0, 2);
   });
 
-  it('mode probabilities sum to 1 after many random commits', () => {
+  it('mode probabilities sum to 1 after many random commits', async () => {
     const svc = createAffectiveService();
     for (let i = 0; i < 100; i++) {
       const commit = makeCommit({
@@ -355,7 +394,7 @@ describe('Property: Affect mode probabilities sum to ~1.0', () => {
         urgency: rand(0, 1),
         energy: rand(0, 1),
       });
-      svc.processCommits([commit], makeTimeSense({
+      await svc.processCommits([commit], makeTimeSense({
         novelty_rate: rand(0, 1),
         prediction_error_rate: rand(0, 1),
       }));
@@ -365,10 +404,10 @@ describe('Property: Affect mode probabilities sum to ~1.0', () => {
     }
   });
 
-  it('each mode probability is in [0, 1]', () => {
+  it('each mode probability is in [0, 1]', async () => {
     const svc = createAffectiveService();
     for (let i = 0; i < 50; i++) {
-      svc.processCommits([makeCommit({
+      await svc.processCommits([makeCommit({
         novelty_cost: rand(0, 1),
         prediction_error: rand(0, 1),
       })], makeTimeSense());
@@ -380,11 +419,11 @@ describe('Property: Affect mode probabilities sum to ~1.0', () => {
     }
   });
 
-  it('mode is one of the valid modes', () => {
+  it('mode is one of the valid modes', async () => {
     const validModes = ['explore', 'exploit', 'defensive', 'resting'];
     const svc = createAffectiveService();
     for (let i = 0; i < 30; i++) {
-      svc.processCommits([makeCommit({
+      await svc.processCommits([makeCommit({
         novelty_cost: rand(0, 1),
         urgency: rand(0, 1),
       })], makeTimeSense());
@@ -393,9 +432,9 @@ describe('Property: Affect mode probabilities sum to ~1.0', () => {
     }
   });
 
-  it('mode probabilities remain valid after empty commit list', () => {
+  it('mode probabilities remain valid after empty commit list', async () => {
     const svc = createAffectiveService();
-    svc.processCommits([], makeTimeSense());
+    await svc.processCommits([], makeTimeSense());
     const snap = svc.getSnapshot();
     const sum = snap.mode_probabilities.reduce((s, p) => s + p, 0);
     expect(sum).toBeCloseTo(1.0, 2);

@@ -367,15 +367,15 @@ describe('TraceGraphService', () => {
       expect(mockDb.execute).not.toHaveBeenCalled();
     });
 
-    it('recurses on heavily activated neighbors at depth < 2', async () => {
+    it('calls spread_activation + spread_recursive at depth < 2', async () => {
       mockDb.execute.mockResolvedValue(ok({}));
       mockDb.query.mockResolvedValue(ok([
-        { trace_id: 'T_neighbor' },
+        { id: 'trace:abc', trace_id: 'T_src' },
       ]));
       await svc.spreadActivation('T_src', 0);
-      // Should call spread_activation for T_src and then for T_neighbor
+      // Should call fn::spread_activation (Hebbian) + fn::spread_recursive (multi-hop)
       const spreadCalls = mockDb.execute.mock.calls.filter(
-        (c: any[]) => typeof c[0] === 'string' && c[0].includes('fn::spread_activation'),
+        (c: any[]) => typeof c[0] === 'string' && c[0].includes('fn::spread'),
       );
       expect(spreadCalls.length).toBeGreaterThanOrEqual(2);
     });

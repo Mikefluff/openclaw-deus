@@ -70,6 +70,16 @@ export interface WorldModelQuality {
   physics_model: number;
 }
 
+export interface NeuralGraphHealth {
+  total_nodes: number;
+  total_edges: number;
+  total_updates: number;
+  mean_weight: number;
+  dead_edges: number;
+  mean_grad_acc: number;
+  models: Array<{ model: string; nodes: number; edges: number; total_updates: number; mean_weight: number; dead_edges: number }>;
+}
+
 export interface DevelopmentalSnapshot {
   tick: number;
   stage: DevelopmentalStage;
@@ -79,6 +89,7 @@ export interface DevelopmentalSnapshot {
   affect: AffectTrajectory;
   agency: AgencyMetrics;
   world_model: WorldModelQuality;
+  neural_graph: NeuralGraphHealth;
   overall_health: number;
 }
 
@@ -151,12 +162,13 @@ export class DevelopmentalMetricsService {
    * Full developmental snapshot — observe the whole entity.
    */
   async snapshot(tick: number): Promise<DevelopmentalSnapshot> {
-    const [cognitive, vitality, affectMetrics, agency, worldModel] = await Promise.all([
+    const [cognitive, vitality, affectMetrics, agency, worldModel, neuralGraph] = await Promise.all([
       this.computeCognitive(tick),
       this.computeVitality(tick),
       this.computeAffect(tick),
       this.computeAgency(tick),
       this.computeWorldModel(),
+      this.computeNeuralGraph(),
     ]);
 
     const stage = this.detectStage(cognitive, affectMetrics, agency, worldModel);
@@ -171,6 +183,7 @@ export class DevelopmentalMetricsService {
       affect: affectMetrics,
       agency,
       world_model: worldModel,
+      neural_graph: neuralGraph,
       overall_health: overall,
     };
 
@@ -649,6 +662,55 @@ export class DevelopmentalMetricsService {
     return Math.round(Math.min(1, Math.max(0, overall)) * 100) / 100;
   }
 
+  // ═══════════════════════════════════════════
+  // NEURAL GRAPH HEALTH
+  // ═══════════════════════════════════════════
+
+  private async computeNeuralGraph(): Promise<NeuralGraphHealth> {
+    const result = await this.db.query<any>('RETURN fn::nn_metrics()');
+
+    const defaultHealth: NeuralGraphHealth = {
+      total_nodes: 0, total_edges: 0, total_updates: 0,
+      mean_weight: 0, dead_edges: 0, mean_grad_acc: 0, models: [],
+    };
+
+    if (result.isErr() || result.value.length === 0) return defaultHealth;
+
+    const models = Array.isArray(result.value[0]) ? result.value[0] : result.value;
+    if (!Array.isArray(models) || models.length === 0) return defaultHealth;
+
+    let totalNodes = 0, totalEdges = 0, totalUpdates = 0, totalDeadEdges = 0;
+    let weightSum = 0, gradSum = 0, modelCount = 0;
+
+    const modelEntries = models.map((m: any) => {
+      totalNodes += m.nodes ?? 0;
+      totalEdges += m.edges ?? 0;
+      totalUpdates += m.total_updates ?? 0;
+      totalDeadEdges += m.dead_edges ?? 0;
+      weightSum += m.mean_weight ?? 0;
+      gradSum += m.mean_grad_acc ?? 0;
+      modelCount++;
+      return {
+        model: m.model,
+        nodes: m.nodes ?? 0,
+        edges: m.edges ?? 0,
+        total_updates: m.total_updates ?? 0,
+        mean_weight: Math.round((m.mean_weight ?? 0) * 1000) / 1000,
+        dead_edges: m.dead_edges ?? 0,
+      };
+    });
+
+    return {
+      total_nodes: totalNodes,
+      total_edges: totalEdges,
+      total_updates: totalUpdates,
+      mean_weight: modelCount > 0 ? Math.round(weightSum / modelCount * 1000) / 1000 : 0,
+      dead_edges: totalDeadEdges,
+      mean_grad_acc: modelCount > 0 ? Math.round(gradSum / modelCount * 1000) / 1000 : 0,
+      models: modelEntries,
+    };
+  }
+
   /**
    * Format snapshot for human-readable display.
    */
@@ -661,6 +723,8 @@ export class DevelopmentalMetricsService {
     lines.push(`  Affect: valence_trend=${snap.affect.valence_trend} cortisol=${snap.affect.cortisol_baseline} curiosity=${snap.affect.curiosity_sustain} mode_div=${snap.affect.mode_diversity}`);
     lines.push(`  Agency: diversity=${snap.agency.action_diversity} novelty_pref=${snap.agency.target_novelty_preference} exploit_shift=${snap.agency.explore_exploit_shift} help=${snap.agency.help_seeking_frequency}`);
     lines.push(`  World: coverage=${snap.world_model.object_coverage} accuracy=${snap.world_model.property_accuracy} prediction=${snap.world_model.prediction_precision} causal=${snap.world_model.causal_understanding}`);
+    const ng = snap.neural_graph;
+    lines.push(`  Neural: nodes=${ng.total_nodes} edges=${ng.total_edges} updates=${ng.total_updates} mean_w=${ng.mean_weight} dead=${ng.dead_edges} grad=${ng.mean_grad_acc}`);
     return lines.join('\n');
   }
 }

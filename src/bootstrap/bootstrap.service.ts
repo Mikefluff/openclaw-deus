@@ -7,6 +7,7 @@ import { Belief } from '../common/types/belief.types';
 import { BootstrapCheck, BootstrapReport } from '../common/types/bootstrap.types';
 import { IntrospectionService } from '../introspection/introspection.service';
 import { WorldModelService } from '../world-model/world-model.service';
+import { seedNeuralGraph } from '../database/seed-neural-graph';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -160,6 +161,13 @@ export class BootstrapService {
     for (const file of files) {
       const result = await this.db.runMigration(path.join(migrationsDir, file));
       if (result.isErr()) return err(result.error);
+    }
+
+    // Seed neural network graph (nodes + edges) if not already present
+    try {
+      await seedNeuralGraph(this.db);
+    } catch (e) {
+      this.logger.warn(`Neural graph seeding failed: ${e}`);
     }
 
     return ok(undefined);

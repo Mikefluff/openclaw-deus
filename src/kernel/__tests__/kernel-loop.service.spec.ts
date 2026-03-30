@@ -57,6 +57,8 @@ function setupService(): {
     forget: jest.fn().mockResolvedValue(ok({ decayed: 0, archived: 0 })),
     backpropagatePredictionError: jest.fn().mockResolvedValue(undefined),
     flushToDb: jest.fn().mockResolvedValue({ created: 0, reactivated: 0, linked: 0 }),
+    flushBatchWrites: jest.fn().mockResolvedValue(undefined),
+    flushBatchEdgeUpdates: jest.fn().mockResolvedValue(undefined),
     consolidateEpisodicEdges: jest.fn().mockResolvedValue(undefined),
     db: { execute: jest.fn().mockResolvedValue({ isOk: () => true, value: {} }) },
   };
@@ -177,8 +179,13 @@ function setupService(): {
     computeScope: jest.fn().mockReturnValue({ depth: 3, spread: 10, reason: 'test' }),
     recordActivation: jest.fn(),
     recordNewTrace: jest.fn(),
+    recordPredictionError: jest.fn(),
     recordSleep: jest.fn(),
+    learn: jest.fn().mockResolvedValue(undefined),
     getLastScope: jest.fn().mockReturnValue({ depth: 1, spread: 3, reason: 'local' }),
+  };
+  (service as any).intentions = {
+    getTopPriority: jest.fn().mockResolvedValue({ isOk: () => true, value: null }),
   };
   (service as any).worldBridge = null; // no world by default
   (service as any).verbalProductions = [];

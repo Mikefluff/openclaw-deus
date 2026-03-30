@@ -45,6 +45,15 @@ function makeSnapshot(overrides: Partial<DevelopmentalSnapshot> = {}): Developme
       causal_understanding: 0.2,
       physics_model: 0.1,
     },
+    neural_graph: {
+      total_nodes: 56,
+      total_edges: 214,
+      total_updates: 0,
+      mean_weight: 0.15,
+      dead_edges: 0,
+      mean_grad_acc: 0,
+      models: [],
+    },
     overall_health: 0.3,
     ...overrides,
   };

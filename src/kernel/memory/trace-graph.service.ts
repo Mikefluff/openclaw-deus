@@ -36,6 +36,11 @@ export class TraceGraphService {
     private readonly lightCone: LightConeService,
   ) {}
 
+  /** Execute a stored procedure on the DB (public gateway — no private field access needed). */
+  async executeProc(sql: string, vars?: Record<string, unknown>): Promise<{ isOk(): boolean; value?: unknown }> {
+    return this.db.execute(sql, vars) as any;
+  }
+
   getCycle(): number { return this.cycle; }
   tick(): number {
     this.activeTracesCache = null;
@@ -184,7 +189,8 @@ export class TraceGraphService {
   async spreadActivation(sourceTraceId: string, depth = 0): Promise<void> {
     if (depth > 3) return;
 
-    const result = await this.db.execute(
+    // Hop 1: Hebbian learning + activation (original proc)
+    await this.db.execute(
       `fn::spread_activation($tid, $spread, $inhibit, $hebb_lr, $hebb_decay, $cycle)`,
       {
         tid: sourceTraceId,
@@ -196,18 +202,22 @@ export class TraceGraphService {
       },
     );
 
-    // Recurse on heavily activated neighbors (depth-limited)
-    if (result.isOk() && depth < 2) {
-      const activated = await this.db.query<{ trace_id: string }>(
-        `SELECT trace_id FROM trace WHERE last_reactivated_cycle = $cycle AND weight > 0.3 AND archived = false LIMIT 5`,
-        { cycle: this.cycle },
+    // Multi-hop spreading: native recursive graph traversal (SurrealDB 3.0)
+    // One DB call replaces JS recursive loop. Depth 2-3 handled by ->edge->trace->edge->trace chain.
+    if (depth < 2) {
+      const sourceRecord = await this.db.query<{ id: string }>(
+        `SELECT id FROM trace WHERE trace_id = $tid AND archived = false LIMIT 1`,
+        { tid: sourceTraceId },
       );
-      if (activated.isOk()) {
-        for (const t of activated.value.slice(0, 3)) {
-          if (t.trace_id !== sourceTraceId) {
-            await this.spreadActivation(t.trace_id, depth + 1);
-          }
-        }
+      if (sourceRecord.isOk() && sourceRecord.value.length > 0) {
+        await this.db.execute(
+          `RETURN fn::spread_recursive($source, $depth, $decay)`,
+          {
+            source: sourceRecord.value[0].id,
+            depth: Math.max(1, 3 - depth),
+            decay: this.config.get('kernel.spread_factor'),
+          },
+        );
       }
     }
   }
@@ -439,6 +449,41 @@ export class TraceGraphService {
     }
 
     return { created: creates.length, reactivated: reactivations.size, linked: links.length };
+  }
+
+  /**
+   * Batch flush writes from LightCone (queued SQL operations).
+   * Single transaction instead of per-write round-trips.
+   */
+  async flushBatchWrites(writes: Array<{ sql?: string; vars?: Record<string, unknown> }>): Promise<void> {
+    const sqlWrites = writes.filter(w => w.sql);
+    if (sqlWrites.length === 0) return;
+
+    // Combine all SQL into one batch call
+    const combinedSql = sqlWrites.map(w => w.sql).join(';\n');
+    // For simple writes with no overlapping vars, merge vars
+    const mergedVars: Record<string, unknown> = {};
+    for (const w of sqlWrites) {
+      if (w.vars) Object.assign(mergedVars, w.vars);
+    }
+    await this.db.execute(combinedSql, mergedVars);
+  }
+
+  /**
+   * Batch edge weight updates via stored procedure.
+   * Replaces N+1 individual UPDATE activates calls.
+   */
+  async flushBatchEdgeUpdates(edgeUpdates: Array<{ from: string; to: string; deltaWeight: number }>): Promise<void> {
+    await this.db.execute(
+      'RETURN fn::batch_update_edges($updates)',
+      {
+        updates: edgeUpdates.map(eu => ({
+          from: eu.from,
+          to: eu.to,
+          delta_weight: eu.deltaWeight,
+        })),
+      },
+    );
   }
 
   // ═══════════════════════════════════════════

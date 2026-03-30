@@ -199,10 +199,61 @@ const WEATHER_STATES = ['солнечно и тепло', 'пасмурно', '�
 const TIME_STATES = ['утро', 'день', 'вечер'];
 const MAMA_MOODS = ['ласковая', 'весёлая', 'спокойная', 'уставшая', 'игривая'];
 
+// Hidden properties: not directly observable, must be inferred from consequences
+const HIDDEN_PROPERTIES: Record<string, Record<string, string>> = {
+  мячик: { weight: 'лёгкий', temperature: 'комнатная', fragility: 'прочный', edible: 'нет' },
+  кубик: { weight: 'лёгкий', temperature: 'комнатная', fragility: 'прочный', edible: 'нет' },
+  книжка: { weight: 'лёгкая', temperature: 'комнатная', fragility: 'рвётся', edible: 'нет' },
+  подушка: { weight: 'лёгкая', temperature: 'тёплая', fragility: 'прочная', edible: 'нет' },
+  кукла: { weight: 'лёгкая', temperature: 'комнатная', fragility: 'хрупкая', edible: 'нет' },
+  машинка: { weight: 'лёгкая', temperature: 'комнатная', fragility: 'прочная', edible: 'нет' },
+  тарелка: { weight: 'лёгкая', temperature: 'комнатная', fragility: 'хрупкая', edible: 'нет' },
+  ложка: { weight: 'лёгкая', temperature: 'холодная', fragility: 'прочная', edible: 'нет' },
+  стакан: { weight: 'лёгкий', temperature: 'холодный', fragility: 'хрупкий', edible: 'нет' },
+  яблоко: { weight: 'лёгкое', temperature: 'комнатная', fragility: 'хрупкое', edible: 'да' },
+  хлеб: { weight: 'лёгкий', temperature: 'комнатная', fragility: 'мягкий', edible: 'да' },
+  камень: { weight: 'тяжёлый', temperature: 'холодный', fragility: 'прочный', edible: 'нет' },
+  палка: { weight: 'лёгкая', temperature: 'комнатная', fragility: 'ломается', edible: 'нет' },
+  вода: { weight: 'тяжёлая', temperature: 'разная', fragility: 'неприменимо', edible: 'да' },
+  мыло: { weight: 'лёгкое', temperature: 'комнатная', fragility: 'размокает', edible: 'нет' },
+  ледышка: { weight: 'лёгкая', temperature: 'очень холодная', fragility: 'тает', edible: 'нет' },
+  собака: { weight: 'тяжёлая', temperature: 'тёплая', fragility: 'живая', edible: 'нет' },
+};
+
+// Consequence templates: hidden property → observable consequence
+const HIDDEN_CONSEQUENCES: Record<string, Record<string, string[]>> = {
+  weight: {
+    'тяжёлый': ['Не получается поднять.', 'Падает громко — бум!', 'Тонет в воде.'],
+    'тяжёлая': ['Не получается поднять.', 'Очень тяжело нести.', 'Тонет в воде.'],
+    'лёгкий': ['Легко поднять!', 'Подлетает, если подбросить.', 'Плавает на воде.'],
+    'лёгкая': ['Легко поднять!', 'Подлетает, если подбросить.'],
+    'лёгкое': ['Легко поднять!', 'Можно бросить далеко.'],
+  },
+  temperature: {
+    'холодный': ['Ой, холодное на ощупь!', 'Бррр, прохладно.'],
+    'холодная': ['Ой, холодное на ощупь!', 'Бррр, прохладно.'],
+    'очень холодная': ['Ай! Очень холодно! Руки мёрзнут!', 'Палец прилипает!'],
+    'тёплая': ['Тёплое и приятное на ощупь.'],
+    'тёплый': ['Тёплое и приятное на ощупь.'],
+  },
+  fragility: {
+    'хрупкий': ['Упало и разбилось на кусочки!', 'Треснуло!'],
+    'хрупкая': ['Упало и сломалось!', 'Треснуло!'],
+    'хрупкое': ['Помялось от удара.'],
+    'рвётся': ['Порвалось!', 'Страница оторвалась.'],
+    'тает': ['Тает в руках! Становится меньше!', 'Превращается в воду.'],
+    'размокает': ['Размокло в воде, стало скользкое.'],
+  },
+  edible: {
+    'да': ['Вкусно!', 'Мммм, можно кушать.'],
+  },
+};
+
 interface WorldObject {
   name: string;
   nameRu: string;
   properties: Record<string, string>;
+  hiddenProperties: Record<string, string>;
   position: string;
   state: string;
   isNovel: boolean;
@@ -234,6 +285,7 @@ export class EvolvingWorld {
       objects: loc.objects.map(name => ({
         name, nameRu: name,
         properties: OBJECT_DB[name] || {},
+        hiddenProperties: HIDDEN_PROPERTIES[name] || {},
         position: pick(['на полу', 'на столе', 'в руках', 'в углу', 'рядом']),
         state: 'обычный',
         isNovel: false,
@@ -276,6 +328,7 @@ export class EvolvingWorld {
     this.state.objects = loc.objects.map(name => ({
       name, nameRu: name,
       properties: OBJECT_DB[name] || {},
+      hiddenProperties: HIDDEN_PROPERTIES[name] || {},
       position: pick(['на полу', 'на столе', 'в руках', 'рядом']),
       state: 'обычный',
       isNovel: false,
@@ -309,6 +362,7 @@ export class EvolvingWorld {
         this.state.objects = loc.objects.map(name => ({
           name, nameRu: name,
           properties: OBJECT_DB[name] || {},
+          hiddenProperties: HIDDEN_PROPERTIES[name] || {},
           position: pick(['на полу', 'на столе', 'в руках', 'рядом']),
           state: 'обычный',
           isNovel: false,
@@ -327,6 +381,7 @@ export class EvolvingWorld {
         this.state.objects.push({
           name: novelName, nameRu: novelName,
           properties: props,
+          hiddenProperties: HIDDEN_PROPERTIES[novelName] || {},
           position: 'появился!',
           state: 'новый',
           isNovel: true,
@@ -406,6 +461,24 @@ export class EvolvingWorld {
           `${obj.nameRu} и ${other.nameRu}. ${sameShape ? 'Они похожи по форме!' : 'Они разной формы.'}`,
           'comparison', now,
         ));
+      }
+    }
+
+    // Hidden property consequences: agent sees EFFECT, not property name
+    // 20% chance per interaction to reveal a hidden consequence
+    if (obj.hiddenProperties && Math.random() < 0.2) {
+      const hiddenKeys = Object.keys(obj.hiddenProperties);
+      if (hiddenKeys.length > 0) {
+        const key = pick(hiddenKeys) as string;
+        const val = obj.hiddenProperties[key];
+        const consequences = HIDDEN_CONSEQUENCES[key]?.[val];
+        if (consequences && consequences.length > 0) {
+          const consequence = pick(consequences);
+          events.push(this.event(
+            `${consequence}`,
+            'physics', now,
+          ));
+        }
       }
     }
 

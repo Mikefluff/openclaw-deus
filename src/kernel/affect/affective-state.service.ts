@@ -4,27 +4,28 @@ import { CognitiveConfigService } from '../../cognitive/cognitive-config.service
 import { CommitDelta, TimeSense } from '../kernel.types';
 
 /**
- * AffectiveStateService: Learned homeostatic affect via gradient descent.
+ * AffectiveStateService: Learned homeostatic affect via neural GRAPH.
  *
- * NOT config.adjust(). NOT if/then. A DIFFERENTIABLE MODEL:
+ * Architecture: all weights live as nn_edge records in SurrealDB.
+ *   acc nodes (7) ──nn_edge──> hormone nodes (4) ──nn_edge──> config nodes (6)
+ *                                                └─nn_edge──> mode nodes (4)
  *
- *   accumulators × W₁ → hormone_logits → sigmoid → hormone_levels
- *   hormone_levels × W₂ → config_deltas (proportional modulation)
- *   hormone_levels → softmax → mode probabilities (explore/exploit/defensive/resting)
+ * Forward pass = graph traversal (fn::nn_forward in SurrealDB/Rust)
+ * Backward pass = edge weight update (fn::nn_backward_layer in SurrealDB/Rust)
  *
- * Loss = prediction_error_rate + pain_accumulator - reward_accumulator
- * ∂Loss/∂W computed analytically, weights updated via gradient descent.
- *
- * ~40 learnable parameters, pure TypeScript, no external ML library.
+ * JS only does: accumulator arithmetic + loss computation + calling graph ops.
  */
 
-// Dimensions
-const N_ACCUMULATORS = 7;  // pred_error, tension, pain, convergence, reward, novelty, stability
-const N_HORMONES = 4;      // cortisol, dopamine, norepinephrine, serotonin
-const N_MODES = 4;         // explore, exploit, defensive, resting
-const N_CONFIG_TARGETS = 6; // convergence_threshold, spread_factor, hebbian_lr, energy_threshold, activation_boost, freshness_decay
+const N_ACCUMULATORS = 7;
+const N_HORMONES = 4;
+const N_MODES = 4;
+const N_CONFIG_TARGETS = 6;
 
-// Config keys that affect modulates
+const ACC_NAMES = ['pred_error', 'tension', 'pain', 'convergence', 'reward', 'novelty', 'stability'];
+const HORMONE_NAMES = ['cortisol', 'dopamine', 'norepinephrine', 'serotonin'];
+const CONFIG_NAMES = ['convergence_threshold', 'spread_factor', 'hebbian_lr', 'energy_threshold', 'activation_boost', 'freshness_decay'];
+const MODE_NAMES = ['explore', 'exploit', 'defensive', 'resting'];
+
 const CONFIG_TARGETS = [
   'kernel.convergence_threshold',
   'kernel.spread_factor',
@@ -59,35 +60,19 @@ export interface AffectiveSnapshot {
   loss: number;
 }
 
-/** Learnable weights — persisted in SurrealDB */
-interface AffectWeights {
-  W1: number[][];     // [N_ACCUMULATORS × N_HORMONES] — accumulators → hormones
-  W2: number[][];     // [N_HORMONES × N_CONFIG_TARGETS] — hormones → config deltas
-  W_mode: number[][]; // [N_HORMONES × N_MODES] — hormones → mode logits
-  learning_rate: number;
-  step_count: number;
-}
-
 @Injectable()
 export class AffectiveStateService implements OnModuleInit {
   private readonly logger = new Logger(AffectiveStateService.name);
 
-  // Raw accumulators (running state)
-  private acc: number[] = new Array(N_ACCUMULATORS).fill(0); // [pred_error, tension, pain, convergence, reward, novelty, stability]
+  // Raw accumulators (running state — still JS, pure arithmetic)
+  private acc: number[] = new Array(N_ACCUMULATORS).fill(0);
   private painCyclesUnresolved = 0;
   private lastPainSource = 'none';
   private lastLoss = 0;
-
-  // Learnable weights
-  private W1!: number[][];
-  private W2!: number[][];
-  private W_mode!: number[][];
-  private lr = 0.01;
   private stepCount = 0;
 
-  // Cached forward pass (for backward pass)
+  // Cached from last forward pass (read from graph)
   private lastHormones: number[] = new Array(N_HORMONES).fill(0.5);
-  private lastHormoneLogits: number[] = new Array(N_HORMONES).fill(0);
   private lastConfigDeltas: number[] = new Array(N_CONFIG_TARGETS).fill(0);
   private lastModeProbs: number[] = new Array(N_MODES).fill(0.25);
 
@@ -97,31 +82,26 @@ export class AffectiveStateService implements OnModuleInit {
   ) {}
 
   async onModuleInit(): Promise<void> {
-    await this.loadOrInitWeights();
-    // Run one forward pass to initialize hormones from current weights
-    this.forward();
+    // Run one forward pass to initialize cached values from graph
+    await this.forward();
   }
 
   // ═══════════════════════════════════════════
-  // FORWARD PASS
+  // FORWARD PASS: graph traversal in SurrealDB
   // ═══════════════════════════════════════════
 
-  /**
-   * Process commits → update accumulators → forward pass → compute loss → backward pass → update weights.
-   * Returns config deltas to apply.
-   */
-  processCommits(commits: CommitDelta[], timeSense: TimeSense): { configDeltas: Map<string, number> } {
-    // 1. Update accumulators from system dynamics
+  async processCommits(commits: CommitDelta[], timeSense: TimeSense): Promise<{ configDeltas: Map<string, number> }> {
+    // 1. Update accumulators from system dynamics (JS arithmetic)
     this.updateAccumulators(commits, timeSense);
 
-    // 2. Forward pass: accumulators → hormones → config deltas + mode
-    const hormones = this.forward();
+    // 2. Forward pass: graph traversal (Rust)
+    await this.forward();
 
     // 3. Compute loss
     const loss = this.computeLoss();
 
-    // 4. Backward pass: compute gradients, update weights
-    this.backward(loss);
+    // 4. Backward pass: edge weight update (Rust)
+    await this.backward(loss);
 
     // 5. Build config deltas
     const deltas = new Map<string, number>();
@@ -135,130 +115,95 @@ export class AffectiveStateService implements OnModuleInit {
     return { configDeltas: deltas };
   }
 
-  /**
-   * Forward pass through the learned model.
-   */
-  private forward(): number[] {
-    // Layer 1: accumulators × W1 → hormone logits → sigmoid → hormones
-    for (let j = 0; j < N_HORMONES; j++) {
-      let sum = 0;
-      for (let i = 0; i < N_ACCUMULATORS; i++) {
-        sum += this.acc[i] * this.W1[i][j];
+  private async forward(): Promise<void> {
+    // Set accumulator values in graph
+    const inputValues = ACC_NAMES.map((name, i) => ({
+      node_id: `acc:${name}`,
+      value: this.acc[i],
+    }));
+
+    await this.db.execute(
+      'RETURN fn::nn_set_inputs($values)',
+      { values: inputValues },
+    );
+
+    // Layer 1: accumulators → hormones (graph traversal)
+    const hormoneResult = await this.db.query<{ node_id: string; value: number }>(
+      'RETURN fn::nn_forward("affect", "input", "hidden")',
+    );
+    if (hormoneResult.isOk()) {
+      for (const row of hormoneResult.value) {
+        const idx = HORMONE_NAMES.indexOf(row.node_id.replace('hormone:', ''));
+        if (idx >= 0) this.lastHormones[idx] = row.value;
       }
-      this.lastHormoneLogits[j] = sum;
-      this.lastHormones[j] = this.sigmoid(sum);
     }
 
-    // Layer 2: hormones × W2 → config deltas (tanh to bound [-1, 1], then scale)
-    for (let j = 0; j < N_CONFIG_TARGETS; j++) {
-      let sum = 0;
-      for (let i = 0; i < N_HORMONES; i++) {
-        sum += this.lastHormones[i] * this.W2[i][j];
+    // Layer 2: hormones → config targets (graph traversal)
+    const configResult = await this.db.query<{ node_id: string; value: number }>(
+      'RETURN fn::nn_forward("affect", "hidden", "output")',
+    );
+    if (configResult.isOk()) {
+      const deltaMax = this.config.get('affect.config_delta_max');
+      for (const row of configResult.value) {
+        const idx = CONFIG_NAMES.indexOf(row.node_id.replace('config:', ''));
+        if (idx >= 0) this.lastConfigDeltas[idx] = row.value * deltaMax;
       }
-      this.lastConfigDeltas[j] = Math.tanh(sum) * this.config.get('affect.config_delta_max');
     }
 
-    // Mode: hormones × W_mode → softmax → probabilities
-    const modeLogits = new Array(N_MODES).fill(0) as number[];
-    for (let j = 0; j < N_MODES; j++) {
-      let sum = 0;
-      for (let i = 0; i < N_HORMONES; i++) {
-        sum += this.lastHormones[i] * this.W_mode[i][j];
+    // Layer 3: hormones → mode probabilities (graph traversal + softmax)
+    await this.db.execute(
+      'RETURN fn::nn_forward("affect", "hidden", "mode")',
+    );
+    const modeResult = await this.db.query<{ node_id: string; value: number }>(
+      'RETURN fn::nn_softmax("affect", "mode")',
+    );
+    if (modeResult.isOk()) {
+      for (const row of modeResult.value) {
+        const idx = MODE_NAMES.indexOf(row.node_id.replace('mode:', ''));
+        if (idx >= 0) this.lastModeProbs[idx] = row.value;
       }
-      modeLogits[j] = sum;
     }
-    this.lastModeProbs = this.softmax(modeLogits) as number[];
-
-    return this.lastHormones;
   }
 
   // ═══════════════════════════════════════════
   // LOSS & BACKWARD PASS
   // ═══════════════════════════════════════════
 
-  /**
-   * Loss = pain + prediction_error - reward - convergence.
-   * System wants to MINIMIZE this → learn to reduce pain/error and maximize reward.
-   */
   private computeLoss(): number {
-    return this.acc[0] + this.acc[2] - this.acc[3] - this.acc[4]; // pred_error + pain - convergence - reward
+    return this.acc[0] + this.acc[2] - this.acc[3] - this.acc[4];
   }
 
-  /**
-   * Backward pass: analytical gradients for the 2-layer model.
-   * ∂Loss/∂W1 = ∂Loss/∂hormones × ∂hormones/∂W1
-   * Uses cached forward pass values.
-   */
-  private backward(loss: number): void {
-    // Gradient of loss w.r.t. hormones
-    // Loss = f(accumulators) — hormones influence loss INDIRECTLY through config modulation
-    // We use the loss magnitude as a global signal: if loss is high, strengthen the
-    // pathways that reduce it (convergence, reward) and weaken those that increase it (error, pain)
+  private async backward(loss: number): Promise<void> {
+    const lossSign = loss > 0 ? 1.0 : -1.0;
 
-    // ∂loss/∂hormone_j ≈ sign based on which accumulators this hormone is connected to
-    const dL_dH = new Array(N_HORMONES).fill(0) as number[];
-    for (let j = 0; j < N_HORMONES; j++) {
-      let grad = 0;
-      for (let i = 0; i < N_ACCUMULATORS; i++) {
-        // Accumulators 0,1,2 (error, tension, pain) increase loss → positive gradient
-        // Accumulators 3,4 (convergence, reward) decrease loss → negative gradient
-        const lossSign = i <= 2 ? 1.0 : -1.0;
-        grad += lossSign * this.W1[i][j] * this.acc[i];
-      }
-      dL_dH[j] = grad;
-    }
+    // Update W1 edges: accumulators → hormones
+    await this.db.execute(
+      'RETURN fn::nn_backward_layer("affect", "input", "hidden", $lr, $sign)',
+      { lr: 0.01, sign: lossSign },
+    );
 
-    // ∂sigmoid/∂logit = sigmoid * (1 - sigmoid)
-    const dSigmoid = new Array(N_HORMONES).fill(0) as number[];
-    for (let j = 0; j < N_HORMONES; j++) {
-      dSigmoid[j] = this.lastHormones[j] * (1 - this.lastHormones[j]);
-    }
+    // Update W2 edges: hormones → config
+    await this.db.execute(
+      'RETURN fn::nn_backward_layer("affect", "hidden", "output", $lr, $sign)',
+      { lr: 0.01, sign: lossSign },
+    );
 
-    // NOTE: W1 gradient is approximate — true gradient requires temporal credit assignment
-    // through config deltas. Using REINFORCE-style sign-based update as practical approximation.
-    // Update W1: ∂Loss/∂W1[i][j] = ∂Loss/∂h_j × ∂h_j/∂logit_j × ∂logit_j/∂W1[i][j]
-    //                                = dL_dH[j] × dSigmoid[j] × acc[i]
-    for (let i = 0; i < N_ACCUMULATORS; i++) {
-      for (let j = 0; j < N_HORMONES; j++) {
-        const grad = dL_dH[j] * dSigmoid[j] * this.acc[i];
-        this.W1[i][j] -= this.lr * this.clampGrad(grad);
-      }
-    }
-
-    // Update W2: gradient toward reducing loss through config modulation
-    // If loss is positive and config delta is in the wrong direction → adjust
-    const lossSign = Math.sign(loss);
-    for (let i = 0; i < N_HORMONES; i++) {
-      for (let j = 0; j < N_CONFIG_TARGETS; j++) {
-        // Gradient: push config deltas in the direction that reduces loss
-        const grad = lossSign * this.lastHormones[i] * this.lastConfigDeltas[j];
-        this.W2[i][j] -= this.lr * this.clampGrad(grad);
-      }
-    }
-
-    // Update W_mode: cross-entropy-like gradient
-    // Encourage mode that minimizes loss
-    // If loss > 0 → defensive/exploit should be higher (reduce risk)
-    // If loss < 0 → explore should be higher (we're doing well, explore more)
-    const targetMode = loss > this.config.get('affect.mode_boundary_positive') ? 2 : loss < this.config.get('affect.mode_boundary_negative') ? 0 : 1; // defensive / explore / exploit
-    for (let i = 0; i < N_HORMONES; i++) {
-      for (let j = 0; j < N_MODES; j++) {
-        const target = j === targetMode ? 1 : 0;
-        const grad = (this.lastModeProbs[j] - target) * this.lastHormones[i];
-        this.W_mode[i][j] -= this.lr * this.clampGrad(grad);
-      }
+    // Update W_mode edges: hormones → modes
+    // Mode target: defensive if high loss, explore if low loss, exploit otherwise
+    const modeSign = loss > this.config.get('affect.mode_boundary_positive') ? 1.0
+      : loss < this.config.get('affect.mode_boundary_negative') ? -1.0 : 0.0;
+    if (modeSign !== 0) {
+      await this.db.execute(
+        'RETURN fn::nn_backward_layer("affect", "hidden", "mode", $lr, $sign)',
+        { lr: 0.01, sign: modeSign },
+      );
     }
 
     this.stepCount++;
-
-    // Persist weights periodically (not every step — expensive)
-    if (this.stepCount % 10 === 0) {
-      this.persistWeights().catch(() => {});
-    }
   }
 
   // ═══════════════════════════════════════════
-  // ACCUMULATOR UPDATE
+  // ACCUMULATOR UPDATE (pure JS arithmetic)
   // ═══════════════════════════════════════════
 
   private updateAccumulators(commits: CommitDelta[], timeSense: TimeSense): void {
@@ -268,36 +213,29 @@ export class AffectiveStateService implements OnModuleInit {
       const avgPredError = commits.reduce((s, c) => s + c.prediction_error, 0) / commits.length;
       const avgNovelty = commits.reduce((s, c) => s + c.novelty_cost, 0) / commits.length;
       const avgUrgency = commits.reduce((s, c) => s + c.urgency, 0) / commits.length;
-      const totalEnergy = commits.reduce((s, c) => s + c.energy, 0);
       const convergent = commits.filter(c => c.convergence_score > 0.3).length;
       const escalations = commits.filter(c => c.is_escalation).length;
 
-      // Every commit represents cognitive work → base accumulation
       const baseActivity = Math.min(1, commits.length * 0.15);
 
-      this.acc[0] += avgPredError + avgUrgency * 0.3 + baseActivity * 0.2;  // prediction_error + arousal
-      this.acc[1] += escalations * 0.3 + baseActivity * 0.1;                 // tension
-      // acc[2] (pain) only via inflictPain()
-      this.acc[3] += convergent * 0.2 + (1 - avgPredError) * baseActivity * 0.1; // convergence (less error = more)
-      // acc[4] (reward) only via reward()
-      this.acc[5] += avgNovelty + baseActivity * 0.3;                         // novelty (always some with new events)
-      this.acc[6] += (1 - timeSense.novelty_rate) * 0.2;                     // stability
+      this.acc[0] += avgPredError + avgUrgency * 0.3 + baseActivity * 0.2;
+      this.acc[1] += escalations * 0.3 + baseActivity * 0.1;
+      this.acc[3] += convergent * 0.2 + (1 - avgPredError) * baseActivity * 0.1;
+      this.acc[5] += avgNovelty + baseActivity * 0.3;
+      this.acc[6] += (1 - timeSense.novelty_rate) * 0.2;
     }
 
-    // TimeSense-driven arousal: fast tempo → more pred_error accumulator
     if (timeSense.tempo > 0.3) {
       this.acc[0] += timeSense.tempo * 0.1;
       this.acc[5] += timeSense.novelty_rate * 0.1;
     }
 
-    // Pain tracking
     if (this.acc[2] > 0.1) {
       this.painCyclesUnresolved++;
     } else {
       this.painCyclesUnresolved = 0;
     }
 
-    // Decay all accumulators (slow)
     for (let i = 0; i < N_ACCUMULATORS; i++) {
       this.acc[i] *= (1 - decayRate);
       this.acc[i] = Math.max(0, Math.min(5, this.acc[i]));
@@ -316,14 +254,14 @@ export class AffectiveStateService implements OnModuleInit {
     return {
       hormones,
       pain: {
-        intensity: this.sigmoid(this.acc[2]),
+        intensity: 1 / (1 + Math.exp(-Math.max(-10, Math.min(10, this.acc[2])))),
         source: this.lastPainSource,
         chronic: this.painCyclesUnresolved > 5,
         accumulator: Math.round(this.acc[2] * 1000) / 1000,
         cycles_unresolved: this.painCyclesUnresolved,
       },
       valence: Math.max(-1, Math.min(1,
-        Math.round((hormones.dopamine + hormones.serotonin - hormones.cortisol - this.sigmoid(this.acc[2])) * 100) / 100)),
+        Math.round((hormones.dopamine + hormones.serotonin - hormones.cortisol - (1 / (1 + Math.exp(-this.acc[2])))) * 100) / 100)),
       arousal: Math.max(0, Math.min(1,
         Math.round((hormones.norepinephrine + hormones.cortisol) / 2 * 100) / 100)),
       mode: modeNames[modeIdx] || 'exploit',
@@ -343,7 +281,7 @@ export class AffectiveStateService implements OnModuleInit {
 
   inflictPain(source: string, amount: number): void {
     this.acc[2] += amount;
-    this.acc[0] += amount * 0.5; // pain → prediction error
+    this.acc[0] += amount * 0.5;
     this.lastPainSource = source;
     this.painCyclesUnresolved = 0;
   }
@@ -352,73 +290,5 @@ export class AffectiveStateService implements OnModuleInit {
     this.acc[4] += amount;
     this.acc[3] += amount * 0.3;
     this.acc[2] = Math.max(0, this.acc[2] - amount * 0.5);
-  }
-
-  // ═══════════════════════════════════════════
-  // MATH UTILITIES
-  // ═══════════════════════════════════════════
-
-  private sigmoid(x: number): number {
-    return 1 / (1 + Math.exp(-Math.max(-10, Math.min(10, x))));
-  }
-
-  private softmax(logits: number[]): number[] {
-    const maxLogit = Math.max(...Array.from(logits));
-    const exps = logits.map(l => Math.exp(l - maxLogit));
-    const sum = exps.reduce((s, e) => s + e, 0);
-    return exps.map(e => e / sum);
-  }
-
-  private clampGrad(g: number): number {
-    return Math.max(-1, Math.min(1, g)); // gradient clipping
-  }
-
-  // ═══════════════════════════════════════════
-  // WEIGHT PERSISTENCE
-  // ═══════════════════════════════════════════
-
-  private async loadOrInitWeights(): Promise<void> {
-    const result = await this.db.query<AffectWeights>(
-      'SELECT * FROM affect_weights ORDER BY step_count DESC LIMIT 1',
-    );
-
-    if (result.isOk() && result.value.length > 0) {
-      const w = result.value[0];
-      this.W1 = w.W1;
-      this.W2 = w.W2;
-      this.W_mode = w.W_mode;
-      this.lr = w.learning_rate;
-      this.stepCount = w.step_count;
-      this.logger.log(`Loaded affect weights (step ${this.stepCount})`);
-    } else {
-      this.initWeights();
-      this.logger.log('Initialized affect weights (Xavier)');
-    }
-  }
-
-  /** Xavier initialization: weights ~ Normal(0, sqrt(2 / (fan_in + fan_out))) */
-  private initWeights(): void {
-    this.W1 = this.xavierInit(N_ACCUMULATORS, N_HORMONES);
-    this.W2 = this.xavierInit(N_HORMONES, N_CONFIG_TARGETS);
-    this.W_mode = this.xavierInit(N_HORMONES, N_MODES);
-    this.lr = 0.01;
-    this.stepCount = 0;
-  }
-
-  private xavierInit(fanIn: number, fanOut: number): number[][] {
-    const scale = Math.sqrt(2 / (fanIn + fanOut));
-    return Array.from({ length: fanIn }, () =>
-      Array.from({ length: fanOut }, () => (Math.random() * 2 - 1) * scale),
-    );
-  }
-
-  private async persistWeights(): Promise<void> {
-    await this.db.create('affect_weights', {
-      W1: this.W1,
-      W2: this.W2,
-      W_mode: this.W_mode,
-      learning_rate: this.lr,
-      step_count: this.stepCount,
-    } as Record<string, unknown>);
   }
 }

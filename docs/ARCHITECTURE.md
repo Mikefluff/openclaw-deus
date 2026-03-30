@@ -1,195 +1,164 @@
 # DEUS Architecture
 
-## Virtual Metabody
+## Philosophy
 
-DEUS is not a pipeline. It's a pre-linguistic virtual organism with a body (world interface), a brain (concept space + kernel), and a life cycle (energy, sleep, growth). The child has no language — it learns through spatial positions, edge weights, prediction errors, and sensorimotor contingencies.
-
-```
-┌─────────────────────────────────────────────────────────┐
-│              EVOLVING WORLD (the teacher)                 │
-│                                                          │
-│   Objects + Physics + Social characters + Weather        │
-│   CorrectiveWorldBridge: amplified consequences,         │
-│   adversarial curriculum, reward shaping                 │
-│                                                          │
-│   The world IS the teacher. No separate "adult".         │
-└─────────────────────┬───────────────────────────────────┘
-                      │ raw sensory events (no language)
-                      │
-┌─────────────────────▼───────────────────────────────────┐
-│                 SENSORY LAYER                             │
-│                                                          │
-│   Raw events → Fingerprint (11 statistical features)     │
-│   → Modality Discovery (online clustering, emergent)     │
-│   → Attention Gating (learned, gradient descent)         │
-│                                                          │
-│   Zero text analysis. Labels from dominant features.     │
-│   All thresholds in CognitiveConfig (tunable).           │
-└─────────────────────┬───────────────────────────────────┘
-                      │ gated signals
-                      │
-┌─────────────────────▼───────────────────────────────────┐
-│                   THE BRAIN                               │
-│                                                          │
-│   ┌─────────────────────────────────────────────┐       │
-│   │         CONCEPT SPACE (the only model)       │       │
-│   │                                               │       │
-│   │   Dimensions born from graph conflicts        │       │
-│   │   Traces: positions + velocity in N-dim space │       │
-│   │   Clusters: materialized graph entities       │       │
-│   │     (soft membership via belongs_to edges)    │       │
-│   │     (hierarchy via contains edges)            │       │
-│   │   Centroids = abstractions ([ABSTRACT] traces)│       │
-│   │   Trajectories = trace→trace + cluster→cluster│       │
-│   │   Gradient field = 5 desire drives            │       │
-│   │   Self-traces = self model                    │       │
-│   │                                               │       │
-│   │   Hebbian learning on all edges               │       │
-│   │   Prediction error backpropagation            │       │
-│   │   Spreading activation (spatial + edge-based) │       │
-│   │   Forgetting = drift toward nearest attractor │       │
-│   │   MTREE vector index for O(log n) KNN         │       │
-│   └─────────────────────────────────────────────┘       │
-│                      ↕                                    │
-│   ┌──────────────────────────────────────────────────┐  │
-│   │      SENSORIMOTOR PREDICTOR (JEPA+Active Inf.)   │  │
-│   │                                                    │  │
-│   │   Learned dynamics: (position_t, action) →        │  │
-│   │     position_t+1 (predicted) + uncertainty         │  │
-│   │   Loss = variational free energy                   │  │
-│   │   Trains from transition buffer (experience replay)│  │
-│   │   Drives curiosity: high uncertainty → explore     │  │
-│   └──────────────────────────────────────────────────┘  │
-│                      ↕                                    │
-│   ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐  │
-│   │ 5 Agents │ │ Commit   │ │ Affect   │ │ Energy   │  │
-│   │ (swarm)  │ │ Kernel   │ │ Model    │ │ Budget   │  │
-│   │          │ │ (attn    │ │ (grad    │ │ (gates   │  │
-│   │ sensory  │ │ bottle-  │ │ descent, │ │ all ops, │  │
-│   │ predict  │ │ neck,    │ │ ~40      │ │ sleep,   │  │
-│   │ affect   │ │ 6 typed  │ │ learned  │ │ fatigue) │  │
-│   │ priority │ │ commits) │ │ params)  │ │          │  │
-│   │ strategy │ │          │ │          │ │          │  │
-│   └──────────┘ └──────────┘ └──────────┘ └──────────┘  │
-│                      ↕                                    │
-│   ┌─────────────────────────────────────────────┐       │
-│   │         ACTIVE COGNITION (idle, no LLM)      │       │
-│   │                                               │       │
-│   │   Episodic replay (dreaming)                  │       │
-│   │   Curiosity (VOI + predictor uncertainty)     │       │
-│   │   Active inference (deduction from graph)     │       │
-│   │   Schema detection (abstraction emergence)    │       │
-│   └─────────────────────────────────────────────┘       │
-│                      ↕                                    │
-│   ┌─────────────────────────────────────────────┐       │
-│   │         AGENCY (kernel decides actions)       │       │
-│   │                                               │       │
-│   │   Gradient field (5 drives) → desire vector   │       │
-│   │   Predictor → forecast outcome                │       │
-│   │   Act → compare prediction vs actual          │       │
-│   │   Record SMC transition → train predictor     │       │
-│   │   Cluster-level trajectories → transfer learn │       │
-│   │   Energy gates all actions                    │       │
-│   └─────────────────────────────────────────────┘       │
-└─────────────────────────────────────────────────────────┘
-```
-
-## Key Principle: One Space, All Functions
-
-The concept space is not "one module among many." It IS the mind:
-
-| Function | Implementation |
-|----------|---------------|
-| World model | Dimensions = discovered distinctions. Positions = learned facts. |
-| Self model | Self-traces positioned near relevant knowledge |
-| Memory | Trace weight + freshness + reactivation count |
-| Forgetting | Drift toward nearest attractor (not deletion) |
-| Prediction | Sensorimotor predictor: learned (position, action) → position' |
-| Desire | Gradient field from 5 drives |
-| Categories | Materialized clusters with soft membership |
-| Abstractions | Cluster centroids as [ABSTRACT] hub traces |
-| Physical laws | Cluster-level trajectories (push round → rolls) |
-| Time | Rate of reconfiguration under bandwidth constraint |
-| Uncertainty | Predictor uncertainty per position×action region |
-
-## World-as-Teacher
-
-The child doesn't need an adult. The world IS the teacher:
-
-- **Natural consequences**: push ball → it rolls (prediction confirmed). Push cube → it doesn't (prediction error → backprop → learning).
-- **Reward shaping**: correct cluster structure → ambient reward. Wrong clusters → no reward (not punishment).
-- **Adversarial curriculum**: weak clusters get more exposure. Objects that stress current abstractions are presented more often.
-- **Zero text analysis**: valence from physics, not from parsing words. The child is pre-linguistic.
-
-## Sensorimotor Contingency
-
-The fundamental learning unit is NOT an observation. It's an **action-outcome pair**:
+DEUS is a pre-linguistic cognitive engine. Not a pipeline. Not a chatbot wrapper. A **living kernel** where:
+- The brain lives INSIDE SurrealDB as a graph
+- Neural networks ARE graph relations (weights = edges, neurons = nodes)
+- Forward pass = graph traversal. Backward pass = edge weight update.
+- JS is only the membrane between brain and world
+- All heavy computation runs in SurrealDB stored procedures (Rust)
 
 ```
-(action, position_before, position_after, prediction_error, reward)
+┌───────────────────────────────────────────────────────────┐
+│              EVOLVING WORLD (the teacher)                   │
+│                                                            │
+│   Objects with HIDDEN states (weight, temperature,         │
+│   fragility, edibility — only observable via consequences) │
+│   CorrectiveWorldBridge: amplified consequences,           │
+│   adversarial curriculum, reward shaping                   │
+│   5 progressive levels, partial observability              │
+└────────────────────┬──────────────────────────────────────┘
+                     │ raw sensory events
+                     │
+┌────────────────────▼──────────────────────────────────────┐
+│                 SENSORY LAYER                               │
+│                                                            │
+│   Raw events → Fingerprint (11 features)                   │
+│   → Modality Discovery (online clustering)                 │
+│   → Attention Gating (learned + goal-directed)             │
+│   Active intention modulates attention depth                │
+└────────────────────┬──────────────────────────────────────┘
+                     │
+┌────────────────────▼──────────────────────────────────────┐
+│                THE BRAIN (lives in SurrealDB)               │
+│                                                            │
+│  ┌─────────────────────────────────────────────────────┐  │
+│  │    NEURAL GRAPH (nn_node + nn_edge)                  │  │
+│  │                                                       │  │
+│  │  3 models as graph relations:                         │  │
+│  │    AFFECT:    7 acc → 4 hormones → 6 config + 4 mode │  │
+│  │    CONE:      9 inputs → 2 outputs (depth + spread)  │  │
+│  │    PREDICTOR: 16 inputs → 8 delta outputs             │  │
+│  │                                                       │  │
+│  │  fn::nn_forward()  = graph traversal (Rust)           │  │
+│  │  fn::nn_backward() = edge weight update (Rust)        │  │
+│  │  fn::nn_decay()    = synaptic pruning (Rust)          │  │
+│  │  fn::nn_sprout()   = neuroplasticity (Rust)           │  │
+│  │  Reactive: nn_hebbian EVENT auto-strengthens edges    │  │
+│  └─────────────────────────────────────────────────────┘  │
+│                       ↕                                     │
+│  ┌─────────────────────────────────────────────────────┐  │
+│  │    CONCEPT SPACE (the mind)                          │  │
+│  │                                                       │  │
+│  │  Dimensions born from graph conflicts                 │  │
+│  │  Traces: position + velocity in N-dim space           │  │
+│  │  Clusters: materialized graph entities                │  │
+│  │  vector::distance::euclidean() for native KNN         │  │
+│  │  Hebbian learning on all edges                        │  │
+│  │  Spreading activation: recursive ->edge.{3}->trace   │  │
+│  └─────────────────────────────────────────────────────┘  │
+│                       ↕                                     │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐     │
+│  │ 5 Agents │ │ Commit   │ │ Affect   │ │ Cognitive│     │
+│  │ (swarm)  │ │ Kernel   │ │ Model    │ │ Cone     │     │
+│  │          │ │ (attn    │ │ (graph   │ │ (learned │     │
+│  │ sensory  │ │ bottle-  │ │ forward/ │ │ depth +  │     │
+│  │ predict  │ │ neck,    │ │ backward │ │ spread,  │     │
+│  │ affect   │ │ 6 typed  │ │ in DB)   │ │ not time)│     │
+│  │ priority │ │ commits) │ │          │ │          │     │
+│  │ strategy │ │          │ │          │ │          │     │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘     │
+│                       ↕                                     │
+│  ┌─────────────────────────────────────────────────────┐  │
+│  │    INTENTIONS → ATTENTION (goal-directed)            │  │
+│  │                                                       │  │
+│  │  Active intention boosts cognitive depth               │  │
+│  │  Goal-relevant traces get deeper spreading            │  │
+│  │  Agents receive intention context                     │  │
+│  └─────────────────────────────────────────────────────┘  │
+│                       ↕                                     │
+│  ┌─────────────────────────────────────────────────────┐  │
+│  │    SLEEP CONSOLIDATION (fn::sleep_consolidation)     │  │
+│  │                                                       │  │
+│  │  One stored proc, zero JS round-trips:                │  │
+│  │  episodic→semantic, Hebbian boost, prune weak edges,  │  │
+│  │  neural graph decay ×5, archive faded traces,         │  │
+│  │  compact narrative                                    │  │
+│  └─────────────────────────────────────────────────────┘  │
+└───────────────────────────────────────────────────────────┘
 ```
 
-The child learns: "when I do X from state S, I end up in state S'". This IS perception — mastery of lawful regularities between actions and sensory changes (O'Regan & Noe, 2001).
+## Cognitive Cone (not time-based)
 
-The `SensorimotorPredictorService` learns these contingencies:
-- Forward: `position_t + action → predicted_position_t+1 + uncertainty`
-- Loss: variational free energy = prediction_error + β × KL_divergence
-- Backward: analytical gradients, weight persistence
-- Curiosity: high uncertainty regions → explore
+Processing depth determined by cognitive state, not tick counter:
 
-## Clustered Representations
+| Depth | Name | Operations |
+|-------|------|------------|
+| 1 | LOCAL | Hot trace dynamics, affect accumulators |
+| 2+ | ATTEND | Agency, speech, DB sync, batch flush |
+| 3+ | REFLECT | Active cognition, predictor training, cone learning, forgetting |
+| 5+ | RESTRUCTURE | Dimension naming, clusters, neural decay |
+| 10+ | CONSOLIDATE | Narrative, world model rebuild |
 
-Clusters are first-class graph entities in SurrealDB:
+Depth/spread are LEARNED by the cognitive cone model (9→2 neural graph).
 
-```
-cluster ──belongs_to──> trace    (soft membership, strength 0-1)
-cluster ──contains──> cluster    (hierarchy)
-cluster ──cluster_trajectory──> cluster   (abstract dynamics)
-```
+## SurrealDB 3.0 Features Used
 
-Transfer learning: new object → belongs_to cluster:round → cluster trajectory predicts "push → rolls". No explicit copy needed.
+| Feature | Where |
+|---------|-------|
+| HNSW vector index | trace.position (64-dim), belief/knowledge embeddings |
+| 40+ stored procedures | All cognitive logic (fn::nn_forward, fn::spread_activation, etc.) |
+| ASYNC events + RETRY | cognitive_spread, cognitive_backprop, nn_hebbian |
+| COMPUTED fields | nn_edge.importance, trace.effective_strength, nn_node.is_firing |
+| Recursive traversal | fn::spread_recursive: ->activates->trace->activates->trace |
+| Native vector:: | vector::distance::euclidean(), vector::similarity::cosine() |
+| CONCURRENTLY index | Non-blocking HNSW rebuild |
+| COUNT index | Fast GROUP ALL aggregations |
+| DEFINE SEQUENCE | Monotonic cycle/commit counters |
+| Closures (.map) | fn::nn_softmax, fn::compute_centroid |
+| RELATE + TYPE RELATION | nn_edge FROM nn_node TO nn_node, activates, episodic |
 
-## Episodic Memory (AriGraph-inspired)
+## Key Rule: No Inline SQL in TypeScript
 
-Dual-edge architecture in the trace graph:
-- **Semantic edges** (`activates`, `inhibits`): permanent, represent learned associations
-- **Episodic edges** (`episodic`): timestamped, record specific interactions with context
+**ALL database logic lives in stored procedures.** TypeScript only calls `fn::xxx()`.
 
-Consolidation (GLOBAL cadence): episodic patterns appearing 3+ times promote to permanent semantic edges. Remaining episodic edges decay through weight attenuation (×0.95 per GLOBAL cycle) — not time-based pruning. Emotional/significant edges resist decay through higher initial weight. Edges that fade below 0.01 are removed. This models natural memory consolidation — frequent patterns become knowledge, rare-but-important events persist through weight, irrelevant noise fades.
+- No `UPDATE/DELETE` in TS loops
+- No `this.traceGraph['db']` (private field access)
+- Sequential DB calls → single stored proc
+- N+1 patterns → batch stored proc (fn::batch_*)
 
-## Empowerment
+## 26 Migrations
 
-The exploration drive combines two signals:
-- **Curiosity** (uncertainty): how unpredictable is this region? → seek to reduce uncertainty
-- **Empowerment** (control): how much do my actions matter here? → seek controllable regions
+| # | Name | What |
+|---|------|------|
+| 001-005 | Schema + fields | Tables, types, computed fields |
+| 006 | BDI | Intentions, knowledge, episodes |
+| 008 | Cognitive native | Coherence, coverage, HNSW indexes |
+| 010 | Kernel | Traces, edges, commit_log |
+| 013 | Kernel procedures | spread_activation, forget, backprop, reinforce |
+| 018 | Clustered learning | Clusters, belongs_to, MTREE→HNSW |
+| 021 | Native operations | find_episodic_patterns, find_high_connectivity, cognitive_metrics |
+| 022 | Heavy logic to DB | drift, conflicts, schemas, consolidate, batch ops |
+| 023 | Reactive events | cognitive_spread, archive, hebbian, backprop |
+| 024 | Neural graph | nn_node, nn_edge, fn::nn_forward/backward/softmax |
+| 025 | Neural graph events | nn_hebbian, nn_decay, nn_sprout, nn_metrics |
+| 026 | SurrealDB 3.0 | ASYNC events, COMPUTED fields, vector::, recursive traversal, batch procs, sleep consolidation |
 
-`drive = α × uncertainty + (1-α) × empowerment`
+## Developmental Metrics (6 domains)
 
-This avoids the "noisy TV problem" — pure curiosity gets stuck on random uncontrollable phenomena. Empowerment ensures the agent focuses on regions where it can actually learn.
+1. **Cognitive**: dimension growth, abstractions, retention, cross-modal binding
+2. **Vitality**: sleep regularity, energy efficiency, fatigue resilience
+3. **Affect**: valence trend, cortisol baseline, curiosity sustain, mode diversity
+4. **Agency**: action diversity, explore→exploit shift, consequence learning
+5. **World Model**: object coverage, prediction precision, causal understanding
+6. **Neural Graph**: nodes, edges, updates, dead edges, mean weight, per-model stats
 
-## Concurrent Modulation
+Stages: sensory → categorical → predictive → agentic → reflective
 
-Affect, energy, and attention modulate ALL operations simultaneously:
+## Test Status
 
-- **Affect hormones** modulate: hot trace dynamics (NE→spread, serotonin→stability, cortisol→focus)
-- **Energy** gates: all operations, sleep, fatigue
-- **Attention** selects: which modalities get processing
-- **Predictor uncertainty** drives: curiosity, careful planning
-
-## Light Cone: Multi-Frequency Processing
-
-| Layer | Frequency | What | Where |
-|-------|-----------|------|-------|
-| FAST | every tick | trace dynamics, affect, energy | in-memory |
-| MEDIUM | ×5 | spreading activation, agency (tryAct) | in-memory + DB |
-| SLOW | ×50 | active cognition, predictor training, forgetting | DB |
-| GLOBAL | ×200 | clustering, dimension naming, cluster materialization | DB |
-| DEEP | ×1000 | narrative, world model rebuild | DB |
-
-## Multi-World Support
-
-Same kernel, different WorldBridge implementations:
-- **EvolvingWorld**: physical objects, physics, 5 levels
-- **SocialWorld**: characters, social interactions, cooperation/conflict
-
-Transfer learning: concept space carries over between worlds. Cluster-level trajectories generalize across domains.
+- **620 tests**, 47 suites, 0 failures
+- Property invariants (trace weight, hormones, distance, mode probabilities)
+- Convergence tests (predictor loss decreases, affect stabilizes)
+- Full validation: 750 ticks, 12/13 assertions pass

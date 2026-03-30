@@ -1,94 +1,66 @@
-# Light Cone — Multi-Frequency Cognitive Processing
+# Cognitive Cone — Learned Processing Depth
 
 ## Principle
 
-Consciousness is always running. But not everything at the same speed. Local operations are fast. Global operations are slow. Like physics: information propagates at finite speed.
+NOT time-based cadence. NOT hardcoded if-else. A LEARNED model that determines how deep and wide to process based on cognitive state.
 
-The brain doesn't do a full neural scan every millisecond. Neurons fire locally at ms. Gamma coherence at 40Hz. Memory consolidation at hours. DEUS works the same way.
+The cognitive cone replaces fixed tick cadence with a differentiable attention policy:
+- **Depth**: how many graph hops to traverse (1-10)
+- **Spread**: how many traces to attend to (3-50)
+- Both are OUTPUT of a neural graph model that learns from experience
 
-## Frequency Layers
+## Neural Graph Architecture
 
 ```
-FAST (~0.01ms, every tick):
-  In-memory only. NEVER touches DB.
-  - Trace weight micro-decay (0.999×)
-  - Trace freshness micro-decay (0.9999×)
-  - Hot trace eviction (weight < 0.01)
-  - Affect accumulator updates
-  - Energy tick
+9 input nodes                          2 output nodes
+[cone_in:cortisol]                     [cone_out:depth]  (sigmoid → scale to 1-10)
+[cone_in:dopamine]     ──nn_edge──>    [cone_out:spread] (sigmoid → scale to 3-50)
+[cone_in:norepinephrine] (18 edges)
+[cone_in:serotonin]
+[cone_in:energy]
+[cone_in:fatigue]
+[cone_in:activation]
+[cone_in:novelty]
+[cone_in:pred_error]
 
-MEDIUM (every 5 fast ticks):
-  In-memory spreading activation on cached traces.
-  - Hot trace neighbors activate
-  - Emotional charge modulation
-  - Hebbian edge updates QUEUED (not written yet)
+Forward: fn::nn_forward("cone", "input", "output")
+Backward: fn::nn_backward("cone", lr, loss_sign)
 
-SLOW (every 50 fast ticks):
-  DB sync. This is where persistence happens.
-  - Flush batched trace writes to SurrealDB
-  - Flush batched edge weight updates
-  - Load recently changed traces INTO hot memory
-  - Agency: tryAct() through WorldBridge
-  - Idle reflection: dreaming, curiosity, inference, schemas
-  - Trace forgetting (spatial drift toward attractors)
-
-GLOBAL (every 200 fast ticks):
-  Expensive global operations.
-  - Dimension naming from exemplars
-  - Substrate → traces sync (knowledge, intentions, episodes)
-  - Convergence cluster detection
-
-DEEP (every 1000 fast ticks):
-  Heaviest operations. Run rarely.
-  - Narrative compaction (compress old commits)
-  - World model rebuild from concept space
-  - Meta-learning analysis
+Loss = processing_cost - information_gain
+     = (depth × spread × 0.001) - prediction_error_reduction
 ```
 
-## Hot Memory
+Active intention further boosts depth: `depth += intention.priority × 2`
 
-In-memory cache of recently active traces (max 200):
+## Processing Layers
 
-```typescript
-interface HotTrace {
-  traceId: string;
-  content: string;
-  weight: number;         // decays in-memory between DB syncs
-  freshness: number;      // decays in-memory
-  emotionalCharge: number;
-  activationCount: number;
-}
-```
+| Depth | Name | Operations |
+|-------|------|------------|
+| 1 (always) | LOCAL | Hot trace dynamics, affect accumulators (in-memory, ~1ms) |
+| 2+ | ATTEND | Agency, speech, DB flush, batch edge updates |
+| 3+ | REFLECT | Active cognition, predictor training, cone learning, graph conflicts, forgetting |
+| 5+ | RESTRUCTURE | Dimension naming, cluster materialization, fn::nn_decay_all |
+| 10+ | CONSOLIDATE | Narrative compaction, world model rebuild |
 
-- `activateHot()`: boost trace in memory, no DB
-- `spreadHot()`: activate neighbors in memory, queue edge updates
-- `loadFromDb()`: sync DB state into hot memory (SLOW cadence)
-- `flushWrites()`: push accumulated changes to DB (SLOW cadence)
+## LightCone (Hot Memory)
 
-## Write Batching
+In-memory cache for FAST operations (no DB round-trips):
+- `hotTraces`: Map of active traces with weight, freshness, emotional charge
+- `pendingCreates/Links/Reactivations`: queued for batch flush to DB
+- `flushWrites()`: returns accumulated writes + edge updates
 
-Changes accumulate in memory and flush to DB on SLOW cadence:
-- Trace weight changes: batched
-- Edge weight updates (Hebbian): batched
-- New traces: written on creation (external events)
-- Commits: written immediately (immutable log)
+All DB operations happen at ATTEND depth (2+) via:
+- `traceGraph.flushToDb()` — batch create/reactivate/link
+- `traceGraph.flushBatchEdgeUpdates()` — fn::batch_update_edges
+- `sensorimotorPredictor.flushTransitions()` — fn::batch_insert_transitions
 
-## Performance
+## Sleep Consolidation
 
-| Layer | Frequency | Cost | DB Round-trips |
-|-------|-----------|------|---------------|
-| FAST | every tick | ~0.01ms | 0 |
-| MEDIUM | every 5 ticks | ~0.1ms | 0 |
-| SLOW | every 50 ticks | ~50-200ms | 5-10 |
-| GLOBAL | every 200 ticks | ~100-500ms | 10-20 |
-| DEEP | every 1000 ticks | ~500-2000ms | 20+ |
-
-At 1000 ticks: only 20 SLOW syncs, 5 GLOBAL scans, 1 DEEP operation.
-Most ticks are sub-millisecond.
-
-## External Events
-
-External events (messages, world consequences) BYPASS the cadence system:
-- They interrupt immediately regardless of frequency
-- Full processing: raw stream → agents → commits → affect
-- After processing: return to cadence-based idle
+When energy depleted → fn::sleep_consolidation() (one stored proc):
+1. Episodic → semantic edge promotion
+2. Hebbian boost (co_activation > 5)
+3. Synaptic homeostasis (weak edges decay)
+4. Dead synapse pruning (< 0.02 deleted)
+5. Neural graph decay ×5 (all 3 models)
+6. Trace archival (effective_strength < 0.02)
+7. Narrative frame compaction

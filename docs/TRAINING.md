@@ -1,102 +1,79 @@
-# Training — Learning Through Experience
+# Training the Child
 
-## Approach
+## Evolving World (5 levels)
 
-Not lessons. Not language. EXPERIENCE. The child lives in a virtual world and learns from prediction errors, consequences, and sensorimotor contingencies. Zero LLM tokens during training. The world IS the teacher.
+The world IS the teacher. No separate adult module.
 
-## Training Modes
+### Level Progression
 
-### Childhood (single world)
-```bash
-npx ts-node src/training/childhood.ts 500
-```
-- Evolving world: 5 levels, 30+ objects, physics, weather, social characters
-- CorrectiveWorldBridge: amplified consequences, adversarial curriculum, reward shaping
-- Fast path: `pushEvent()` → `pump()` — 0.25s/tick, ~2 min for 500 ticks
+| Level | Locations | Objects | Mama | Hidden States | Novelty |
+|-------|-----------|---------|------|---------------|---------|
+| 0 | 1 room | 5 | always | basic | none |
+| 1 | 2 rooms | 10 | 80% | weight, temp | none |
+| 2 | 3 rooms | 15 | 60% | + fragility | weather |
+| 3 | 5 rooms | 20 | 30% | + edibility | social chars |
+| 4 | all | 25+ | 15% | all | novel objects 3% |
 
-### Multi-world (transfer learning)
-```bash
-npx ts-node src/training/multi-world.ts 500
-```
-- Phase 1 (60%): Physical world — objects, shapes, physics
-- Phase 2 (40%): Social world — characters, moods, cooperation/conflict
-- Same kernel, no reset — concept space carries over
+Progression triggered by developmental metrics (not tick count).
 
-## Learning Signals
+### Object Properties
 
-| Signal | Source | Effect |
-|--------|--------|--------|
-| Prediction error | Sensorimotor predictor vs actual | Backprop through traces + train predictor W matrices |
-| Reward/pain | World consequences (physics) | Affect accumulators → hormones → config modulation |
-| Conflict | Graph-structural (close traces, divergent edges) | Dimension birth |
-| Co-activation | Hebbian (fire together → wire together) | Edge strengthening + co_activation_count |
-| Cluster accuracy | Reward shaping (correct categories → reward) | Affect gradient |
-| Adversarial exposure | Weak cluster detection | More objects from weak categories |
-| Episodic memory | Action→consequence timestamped links | Consolidation: frequent patterns → permanent edges |
-| Empowerment | Variance of predicted outcomes across actions | Action selection prefers controllable regions |
+**Observable** (directly in events):
+- shape, color, size, texture, physics, sound
 
-## Evolving World Levels
+**Hidden** (only observable via consequences):
+- **weight**: "Не получается поднять" / "Тонет в воде" / "Легко поднять!"
+- **temperature**: "Ой, холодное!" / "Тёплое и приятное" / "Палец прилипает!"
+- **fragility**: "Разбилось!" / "Порвалось!" / "Тает в руках!"
+- **edibility**: "Вкусно!" / "Мммм, можно кушать"
 
-Progression triggered by child's developmental metrics, not tick count:
+20% chance per interaction to reveal a hidden consequence. Agent must INFER the property from observed effects.
 
-| Level | Locations | Objects | Mama | Features |
-|-------|-----------|---------|------|----------|
-| 0 | 1 room | 5 | always | naming only |
-| 1 | 2 rooms | 13 | 80% | describing |
-| 2 | 3 locations | 20 | 60% | weather, cause-effect |
-| 3 | 5 locations | 30+ | 30% | social characters |
-| 4 | 5 locations | 30+ novel | 15% | physics exceptions |
+### Learning Signals
 
-## Training Results (300 ticks)
+1. **Prediction error**: push ball → rolls (confirmed) vs push cube → doesn't (error)
+2. **Reward shaping**: correct cluster structure → ambient reward
+3. **Adversarial curriculum**: weak clusters get more exposure
+4. **Mama teaching** (by level): naming → describing → cause-effect → questions → abstract
 
-```
-Dimensions:    39 (born from graph conflicts)
-Abstractions:  19 (emerged from co-activation)
-Modalities:    11 (discovered statistical clusters)
-World Level:   0 → 1 → 2
-Stage:         SENSORY → CATEGORICAL
-Health:        66%
-Accuracy:      86%
-Prediction:    1.0
-Energy spent:  12.67
-Sleep cycles:  regular (0.96 regularity)
-```
+### Consequence-Based Learning
 
-## Architecture: pump() Fast Path
+Agent never sees "тяжёлый" directly. It sees:
+- "Камень. Толкнул камень. Не получается поднять." (consequence of weight)
+- "Камень. Положил в воду. Тонет в воде." (another consequence)
 
-```
-World.tick() → events
-    ↓
-kernelLoop.pushEvent(event)  [non-blocking]
-    ↓
-kernelLoop.pump()  [one cycle]:
-    ├── FAST: energy.tick() + lightCone.fastTick()
-    ├── Events → rawStream.ingest() → traces
-    ├── Agents → signals (no LLM, budget=0)
-    ├── Hebbian co-activation edges
-    ├── CommitKernel → commits → affect → config deltas
-    ├── Reward from convergent/accurate commits
-    ├── MEDIUM: hot trace modulation + tryAct (agency)
-    ├── SLOW: active cognition + predictor training + forgetting
-    ├── GLOBAL: dimension naming + cluster materialization
-    └── DEEP: narrative + world model rebuild
-```
+From multiple consequences → agent should form concept "heavy objects sink AND can't be lifted".
 
-## Sensorimotor Predictor
+## Training Scripts
 
-Learned dynamics in embedding space (JEPA + Active Inference):
+### childhood.ts (main training)
+- `CorrectiveWorldBridge`: amplified consequences, reward shaping
+- `pump()` loop with `pushEvent(content, type, source)`
+- Developmental metrics every 50 ticks
+- Sleep when energy < 0.2 → fn::sleep_consolidation
 
-```
-Input:  position_t (N-dim) + action_embedding (8-dim)
-        ↓
-W_delta: tanh(W × [pos; action]) × 0.5 → position_delta
-W_unc:   softplus(W × [pos; action]) → uncertainty
-        ↓
-Output: position_t+1 = position_t + delta
-        uncertainty per dimension
+### full-validation.ts (750 ticks)
+- 500 physical + 250 social ticks
+- 12/13 assertions: traces grow, dimensions capped, accuracy >50%, affect alive, energy spent
 
-Loss = prediction_error + β × uncertainty_penalty
-Training: batch gradient descent on transition buffer (SLOW cadence)
-```
+### multi-world.ts
+- Physical → Social world transfer
+- Same kernel, different WorldBridge
+- Concept space carries over
 
-Every action records a sensorimotor transition: `(position_t, action, position_t+1, reward)`. The predictor learns to forecast next positions, and its uncertainty drives curiosity.
+## Developmental Metrics (6 domains)
+
+Tracked every 50 ticks during training:
+
+1. **Cognitive**: dimension growth, abstractions, schema complexity, coverage, retention
+2. **Vitality**: sleep regularity, energy efficiency, fatigue resilience
+3. **Affect**: valence trend, cortisol baseline, curiosity sustain, mode diversity
+4. **Agency**: action diversity, explore→exploit shift, consequence learning
+5. **World Model**: object coverage, accuracy, prediction precision, causal understanding
+6. **Neural Graph**: total nodes/edges/updates, dead edges, mean weight, per-model stats
+
+### Developmental Stages
+
+sensory → categorical → predictive → agentic → reflective
+
+Stage detection: weighted score across all domains, highest wins with progression bonus.

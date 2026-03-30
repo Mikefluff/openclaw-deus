@@ -19,6 +19,8 @@ import { CognitiveConeService } from './cognitive-cone.service';
 import { ConceptSpaceService } from './space/concept-space.service';
 import { SensorimotorPredictorService } from './sensorimotor-predictor.service';
 import { EnergyService } from './energy.service';
+import { IntentionService } from '../intention/intention.service';
+import { Intention } from '../common/types/intention.types';
 
 /**
  * KernelLoop: Continuous event loop with external interrupts.
@@ -47,6 +49,7 @@ export interface AgentContext {
   phenomenal_state: PhenomenalState | null;
   is_reflection: boolean;
   llm_budget: { remaining: number; used: number; total: number };
+  active_intention: { description: string; priority: number; kind: string } | null;
 }
 
 // Event types that can interrupt the loop
@@ -112,6 +115,7 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
     private readonly conceptSpace: ConceptSpaceService,
     private readonly sensorimotorPredictor: SensorimotorPredictorService,
     private readonly cognitiveCone: CognitiveConeService,
+    private readonly intentions: IntentionService,
   ) {}
 
   onModuleInit(): void {
@@ -258,7 +262,7 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
 
             // Affect: process commits → accumulators → hormones → config deltas
             const timeSense = await this.commitKernel.computeTimeSense();
-            const { configDeltas } = this.affect.processCommits(commitResult.value, timeSense);
+            const { configDeltas } = await this.affect.processCommits(commitResult.value, timeSense);
             for (const [key, delta] of configDeltas) {
               this.config.adjust(key, delta, 'affect:pump');
             }
@@ -278,15 +282,27 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
       }
 
       // ═══════════════════════════════════════════
-      // COGNITIVE CONE: depth + spread, not time
-      // Processing scope determined by cognitive state, not tick counter
+      // ACTIVE INTENTION: goal-directed attention
+      // Top priority intention modulates depth, spread, and activation
       // ═══════════════════════════════════════════
 
-      const scope = this.cognitiveCone.computeScope(
+      const intentionResult = await this.intentions.getTopPriority();
+      const activeIntention: Intention | null = intentionResult.isOk() ? intentionResult.value : null;
+
+      // ═══════════════════════════════════════════
+      // COGNITIVE CONE: depth + spread, not time
+      // Processing scope determined by cognitive state + active goal
+      // ═══════════════════════════════════════════
+
+      // Active intention boosts depth (goal-directed = deeper processing)
+      const intentionDepthBoost = activeIntention ? Math.round(activeIntention.priority * 2) : 0;
+
+      const scope = await this.cognitiveCone.computeScope(
         this.affect.getSnapshot(),
         this.energy.getState(),
         this.conceptSpace.getDimensionCount(),
       );
+      scope.depth = Math.min(10, scope.depth + intentionDepthBoost);
 
       const cycle = this.traceGraph.getCycle();
 
@@ -312,14 +328,10 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
         await this.traceGraph.flushToDb();
         await this.sensorimotorPredictor.flushTransitions();
         const { writes, edgeUpdates } = this.lightCone.flushWrites();
-        for (const w of writes) {
-          if (w.sql) await this.traceGraph['db'].execute(w.sql, w.vars);
-        }
-        for (const eu of edgeUpdates) {
-          await this.traceGraph['db'].execute(
-            `UPDATE activates SET weight = math::clamp(weight + $dw, 0.01, 1.0), co_activation_count += 1 WHERE in.trace_id = $from AND out.trace_id = $to`,
-            { dw: eu.deltaWeight, from: eu.from, to: eu.to },
-          );
+        // Batch flush writes + edge updates
+        await this.traceGraph.flushBatchWrites(writes);
+        if (edgeUpdates.length > 0) {
+          await this.traceGraph.flushBatchEdgeUpdates(edgeUpdates);
         }
       }
 
@@ -353,21 +365,31 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
           this.cognitiveCone.recordActivation(conflict.severity); // triggers wider scope next time
         }
 
-        // Predictor training
-        await this.sensorimotorPredictor.trainOnBatch(Math.max(5, scope.spread / 5));
+        // Predictor training → prediction error reduction feeds cone learning
+        const predResult = await this.sensorimotorPredictor.trainOnBatch(Math.max(5, scope.spread / 5));
         this.sensorimotorPredictor.updatePosDim(this.conceptSpace.getDimensionCount());
+
+        // Cone learns: did the chosen depth/spread lead to information gain?
+        // prediction error reduction = how much the model improved this cycle
+        if (predResult.count > 0) {
+          this.cognitiveCone.recordPredictionError(predResult.loss);
+          await this.cognitiveCone.learn(predResult.loss);
+        }
 
         this.energy.spend(this.energy.cost.reflection_cycle, 'pump:reflect');
         await this.traceGraph.forget();
         await this.conceptSpace.drift();
       }
 
-      // RESTRUCTURE (depth 5+): dimension naming + cluster materialization
+      // RESTRUCTURE (depth 5+): dimension naming + cluster materialization + neural decay
       if (scope.depth >= 5) {
         await this.conceptSpace.nameDimensions();
         await this.conceptSpace.materializeClusters(cycle);
         await this.substrateBridge.syncSubstrateToTraces(cycle);
         await this.traceGraph.consolidateEpisodicEdges();
+
+        // Neural graph weight decay — one call, all 3 models (Rust)
+        await this.traceGraph.executeProc('RETURN fn::nn_decay_all($rate)', { rate: 0.001 });
       }
 
       // CONSOLIDATE (depth 10+): narrative + world model rebuild
@@ -602,16 +624,9 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
 
           // Flush pending writes to DB
           const { writes, edgeUpdates } = this.lightCone.flushWrites();
-          for (const w of writes) {
-            if (w.sql) await this.traceGraph['db'].execute(w.sql, w.vars);
-          }
-
-          // Batch edge weight updates
-          for (const eu of edgeUpdates) {
-            await this.traceGraph['db'].execute(
-              `UPDATE activates SET weight = math::clamp(weight + $dw, 0.01, 1.0) WHERE in.trace_id = $from AND out.trace_id = $to`,
-              { dw: eu.deltaWeight, from: eu.from, to: eu.to },
-            );
+          await this.traceGraph.flushBatchWrites(writes);
+          if (edgeUpdates.length > 0) {
+            await this.traceGraph.flushBatchEdgeUpdates(edgeUpdates);
           }
 
           // Sync DB → hot memory
@@ -758,17 +773,24 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
       // CONCURRENT AFFECT MODULATION: process commits → apply deltas IMMEDIATELY
       // This means the SAME iteration's subsequent operations feel the affect change
       const timeSense = await this.commitKernel.computeTimeSense();
-      const { configDeltas } = this.affect.processCommits(filteredCommits, timeSense);
+      const { configDeltas } = await this.affect.processCommits(filteredCommits, timeSense);
       for (const [key, delta] of configDeltas) {
         this.config.adjust(key, delta, `affect:gradient`);
       }
 
-      // Affect-modulated spreading: emotional commits get wider activation spread
+      // Goal + affect modulated spreading: urgency AND intention boost activation depth
+      const eventIntention = await this.intentions.getTopPriority();
+      const eventGoal = eventIntention.isOk() ? eventIntention.value : null;
+
       for (const commit of filteredCommits) {
-        if (Math.abs(commit.urgency) > 0.5 || commit.type === 'priority') {
-          // High urgency → spread activation wider for affected traces
+        const isUrgent = Math.abs(commit.urgency) > 0.5 || commit.type === 'priority';
+        const isGoalRelevant = eventGoal && commit.type === 'action';
+
+        if (isUrgent || isGoalRelevant) {
+          // Goal-directed: deeper spread (3) if intention active, else standard (2)
+          const depth = isGoalRelevant ? 3 : 2;
           for (const traceId of commit.changes.traces_activated.slice(0, 5)) {
-            await this.traceGraph.spreadActivation(traceId, 2); // extra depth
+            await this.traceGraph.spreadActivation(traceId, depth);
           }
         }
       }
@@ -866,7 +888,7 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
     if (targetTraces.length > 0 && action.method) {
       const currentPos = targetTraces[0].position || [];
       if (currentPos.length > 0) {
-        const pred = this.sensorimotorPredictor.predict(currentPos, action.method);
+        const pred = await this.sensorimotorPredictor.predict(currentPos, action.method);
         prediction = pred.predicted_position;
         predictionUncertainty = pred.uncertainty;
       }
@@ -1123,9 +1145,11 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
    * one consultation, then back to internal processing.
    */
   private async idleReflection(cycle: number): Promise<void> {
-    // Energy gate: if system needs sleep, skip reflection entirely
+    // Energy gate: if system needs sleep → CONSOLIDATE then sleep
     if (this.energy.needsSleep()) {
+      await this.sleepConsolidation();
       this.energy.sleep();
+      this.cognitiveCone.recordSleep();
       await new Promise(resolve => setTimeout(resolve, 200));
       return;
     }
@@ -1226,7 +1250,7 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
       if (commitResult.isOk() && commitResult.value.length > 0) {
         this.allCommits.push(...commitResult.value);
         const timeSense = await this.commitKernel.computeTimeSense();
-        const { configDeltas } = this.affect.processCommits(commitResult.value, timeSense);
+        const { configDeltas } = await this.affect.processCommits(commitResult.value, timeSense);
         for (const [key, delta] of configDeltas) {
           this.config.adjust(key, delta, 'affect:idle');
         }
@@ -1248,6 +1272,27 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
     await this.substrateBridge.syncSubstrateToTraces(cycle);
 
     await this.traceGraph.forget();
+  }
+
+  /**
+   * Sleep consolidation: ONE stored procedure, ZERO JS round-trips.
+   *
+   * fn::sleep_consolidation does everything in Rust:
+   *   episodic→semantic, Hebbian boost, prune, neural decay, archive, compact
+   */
+  private async sleepConsolidation(): Promise<void> {
+    this.logger.log('Sleep: consolidation...');
+    try {
+      const result = await this.traceGraph.executeProc(
+        'RETURN fn::sleep_consolidation($rate)',
+        { rate: 0.001 },
+      );
+      if (result.isOk()) {
+        this.logger.log(`Sleep: done (${JSON.stringify(result.value)})`);
+      }
+    } catch (e) {
+      this.logger.warn(`Sleep consolidation error: ${e}`);
+    }
   }
 
   /**
@@ -1399,6 +1444,12 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
     const timeSense = await this.commitKernel.computeTimeSense();
     const activeTraces = await this.traceGraph.getActiveTraces(10);
 
+    // Active intention for goal-directed agent processing
+    const intentionResult = await this.intentions.getTopPriority();
+    const intention = intentionResult.isOk() && intentionResult.value
+      ? { description: intentionResult.value.description, priority: intentionResult.value.priority, kind: intentionResult.value.kind }
+      : null;
+
     return {
       cycle,
       recent_commits: commits.slice(-5),
@@ -1411,6 +1462,7 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
         used: this.llmCallsUsed,
         total: this.config.get('kernel.llm_budget_per_think') || 8,
       },
+      active_intention: intention,
     };
   }
 

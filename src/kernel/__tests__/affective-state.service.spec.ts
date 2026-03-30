@@ -1,11 +1,47 @@
 import { AffectiveStateService } from '../affect/affective-state.service';
 import { CommitDelta, TimeSense } from '../kernel.types';
 
-// Mock SurrealService (DB never actually called in pure-math tests)
+// Mock SurrealService — simulate graph forward/backward responses
 const mockDb = {
   query: jest.fn().mockResolvedValue({ isOk: () => true, value: [] }),
   create: jest.fn().mockResolvedValue({ isOk: () => true, value: {} }),
+  execute: jest.fn().mockResolvedValue({ isOk: () => true, value: {} }),
 };
+
+// Return hormone values from fn::nn_forward for affect hidden layer
+function mockForwardHormones() {
+  mockDb.query.mockResolvedValueOnce({
+    isOk: () => true,
+    value: [
+      { node_id: 'hormone:cortisol', value: 0.6 },
+      { node_id: 'hormone:dopamine', value: 0.4 },
+      { node_id: 'hormone:norepinephrine', value: 0.5 },
+      { node_id: 'hormone:serotonin', value: 0.45 },
+    ],
+  });
+  // Config deltas from fn::nn_forward affect output
+  mockDb.query.mockResolvedValueOnce({
+    isOk: () => true,
+    value: [
+      { node_id: 'config:convergence_threshold', value: 0.01 },
+      { node_id: 'config:spread_factor', value: -0.005 },
+      { node_id: 'config:hebbian_lr', value: 0.002 },
+      { node_id: 'config:energy_threshold', value: 0.0 },
+      { node_id: 'config:activation_boost', value: 0.001 },
+      { node_id: 'config:freshness_decay', value: -0.001 },
+    ],
+  });
+  // Mode softmax result from fn::nn_softmax
+  mockDb.query.mockResolvedValueOnce({
+    isOk: () => true,
+    value: [
+      { node_id: 'mode:explore', value: 0.3 },
+      { node_id: 'mode:exploit', value: 0.4 },
+      { node_id: 'mode:defensive', value: 0.2 },
+      { node_id: 'mode:resting', value: 0.1 },
+    ],
+  });
+}
 
 const mockConfig = {
   get: jest.fn((key: string) => {
@@ -20,10 +56,7 @@ const mockConfig = {
 };
 
 function createService(): AffectiveStateService {
-  const svc = new AffectiveStateService(mockDb as any, mockConfig as any);
-  // Manually trigger weight init (skip async onModuleInit → loadOrInitWeights)
-  (svc as any).initWeights();
-  return svc;
+  return new AffectiveStateService(mockDb as any, mockConfig as any);
 }
 
 function makeCommit(overrides: Partial<CommitDelta> = {}): CommitDelta {
@@ -61,106 +94,72 @@ describe('AffectiveStateService', () => {
   let svc: AffectiveStateService;
 
   beforeEach(() => {
+    jest.clearAllMocks();
     svc = createService();
   });
 
-  // --- forward() ---
-  describe('forward()', () => {
-    it('produces 4 hormone values in [0,1] after sigmoid', () => {
-      // Trigger forward via processCommits
-      svc.processCommits([makeCommit()], makeTimeSense());
-      const snap = svc.getSnapshot();
-      const h = snap.hormones;
-      for (const val of [h.cortisol, h.dopamine, h.norepinephrine, h.serotonin]) {
-        expect(val).toBeGreaterThanOrEqual(0);
-        expect(val).toBeLessThanOrEqual(1);
-      }
+  describe('processCommits()', () => {
+    it('updates accumulators from commit metrics', async () => {
+      const accBefore = [...(svc as any).acc];
+      mockForwardHormones();
+      await svc.processCommits([makeCommit({ prediction_error: 0.8 })], makeTimeSense());
+      const accAfter = (svc as any).acc;
+      const anyDifferent = accBefore.some((v: number, i: number) => v !== accAfter[i]);
+      expect(anyDifferent).toBe(true);
     });
 
-    it('produces 6 config deltas bounded by tanh * 0.02', () => {
-      const result = svc.processCommits([makeCommit()], makeTimeSense());
-      for (const [, delta] of result.configDeltas) {
-        expect(delta).toBeGreaterThanOrEqual(-0.02);
-        expect(delta).toBeLessThanOrEqual(0.02);
-      }
+    it('returns configDeltas map', async () => {
+      mockForwardHormones();
+      const result = await svc.processCommits([makeCommit()], makeTimeSense());
+      expect(result.configDeltas).toBeInstanceOf(Map);
     });
 
-    it('produces 4 mode probabilities summing to ~1.0', () => {
-      svc.processCommits([makeCommit()], makeTimeSense());
-      const snap = svc.getSnapshot();
-      const sum = snap.mode_probabilities.reduce((a, b) => a + b, 0);
-      expect(sum).toBeCloseTo(1.0, 1);
-      expect(snap.mode_probabilities).toHaveLength(4);
+    it('calls fn::nn_set_inputs to set accumulator values', async () => {
+      mockForwardHormones();
+      await svc.processCommits([makeCommit()], makeTimeSense());
+      // fn::nn_set_inputs called via db.execute
+      const setCalls = mockDb.execute.mock.calls.filter(
+        (c: any[]) => typeof c[0] === 'string' && c[0].includes('nn_set_inputs'),
+      );
+      expect(setCalls.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('calls fn::nn_forward for hidden and output layers', async () => {
+      mockForwardHormones();
+      await svc.processCommits([makeCommit()], makeTimeSense());
+      // Should have queried for hormones, config, and modes
+      const fwdCalls = mockDb.query.mock.calls.filter(
+        (c: any[]) => typeof c[0] === 'string' && c[0].includes('nn_forward'),
+      );
+      expect(fwdCalls.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('calls fn::nn_backward_layer for edge weight updates', async () => {
+      mockForwardHormones();
+      await svc.processCommits([makeCommit()], makeTimeSense());
+      const bwdCalls = mockDb.execute.mock.calls.filter(
+        (c: any[]) => typeof c[0] === 'string' && c[0].includes('nn_backward_layer'),
+      );
+      expect(bwdCalls.length).toBeGreaterThanOrEqual(1);
     });
   });
 
-  // --- computeLoss() ---
   describe('computeLoss()', () => {
     it('equals acc[0] + acc[2] - acc[3] - acc[4]', () => {
       const acc = (svc as any).acc as number[];
-      acc[0] = 0.5; // pred_error
-      acc[2] = 0.3; // pain
-      acc[3] = 0.1; // convergence
-      acc[4] = 0.2; // reward
+      acc[0] = 0.5;
+      acc[2] = 0.3;
+      acc[3] = 0.1;
+      acc[4] = 0.2;
       const loss = (svc as any).computeLoss();
       expect(loss).toBeCloseTo(0.5 + 0.3 - 0.1 - 0.2, 6);
     });
   });
 
-  // --- backward() ---
-  describe('backward()', () => {
-    it('updates W1 weights (different after call)', () => {
-      // Give accumulators some signal so gradients are non-zero
-      (svc as any).acc[0] = 1.0;
-      (svc as any).acc[2] = 0.5;
-      (svc as any).forward();
-      const w1Before = JSON.stringify((svc as any).W1);
-      (svc as any).backward(0.5);
-      const w1After = JSON.stringify((svc as any).W1);
-      expect(w1After).not.toEqual(w1Before);
-    });
-
-    it('updates W2 weights', () => {
-      (svc as any).acc[0] = 1.0;
-      (svc as any).forward();
-      const w2Before = JSON.stringify((svc as any).W2);
-      (svc as any).backward(0.5);
-      const w2After = JSON.stringify((svc as any).W2);
-      expect(w2After).not.toEqual(w2Before);
-    });
-
-    it('updates W_mode weights', () => {
-      (svc as any).acc[0] = 1.0;
-      (svc as any).forward();
-      const before = JSON.stringify((svc as any).W_mode);
-      (svc as any).backward(1.0);
-      const after = JSON.stringify((svc as any).W_mode);
-      expect(after).not.toEqual(before);
-    });
-  });
-
-  // --- processCommits() ---
-  describe('processCommits()', () => {
-    it('updates accumulators from commit metrics', () => {
-      const accBefore = [...(svc as any).acc];
-      svc.processCommits([makeCommit({ prediction_error: 0.8 })], makeTimeSense());
-      // After processCommits, acc[0] (pred_error) should have changed (even after decay)
-      const accAfter = (svc as any).acc;
-      // At least one accumulator is different
-      const anyDifferent = accBefore.some((v: number, i: number) => v !== accAfter[i]);
-      expect(anyDifferent).toBe(true);
-    });
-
-    it('returns configDeltas map', () => {
-      const result = svc.processCommits([makeCommit()], makeTimeSense());
-      expect(result.configDeltas).toBeInstanceOf(Map);
-    });
-  });
-
-  // --- getSnapshot() ---
   describe('getSnapshot()', () => {
-    it('returns valid hormones, pain, valence, arousal, mode', () => {
-      svc.processCommits([makeCommit()], makeTimeSense());
+    it('returns valid hormones, pain, valence, arousal, mode', async () => {
+      mockForwardHormones();
+      await svc.processCommits([makeCommit()], makeTimeSense());
       const snap = svc.getSnapshot();
       expect(snap.hormones).toBeDefined();
       expect(snap.pain).toBeDefined();
@@ -168,9 +167,27 @@ describe('AffectiveStateService', () => {
       expect(typeof snap.arousal).toBe('number');
       expect(['explore', 'exploit', 'defensive', 'resting']).toContain(snap.mode);
     });
+
+    it('mode_probabilities sum to ~1.0', async () => {
+      mockForwardHormones();
+      await svc.processCommits([makeCommit()], makeTimeSense());
+      const snap = svc.getSnapshot();
+      const sum = snap.mode_probabilities.reduce((a, b) => a + b, 0);
+      expect(sum).toBeCloseTo(1.0, 1);
+      expect(snap.mode_probabilities).toHaveLength(4);
+    });
+
+    it('hormones from graph are in [0,1]', async () => {
+      mockForwardHormones();
+      await svc.processCommits([makeCommit()], makeTimeSense());
+      const snap = svc.getSnapshot();
+      for (const val of [snap.hormones.cortisol, snap.hormones.dopamine, snap.hormones.norepinephrine, snap.hormones.serotonin]) {
+        expect(val).toBeGreaterThanOrEqual(0);
+        expect(val).toBeLessThanOrEqual(1);
+      }
+    });
   });
 
-  // --- inflictPain() ---
   describe('inflictPain()', () => {
     it('increases pain accumulator', () => {
       const before = (svc as any).acc[2];
@@ -179,7 +196,6 @@ describe('AffectiveStateService', () => {
     });
   });
 
-  // --- reward() ---
   describe('reward()', () => {
     it('increases reward accumulator and reduces pain', () => {
       svc.inflictPain('test', 2.0);
@@ -191,105 +207,54 @@ describe('AffectiveStateService', () => {
     });
   });
 
-  // --- initWeights() ---
-  describe('initWeights()', () => {
-    it('produces non-zero matrices (Xavier)', () => {
-      const w1 = (svc as any).W1 as number[][];
-      const hasNonZero = w1.some(row => row.some((v: number) => v !== 0));
-      expect(hasNonZero).toBe(true);
-      expect(w1.length).toBe(7);       // N_ACCUMULATORS
-      expect(w1[0].length).toBe(4);    // N_HORMONES
-    });
-  });
-
-  // --- Accumulator decay ---
-  describe('accumulator decay', () => {
-    it('values decrease toward 0 over cycles', () => {
-      (svc as any).acc[0] = 3.0;
-      // Run multiple cycles with empty commits and zero tempo to decay
-      for (let i = 0; i < 10; i++) {
-        svc.processCommits([], makeTimeSense({ tempo: 0 }));
-      }
-      expect((svc as any).acc[0]).toBeLessThan(3.0);
-    });
-  });
-
-  // --- Mode selection ---
-  describe('mode selection', () => {
-    it('high cortisol stimulus trends toward defensive', () => {
-      // Drive high pain + prediction error over many cycles
-      for (let i = 0; i < 30; i++) {
-        svc.inflictPain('stress', 0.5);
-        svc.processCommits(
-          [makeCommit({ prediction_error: 0.9, is_escalation: true })],
-          makeTimeSense(),
-        );
-      }
-      const snap = svc.getSnapshot();
-      // Defensive probability should be elevated (not necessarily the mode, but > 0.15)
-      expect(snap.mode_probabilities[2]).toBeGreaterThan(0.1);
-    });
-  });
-
-  // --- Valence range ---
   describe('valence', () => {
-    it('always in [-1, 1]', () => {
-      // Extreme positive
+    it('always in [-1, 1]', async () => {
       svc.reward(5.0);
-      svc.processCommits([makeCommit()], makeTimeSense());
+      mockForwardHormones();
+      await svc.processCommits([makeCommit()], makeTimeSense());
       let snap = svc.getSnapshot();
       expect(snap.valence).toBeGreaterThanOrEqual(-1);
       expect(snap.valence).toBeLessThanOrEqual(1);
 
-      // Extreme negative
       svc.inflictPain('extreme', 5.0);
-      svc.processCommits([makeCommit()], makeTimeSense());
+      mockForwardHormones();
+      await svc.processCommits([makeCommit()], makeTimeSense());
       snap = svc.getSnapshot();
       expect(snap.valence).toBeGreaterThanOrEqual(-1);
       expect(snap.valence).toBeLessThanOrEqual(1);
     });
   });
 
-  // --- Arousal range ---
   describe('arousal', () => {
-    it('always in [0, 1]', () => {
+    it('always in [0, 1]', async () => {
       svc.inflictPain('stress', 3.0);
-      svc.processCommits([makeCommit({ prediction_error: 1.0 })], makeTimeSense());
+      mockForwardHormones();
+      await svc.processCommits([makeCommit({ prediction_error: 1.0 })], makeTimeSense());
       const snap = svc.getSnapshot();
       expect(snap.arousal).toBeGreaterThanOrEqual(0);
       expect(snap.arousal).toBeLessThanOrEqual(1);
     });
   });
 
-  // --- Loss sign ---
   describe('loss direction', () => {
     it('loss is negative when reward > pain', () => {
-      (svc as any).acc[0] = 0;   // pred_error
-      (svc as any).acc[2] = 0;   // pain
-      (svc as any).acc[3] = 1.0; // convergence
-      (svc as any).acc[4] = 2.0; // reward
+      (svc as any).acc[0] = 0;
+      (svc as any).acc[2] = 0;
+      (svc as any).acc[3] = 1.0;
+      (svc as any).acc[4] = 2.0;
       const loss = (svc as any).computeLoss();
       expect(loss).toBeLessThan(0);
     });
   });
 
-  // --- sigmoid ---
-  describe('sigmoid()', () => {
-    it('sigmoid(0)=0.5, sigmoid(large)~1, sigmoid(-large)~0', () => {
-      const sigmoid = (svc as any).sigmoid.bind(svc);
-      expect(sigmoid(0)).toBeCloseTo(0.5, 5);
-      expect(sigmoid(10)).toBeCloseTo(1.0, 3);
-      expect(sigmoid(-10)).toBeCloseTo(0.0, 3);
-    });
-  });
-
-  // --- Gradient clipping ---
-  describe('clampGrad()', () => {
-    it('bounds gradient to [-1, 1]', () => {
-      const clamp = (svc as any).clampGrad.bind(svc);
-      expect(clamp(5)).toBe(1);
-      expect(clamp(-5)).toBe(-1);
-      expect(clamp(0.5)).toBe(0.5);
+  describe('accumulator decay', () => {
+    it('values decrease toward 0 over cycles', async () => {
+      (svc as any).acc[0] = 3.0;
+      for (let i = 0; i < 10; i++) {
+        mockForwardHormones();
+        await svc.processCommits([], makeTimeSense({ tempo: 0 }));
+      }
+      expect((svc as any).acc[0]).toBeLessThan(3.0);
     });
   });
 });

@@ -1,225 +1,106 @@
-# DEUS Development Strategy & Roadmap
+# DEUS Roadmap
 
-## Current State (v12.0)
+## Current State (v3.0)
 
 ```
-186 files │ ~21,000 lines │ 193 tests │ 54 DB tables │ 51 commits
-Architecture: Virtual metabody with agency, concept space, affect model
-Status: Architecturally complete, functionally incomplete
+~250 files │ ~30,000 lines │ 620 tests │ 26 migrations │ 40+ stored procs
+Architecture: Neural graph in SurrealDB, cognitive cone, goal-directed attention
+Status: Core architecture complete, training validates
 ```
 
-## Critical Findings
+## What's Done
 
-### A. Learning Is Broken (CRITICAL)
+### Phase 1: Core Architecture (COMPLETE)
+- [x] Kernel loop with cognitive cone (depth/spread, not time)
+- [x] 5-agent swarm (sensory, predictive, affective, priority, strategic)
+- [x] Commit kernel with 6 typed commits
+- [x] Concept space with emergent dimensions
+- [x] Trace graph with Hebbian learning + spreading activation
+- [x] Energy system with sleep/fatigue
+- [x] LightCone multi-frequency processing (FAST→DEEP)
 
-Three learning mechanisms are DEFINED but NEVER INVOKED:
+### Phase 2: Learning in DB (COMPLETE)
+- [x] Neural networks as graph relations (nn_node + nn_edge)
+- [x] 3 models in graph: affect (68 edges), cone (18 edges), predictor (128 edges)
+- [x] fn::nn_forward/backward/softmax/decay/sprout stored procs
+- [x] Reactive events: nn_hebbian, cognitive_spread, backprop (all ASYNC RETRY)
+- [x] COMPUTED fields: nn_edge.importance, trace.effective_strength
+- [x] Sleep consolidation: fn::sleep_consolidation (one proc, zero JS)
+- [x] All batch operations: fn::batch_insert_transitions, batch_update_edges, etc.
 
-| Mechanism | DB Function | Service Method | Called? |
-|-----------|------------|---------------|--------|
-| Prediction error backprop | `fn::backprop_pred_error` | `traceGraph.backpropagatePredictionError()` | **NO** |
-| Episode reinforcement | `fn::reinforce_outcome` | `traceGraph.reinforceFromOutcome()` | **NO** |
-| Modality projection learning | — | `modalityDiscovery.updateProjection()` | **NO** |
+### Phase 3: SurrealDB 3.0 Features (COMPLETE)
+- [x] HNSW vector indexes (replaced MTREE)
+- [x] Native vector::distance::euclidean() / vector::similarity::cosine()
+- [x] Recursive graph traversal (->edge.{3}->trace)
+- [x] ASYNC events with RETRY 3 MAXDEPTH 5
+- [x] CONCURRENTLY index building
+- [x] COUNT indexes for fast aggregation
+- [x] DEFINE SEQUENCE for monotonic IDs
+- [x] Closures in stored procs (.map(), .filter())
 
-**Impact**: System learns Hebbian associations (co-activation) but NOT from success/failure. Training plateaus after initial discoveries.
+### Phase 4: Goal-Directed Attention (COMPLETE)
+- [x] IntentionService wired into kernel loop
+- [x] Active intention boosts cognitive cone depth
+- [x] Goal-relevant commits get deeper spreading activation
+- [x] Agents receive active_intention in context
 
-### B. Dead Code in Kernel (HIGH)
+### Phase 5: Partial Observability (COMPLETE)
+- [x] Hidden object properties (weight, temperature, fragility, edibility)
+- [x] Consequence-based revelation (20% chance per interaction)
+- [x] Agent must INFER hidden states from observable effects
+- [x] 5-level curriculum with progressive complexity
 
-`ActiveCognitionService` is injected into KernelLoopService but **NEVER CALLED**. The idle reflection loop doesn't run dreaming, curiosity, inference, or schema detection during actual execution.
+### Phase 6: Tests & Validation (COMPLETE)
+- [x] 620 tests, 47 suites
+- [x] Property invariants (trace weight, hormones, energy, distance)
+- [x] Convergence tests (predictor loss decreases, affect stabilizes)
+- [x] Full validation: 750 ticks, 12/13 pass
 
-### C. Performance Bottleneck (HIGH)
+### Phase 7: No Inline SQL (COMPLETE)
+- [x] All DB logic in stored procedures
+- [x] Zero `traceGraph['db']` private field access
+- [x] All N+1 loops replaced with batch procs
+- [x] traceGraph.executeProc() public gateway
 
-`narrative.compact()` called EVERY cycle. At 1000 ticks with 1000+ commits: 1000ms+ per cycle. Should batch every 50 ticks.
+## What's Next
 
-### D. Test Coverage (HIGH)
+### Priority 1: Self Model Aggregation
+- Self-model commits exist but aren't aggregated
+- Need: `getIdentity()` → queryable trajectory of commit-policy
+- Autobiography generation from self-model commit history
+- Self metrics in developmental metrics
 
-- 192 tests for 186 files = **15% coverage by file**
-- **42 services with ZERO tests** (including all kernel services)
-- Zero integration tests, zero property tests
-- Highest-risk untested: TraceGraph, ConceptSpace, Affect, Modality, CommitKernel
+### Priority 2: Causal Constraints
+- Past commits should CONSTRAIN future options
+- "If you broke the glass, you can't drink from it"
+- History changes action costs/availability
+- Causal graph enforcement in agency decisions
 
----
+### Priority 3: Dimension Death/Merge
+- Dimensions only grow, never shrink
+- Need: unused dimensions fade, similar dimensions merge
+- Memory geometry becomes more efficient over time
 
-## Phase 1: Fix Learning (1-2 days)
+### Priority 4: Language Emergence
+- Lexical traces as source_type='lexical' in concept space
+- 5-phase verbalization: babbling → one-word → two-word → telegraphic → grammar
+- Cross-situational learning for word-concept binding
+- No hardcoded vocabulary
 
-**Goal**: System actually learns from experience. Training curve should improve, not plateau.
+### Priority 5: Multi-World Transfer
+- Physical world → Social world transfer
+- Concept space carries over between worlds
+- Cluster-level trajectories generalize across domains
 
-### 1.1 Wire prediction error backprop
-- **Where**: `kernel-loop.service.ts` after PredictiveAgent produces error signals
-- **What**: Call `traceGraph.backpropagatePredictionError(traceId, error)` for each prediction error signal
-- **Effect**: Edges that led to wrong predictions weaken
+## Success Metrics
 
-### 1.2 Wire episode reinforcement
-- **Where**: `kernel-loop.service.ts` in `onEpisodeOutcome()` or after `substrateBridge.syncSubstrateToTraces()`
-- **What**: Call `traceGraph.reinforceFromOutcome(traceIds, reward)` when episodes complete
-- **Effect**: Traces contributing to success strengthen, failure weakens
-
-### 1.3 Wire modality projection learning
-- **Where**: `raw-stream.service.ts` after cross-modal binding
-- **What**: Call `modalityDiscovery.updateProjection()` with co-occurring positions
-- **Effect**: Modality projections adapt over time (currently frozen at birth)
-
-### 1.4 Wire ActiveCognition into idle loop
-- **Where**: `kernel-loop.service.ts` idleReflection() — code exists but calls are missing
-- **What**: Actually invoke `activeCognition.replayEpisode()`, `generateCuriosity()`, `activeInference()`, `detectSchemas()` during idle
-- **Effect**: Dreaming, curiosity, deduction, abstraction work during reflection
-
-### Verification
-- Run 100-tick training → commits > 0, trace weights change, dimensions born
-- Check: prediction errors decrease over ticks (learning curve)
-- Check: episode outcomes affect trace weights (fn::reinforce_outcome called)
-
----
-
-## Phase 2: Performance (1 day)
-
-**Goal**: 1000 ticks in <5 minutes.
-
-### 2.1 Batch narrative compaction
-- Every 50 ticks instead of every tick
-- Track `ticksSinceLastCompaction` counter
-
-### 2.2 Cache convergence clusters
-- Reuse last 3 cycles of clusters (amortize O(n²) cost)
-
-### 2.3 Reduce DB round-trips in idle
-- `getActiveTraces()` called 5+ times per idle cycle — cache for 3 cycles
-
-### Verification
-- Benchmark: 1000 ticks < 5 minutes
-- No functionality regression (same learning curve)
-
----
-
-## Phase 3: Core Tests (3-5 days)
-
-**Goal**: 400+ tests covering critical paths. No kernel service at 0%.
-
-### Tier 1: Kernel services (200 tests, 12 spec files)
-
-| Service | Tests | Priority |
-|---------|-------|----------|
-| trace-graph.service | 30 | P0: learning substrate |
-| concept-space.service | 25 | P0: dimension birth, clustering |
-| commit-kernel.service | 20 | P0: attention bottleneck |
-| affective-state.service | 20 | P0: gradient descent correctness |
-| active-cognition.service | 25 | P0: dreaming, inference, schemas |
-| modality-discovery.service | 20 | P1: modality birth, clustering |
-| energy.service | 15 | P1: budget enforcement |
-| attention.service | 15 | P1: learned attention |
-| fingerprinter.service | 15 | P1: statistical features |
-| raw-stream.service | 10 | P2: event ingestion |
-| narrative.service | 10 | P2: compaction |
-| substrate-bridge.service | 10 | P2: sync verification |
-
-### Tier 2: Cognitive services (100 tests, 8 spec files)
-
-| Service | Tests | Priority |
-|---------|-------|----------|
-| cognitive-pipeline.service | 20 | P0: main orchestrator |
-| bayesian-updater.service | 15 | P1: confidence math |
-| causal-graph.service | 15 | P1: VOI, prediction |
-| calibration.service | 15 | P1: ECE computation |
-| temporal-cognition.service | 10 | P2 |
-| meta-learning.service | 10 | P2 |
-| importance-scorer.service | 10 | P2 |
-| llm-client.service | 20 | P1: retry, budget, concurrency |
-
-### Tier 3: Integration tests (80 tests, 5 spec files)
-
-| Test Suite | Tests |
-|-----------|-------|
-| kernel-flow.integration | 20: message → signals → traces → commits |
-| learning-flow.integration | 15: episode → reinforcement → prediction improvement |
-| modality.integration | 15: events → modality birth → cross-modal binding |
-| energy-lifecycle.integration | 15: spend → fatigue → sleep → recovery |
-| concept-space.integration | 15: conflict → dimension → clustering → abstraction |
-
-### Tier 4: Property tests (50 tests, 1 spec file)
-
-Key invariants:
-- Trace weight ∈ [0, 1]
-- Energy ∈ [0, max_energy]
-- Hormone levels ∈ [0, 1]
-- Dimension count monotonically increases
-- Euclidean distance satisfies triangle inequality
-- Affect mode probabilities sum to 1.0
-
-### Verification
-- `npm test` → 600+ tests pass
-- Coverage report → >70% for kernel, >60% for cognitive
-
----
-
-## Phase 4: Training Validation (2-3 days)
-
-**Goal**: Prove the system ACTUALLY LEARNS. Quantifiable metrics.
-
-### 4.1 World model accuracy test
-- Run 500 ticks in virtual world
-- After every 50 ticks: measure accuracy (concept space beliefs vs ground truth)
-- **Expected**: accuracy improves from ~20% at tick 50 to >60% at tick 500
-
-### 4.2 Modality separation test
-- Feed mixed events (text, physics consequences, mama speech)
-- After 200 events: check modality clusters are distinct
-- **Expected**: 3+ modalities, each with >10 members, clear statistical separation
-
-### 4.3 Abstraction emergence test
-- Feed 50+ instances of round + angular objects
-- Check: [PROPERTY] traces exist for shared properties
-- **Expected**: "круглый" or similar property abstracted
-
-### 4.4 Prediction improvement test
-- Track prediction errors over 300 ticks
-- **Expected**: rolling average decreases (learning curve)
-
-### 4.5 Energy economy test
-- Run 500 ticks, track energy spend/recovery
-- **Expected**: child sleeps 3-5 times, energy usage matches exploration patterns
-
-### 4.6 Agency test
-- Track kernel actions through WorldBridge
-- **Expected**: actions become less random over time (prefer known-rewarding objects)
-
-### Verification
-- All 6 tests produce quantitative reports saved to `reports/`
-- Learning curves visualizable
-
----
-
-## Phase 5: Architecture Hardening (ongoing)
-
-### 5.1 Move from pipeline to concurrent modulation
-- Affect modulates DURING processing, not after
-- Energy constraints DURING trace creation, not just at gates
-- Long-term: unified `concept_space.process(event, modulators)` call
-
-### 5.2 Prediction → action → consequence loop closure
-- Kernel predicts "if I push round thing → rolls"
-- Acts through WorldBridge
-- Compares prediction vs actual
-- Backprops error through concept space trajectories
-
-### 5.3 Self-model enrichment
-- Create self-traces from episode outcomes: "I'm good at identifying shapes"
-- Self-traces participate in agency decisions: "I should explore textures, not shapes"
-
-### 5.4 Multi-world support
-- Same kernel, different WorldBridge implementations
-- Test: shapes world, social world, code world
-- Verify: transfer learning between worlds
-
----
-
-## Success Criteria
-
-| Metric | Current | Phase 1 | Phase 3 | Phase 4 |
-|--------|---------|---------|---------|---------|
-| Learning mechanisms active | 1/4 | 4/4 | 4/4 | 4/4 |
-| Test count | 193 | 200 | 600+ | 650+ |
-| Test coverage (kernel) | ~5% | ~10% | >70% | >70% |
-| World model accuracy | untested | measurable | measurable | >60% at tick 500 |
-| 1000-tick training time | ~12 min | ~12 min | <5 min | <5 min |
-| Prediction error trend | flat | decreasing | decreasing | quantified |
-| Dead code | 4 methods | 0 | 0 | 0 |
-| Narrative bottleneck | every tick | every 50 | every 50 | every 50 |
+| Metric | Current | Target |
+|--------|---------|--------|
+| Tests | 620 | 800+ |
+| Stored procedures | 40+ | 50+ |
+| Inline SQL in TS | 0 | 0 |
+| Training speed | ~0.25s/tick | <0.1s/tick |
+| World model accuracy (500 ticks) | ~65% | >75% |
+| Vocabulary (500 ticks) | 5-10 words | 20+ words |
+| Prediction error trend | decreasing | decreasing |
+| Developmental stages reached | sensory→categorical | →predictive |

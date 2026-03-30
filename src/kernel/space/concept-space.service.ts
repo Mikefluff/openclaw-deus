@@ -58,17 +58,24 @@ export class ConceptSpaceService {
    * Returns: closest first.
    */
   async findNeighbors(position: number[], radius: number, limit = 10): Promise<Array<{ trace: Trace; dist: number }>> {
-    // NOTE: SurrealDB 3.0.4 KNN (<|K|>) doesn't support AND conditions.
-    // Using brute-force scan with JS sort. MTREE index helps DB internally.
-
-    // Fallback: brute-force scan + JS sort
-    const result = await this.db.query<Trace>(
-      `SELECT * FROM trace WHERE archived = false AND suppressed = false AND array::len(position) > 0 LIMIT 100`,
+    // Native vector::distance::euclidean in SurrealDB 3.0 (Rust)
+    const result = await this.db.query<Trace & { dist: number }>(
+      `RETURN fn::find_nearest_traces($position, $radius, $limit)`,
+      { position, radius, limit },
     );
-    if (result.isErr()) return [];
+
+    if (result.isOk() && result.value.length > 0) {
+      return result.value.map(t => ({ trace: t, dist: t.dist }));
+    }
+
+    // Fallback: brute-force scan + JS sort (if stored proc not deployed)
+    const fallback = await this.db.query<Trace>(
+      `SELECT * FROM trace WHERE archived = false AND suppressed = false AND array::len(position) > 0 LIMIT 200`,
+    );
+    if (fallback.isErr()) return [];
 
     const neighbors: Array<{ trace: Trace; dist: number }> = [];
-    for (const trace of result.value) {
+    for (const trace of fallback.value) {
       const dist = this.distance(position, trace.position || []);
       if (dist <= radius) {
         neighbors.push({ trace, dist });
