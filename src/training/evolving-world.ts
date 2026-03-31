@@ -690,6 +690,9 @@ export class EvolvingWorld {
   getAvailableActions(): string[] { return ['touch', 'push', 'drop', 'shake', 'look_closely', 'put_in_water']; }
   getObjectNames(): string[] { return this.state.objects.map(o => o.nameRu); }
 
+  getObjects(): typeof this.state.objects { return this.state.objects; }
+  getObjectCount(): number { return this.state.objects.length; }
+
   getGroundTruth(): Array<{ name: string; properties: Record<string, string> }> {
     return this.state.objects.map(obj => ({
       name: obj.nameRu,
