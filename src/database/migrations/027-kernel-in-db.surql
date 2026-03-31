@@ -122,12 +122,16 @@ DEFINE FUNCTION OVERWRITE fn::kernel_tick($cycle: int) {
     LET $energy = math::max([0.0, $energy - 0.03]);
   };
 
-  -- ── NIGHTLY (autonomous: brain decides when, not cron) ──
-  -- Trigger: enough cycles awake + after a sleep + low activity
-  LET $cycles_awake = ($state.cycles_since_sleep ?? 0) + 1;
-  IF $cycles_awake > 500 AND $energy > 0.5 AND $depth >= 5 {
+  -- ── NIGHTLY (autonomous: brain decides based on internal state) ──
+  -- No magic numbers. Triggers when:
+  --   fatigue is high (system worked hard)
+  --   AND energy recovered (just slept or resting)
+  --   AND processing depth allows it
+  -- This is the brain saying "I need maintenance" — not a cron job.
+  IF $fatigue > 0.3 AND $energy > 0.5 AND $depth >= 5 {
     fn::nightly_run();
     LET $energy = math::max([0.0, $energy - 0.1]);
+    LET $fatigue = math::max([0.0, $fatigue - 0.2]);
   };
 
   -- ── SLEEP (energy depleted — brain decides, not NestJS) ──
