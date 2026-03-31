@@ -183,6 +183,12 @@ export class PhysicsWorld {
   private available_objects: number[]; // indices into OBJECTS
   private mama_present = true;
   private broken = new Set<number>(); // broken object indices
+  // Object states: wet, flipped, warm (change from actions, affect future actions)
+  private wet = new Set<number>();
+  private flipped = new Set<number>();
+  private warmed = new Set<number>();
+  // Track interaction history for consequence chains
+  private last_action: { action: number; object: number; valence: number } | null = null;
 
   constructor() {
     // Level 0: first 5 objects
@@ -193,6 +199,25 @@ export class PhysicsWorld {
   tick(): SensoryTransition[] {
     this.tick_count++;
     const transitions: SensoryTransition[] = [];
+
+    // World events: rain (wet), sun (warm), dry (unwet)
+    if (this.tick_count % 500 === 0 && Math.random() < 0.5) {
+      // Rain: random objects get wet
+      for (const idx of this.available_objects) {
+        if (Math.random() < 0.3 && !this.broken.has(idx)) this.wet.add(idx);
+      }
+    }
+    if (this.tick_count % 700 === 0 && Math.random() < 0.4) {
+      // Sun: random objects warm up
+      for (const idx of this.available_objects) {
+        if (Math.random() < 0.2 && !this.broken.has(idx)) this.warmed.add(idx);
+      }
+    }
+    if (this.tick_count % 300 === 0) {
+      // Dry: wet things dry, warm things cool
+      for (const idx of [...this.wet]) if (Math.random() < 0.4) this.wet.delete(idx);
+      for (const idx of [...this.warmed]) if (Math.random() < 0.3) this.warmed.delete(idx);
+    }
 
     // Ambient: random object produces background sensory signal (look action)
     if (this.available_objects.length > 0 && Math.random() < 0.5) {
@@ -248,12 +273,58 @@ export class PhysicsWorld {
 
     const obj = OBJECTS[idx];
     const act = clamp(action_id, 0, 5);
-    const { channels, valence } = computePhysics(obj, act);
+    const { channels, valence: baseValence } = computePhysics(obj, act);
+
+    // State-dependent valence modifiers
+    let valence = baseValence;
+
+    // Wet objects are slippery: push/shake gives surprise bonus
+    if (this.wet.has(idx) && (act === 1 || act === 3)) {
+      channels[0] += 0.3; // extra displacement
+      channels[3] += 0.2; // extra rotation
+      valence += 0.1; // surprising = interesting
+    }
+
+    // Flipped objects behave differently: touch gives unusual texture
+    if (this.flipped.has(idx) && act === 0) {
+      channels[7] = 1 - channels[7]; // hardness inverted (bottom surface)
+      channels[8] = 1 - channels[8]; // smoothness inverted
+      valence += 0.05; // slightly novel
+    }
+
+    // Warmed objects: temperature higher
+    if (this.warmed.has(idx)) {
+      channels[9] += 0.3; // warmer
+      if (channels[9] > 0.4) valence -= 0.15; // too hot = pain
+    }
+
+    // Drop can flip objects
+    if (act === 2 && Math.random() < 0.3 && !this.broken.has(idx)) {
+      this.flipped.add(idx);
+    }
+
+    // Squeeze wet objects: they squirt (surprising)
+    if (act === 5 && this.wet.has(idx)) {
+      channels[10] += 0.4; // deformation
+      channels[5] += 0.3; // squirt sound
+      valence += 0.2; // fun!
+      this.wet.delete(idx); // no longer wet
+    }
+
+    // Repeated same action on same object = boredom (diminishing valence)
+    if (this.last_action && this.last_action.action === act && this.last_action.object === idx) {
+      valence *= 0.5; // repetition is boring
+    }
+    this.last_action = { action: act, object: idx, valence };
 
     // Track breakage
-    if (channels[11] > 0.5) { // breakage channel
+    if (channels[11] > 0.5) {
       this.broken.add(idx);
     }
+
+    // Clamp channels
+    for (let i = 0; i < channels.length; i++) channels[i] = clamp(channels[i], -1, 1);
+    valence = clamp(valence, -1, 1);
 
     return {
       action_id: act,
