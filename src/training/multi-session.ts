@@ -147,6 +147,11 @@ async function main() {
           );
         } catch {}
 
+        // Mode learning: reinforce current behavioral mode based on action outcome
+        if (Math.abs(consequence.valence) > 0.01) {
+          try { await db.query('RETURN fn::mode_learn($v)', { v: consequence.valence }); } catch {}
+        }
+
         if (req.id) await db.query('UPDATE $id SET status = \'completed\'', { id: req.id });
       }
 
