@@ -41,7 +41,13 @@ async function main() {
   await db.query('DEFINE TABLE OVERWRITE kernel_request SCHEMALESS');
   await db.query('DEFINE TABLE OVERWRITE brain_action SCHEMALESS');
   await db.query('DEFINE TABLE OVERWRITE activates SCHEMALESS TYPE RELATION FROM trace TO trace');
-  await db.query('UPDATE kernel_state SET cycle = 0, energy = 1.0, fatigue = 0.0, running = true');
+  // Ensure kernel_state exists (CREATE if empty, then UPDATE)
+  const ksCount = await db.query('SELECT count() AS c FROM kernel_state GROUP ALL') as any;
+  if ((ksCount[0]?.[0]?.c ?? 0) === 0) {
+    await db.query('CREATE kernel_state SET cycle = 0, energy = 1.0, fatigue = 0.0, running = true, config = {}');
+  } else {
+    await db.query('UPDATE kernel_state SET cycle = 0, energy = 1.0, fatigue = 0.0, running = true');
+  }
 
   const world = new PhysicsWorld();
   console.log(`Developmental training: max ${MAX_TICKS} ticks, target maturity ${TARGET_MATURITY}`);
