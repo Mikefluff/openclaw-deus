@@ -126,28 +126,44 @@ DEFINE FUNCTION OVERWRITE fn::affect_forward_output() {
     UPDATE nn_node SET value = $ws + ($m.bias ?? 0) WHERE id = $m.id;
   };
 
-  -- Softmax over mode nodes
+  -- Softmax over mode nodes using .map() + math::sum() (LET doesn't mutate in FOR)
   LET $modes = (SELECT id, node_id, value FROM nn_node WHERE model = 'affect' AND layer = 'mode');
-  -- Find max for numerical stability
-  LET $max_v = 0.0;
-  FOR $m IN $modes { IF ($m.value ?? 0) > $max_v { LET $max_v = $m.value; }; };
-
-  LET $sum_exp = 0.0;
-  FOR $m IN $modes {
-    LET $sum_exp = $sum_exp + math::pow(math::E, math::clamp(($m.value ?? 0) - $max_v, 0.0 - $sc, 0.0));
-  };
+  LET $vals = $modes.map(|$m| $m.value ?? 0);
+  LET $max_v = math::max($vals) ?? 0;
+  LET $exps = $vals.map(|$v| math::pow(math::E, math::clamp($v - $max_v, 0.0 - $sc, 0.0)));
+  LET $sum_exp = math::sum($exps) ?? 1.0;
   IF $sum_exp = 0 { LET $sum_exp = 1.0; };
 
-  FOR $m IN $modes {
-    LET $prob = math::pow(math::E, math::clamp(($m.value ?? 0) - $max_v, 0.0 - $sc, 0.0)) / $sum_exp;
-    UPDATE nn_node SET value = $prob WHERE id = $m.id;
+  FOR $i IN 0..array::len($modes) {
+    LET $prob = $exps[$i] / $sum_exp;
+    UPDATE nn_node SET value = $prob WHERE id = $modes[$i].id;
   };
 
   RETURN true;
 };
 
 -- ═══════════════════════════════════════════
--- 4. fn::mode_learn — REINFORCE: reinforce mode that led to good outcomes
+-- 4. fn::get_behavioral_mode — fixed: no LET mutation in FOR
+-- ═══════════════════════════════════════════
+
+DEFINE FUNCTION OVERWRITE fn::get_behavioral_mode() {
+  LET $cfg = (SELECT * FROM kernel_state LIMIT 1)[0].config ?? {};
+  LET $modes = (SELECT node_id, value FROM nn_node WHERE model = 'affect' AND layer = 'mode');
+  -- Use .map() to find max, then filter
+  LET $vals = $modes.map(|$m| $m.value ?? 0);
+  LET $max_v = math::max($vals) ?? 0.25;
+  -- Find first mode with max value
+  LET $best = (SELECT node_id, value FROM nn_node
+    WHERE model = 'affect' AND layer = 'mode' AND value >= $max_v LIMIT 1)[0];
+  LET $name = IF $best IS NOT NONE
+    THEN string::replace($best.node_id, 'mode:', '')
+    ELSE ($cfg.behavioral_mode_default ?? 'explore')
+  END;
+  RETURN { name: $name, prob: $best.value ?? 0.25 };
+};
+
+-- ═══════════════════════════════════════════
+-- 5. fn::mode_learn — REINFORCE: reinforce mode that led to good outcomes
 -- Called after each action with valence feedback
 -- ═══════════════════════════════════════════
 
@@ -167,15 +183,11 @@ DEFINE FUNCTION OVERWRITE fn::mode_learn($valence: float) {
   -- Get current mode probabilities
   LET $modes = (SELECT id, node_id, value FROM nn_node WHERE model = 'affect' AND layer = 'mode');
 
-  -- Find which mode is active (highest probability)
-  LET $best_id = $modes[0].id;
-  LET $best_prob = 0.0;
-  FOR $m IN $modes {
-    IF ($m.value ?? 0) > $best_prob {
-      LET $best_id = $m.id;
-      LET $best_prob = $m.value;
-    };
-  };
+  -- Find which mode is active (highest probability) — using .map() not FOR mutation
+  LET $vals = $modes.map(|$m| $m.value ?? 0);
+  LET $max_prob = math::max($vals) ?? 0.25;
+  LET $best = (SELECT id FROM nn_node WHERE model = 'affect' AND layer = 'mode' AND value >= $max_prob LIMIT 1)[0];
+  LET $best_id = $best.id;
 
   -- REINFORCE gradient: Δw = lr × advantage × ∂log(π)/∂w
   -- For softmax: ∂log(π_i)/∂w_ij = (1_{i=selected} - π_i) × input_j
