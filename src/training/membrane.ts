@@ -88,6 +88,22 @@ async function main() {
       // Feed numerical consequence to brain
       await feedTransition(consequence);
 
+      // Three-factor Hebbian: edges learn from dopamine × TD_error × eligibility
+      const consKey = `${consequence.action_id}:${consequence.object_idx}`;
+      const predError = 0.3; // TODO: compute from sensorimotor predictor
+      try {
+        await db.query(
+          `LET $to = (SELECT id FROM trace WHERE content = $key AND archived = false LIMIT 1)[0].id;
+           IF $to != NONE {
+             LET $recent = (SELECT id FROM trace WHERE archived = false AND id != $to LIMIT 3);
+             FOR $r IN $recent {
+               fn::learn_edge($r.id, $to, $valence, $pred_error);
+             };
+           }`,
+          { key: consKey, valence: consequence.valence, pred_error: predError },
+        );
+      } catch {}
+
       // Mark processed
       if (req.id) await db.query('UPDATE $id SET status = \'completed\'', { id: req.id });
     }

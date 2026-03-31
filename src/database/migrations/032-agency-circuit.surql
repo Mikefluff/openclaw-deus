@@ -232,8 +232,8 @@ DEFINE FUNCTION OVERWRITE fn::brain_tick($n: int) {
       -- Backward: update weights based on loss
       fn::nn_backward('affect', 0.01, $loss_sign);
 
-      -- Decay accumulators (consumed by learning)
-      UPDATE nn_node SET value = value * 0.95 WHERE model = 'affect' AND layer = 'input';
+      -- Slow decay: accumulators carry signal between brain_tick batches
+      UPDATE nn_node SET value = value * 0.99 WHERE model = 'affect' AND layer = 'input';
     };
 
     -- Trace decay (every 50)
@@ -247,10 +247,11 @@ DEFINE FUNCTION OVERWRITE fn::brain_tick($n: int) {
       fn::agency_tick($x);
     };
 
-    -- MEDIUM (every 500): inference + forget
+    -- MEDIUM (every 500): inference + forget + eligibility decay
     IF $x % 500 = 0 {
       fn::active_inference(0.3, 5);
       fn::forget_traces(0.02, 0.03);
+      fn::decay_eligibility();
     };
 
     -- LOW (every 2000): deep synthesis
