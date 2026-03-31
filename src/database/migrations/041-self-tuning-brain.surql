@@ -135,7 +135,7 @@ DEFINE FUNCTION OVERWRITE fn::affect_forward_output() {
   IF $sum_exp = 0 { LET $sum_exp = 1.0; };
 
   FOR $i IN 0..array::len($modes) {
-    LET $prob = $exps[$i] / $sum_exp;
+    LET $prob = math::max([0.0, $exps[$i] / $sum_exp]);
     UPDATE nn_node SET value = $prob WHERE id = $modes[$i].id;
   };
 

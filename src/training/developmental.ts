@@ -20,6 +20,16 @@ async function main() {
   await db.signin({ username: 'root', password: 'root' });
   await db.use({ namespace: 'deus', database: 'runtime' });
 
+  // Re-auth every 30 minutes to prevent token expiry
+  let lastAuth = Date.now();
+  async function ensureAuth() {
+    if (Date.now() - lastAuth > 25 * 60 * 1000) {
+      await db.signin({ username: 'root', password: 'root' });
+      await db.use({ namespace: 'deus', database: 'runtime' });
+      lastAuth = Date.now();
+    }
+  }
+
   // Kill conflicting events
   for (const ev of [
     'kernel_heartbeat ON kernel_state', 'critical_loop ON sched_critical',
@@ -98,6 +108,9 @@ async function main() {
     const state = await db.query('SELECT energy, fatigue, cycle FROM kernel_state LIMIT 1') as any;
     const s = state[0]?.[0] || {};
     if ((s.energy ?? 1) < 0.15) sleepCount++;
+
+    // Re-auth periodically
+    if (tick % 500 === 0) await ensureAuth();
 
     // Progress report every 1000 ticks
     if (tick % 1000 === 0 && tick > 0) {
