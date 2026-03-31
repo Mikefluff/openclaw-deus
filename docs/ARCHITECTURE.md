@@ -145,7 +145,8 @@ fn::brain_tick($n) — FOR loop, all circuits:
   └── Phenomenal state capture → kernel_state table
 ```
 
-NestJS calls `fn::kernel_tick()` via setInterval. Zero orchestration in JS.
+Membrane (NestJS) only: watchdog re-kick + world↔brain translation.
+All learning inside SurrealDB: three-factor Hebbian, nn_backward, eligibility traces.
 
 Supporting tables:
 - `kernel_state` — singleton: energy, fatigue, cycle, phenomenal state, scope
@@ -184,7 +185,9 @@ NestJS only handles:
 | 029 | Preemptive scheduler | 4 circuits with semaphores, fn::kernel_start/stop/reset/status |
 | 030 | Runtime model | fn::interrupt, fn::check_preemption, 3 reset classes, budget accounting |
 | 031 | Parallel circuits | fn::circuit_*, archive-never-delete, fn::run_parallel_status |
-| 032 | Agency circuit | fn::agency_tick, fn::process_consequence, fn::brain_tick |
+| 032 | Agency circuit | fn::agency_tick, fn::process_sensory, fn::brain_tick |
+| 033 | Sensorimotor | fn::process_sensory (13 channels + 16 speech = 29 numbers) |
+| 034 | Three-factor learning | fn::learn_edge (Δw = η×eligibility×M), fn::decay_eligibility |
 
 ## Developmental Metrics (6 domains)
 
@@ -202,6 +205,6 @@ Stages: sensory → categorical → predictive → agentic → reflective
 - **463 tests**, 38 suites, 0 failures
 - Property invariants (trace weight, hormones, distance, mode probabilities)
 - Convergence tests (predictor loss decreases, affect stabilizes)
-- fn::brain_tick: 200K cycles, 1000 autonomous actions, traces stabilize ~245
-- fn::nn_forward: neural graph forward pass verified on SurrealDB 3.0.4
-- 1M+ cognitive operations in 45s (24K+ tps, parallel circuits)
+- Training: 200K cycles, 1000 actions, hormones 0.5→0.978, 107 edges, traces cluster by physics
+- 1M+ cognitive operations in 45s (24K+ tps)
+- PhysicsWorld: 13 sensory channels + 16 speech = brain sees only 29 numbers

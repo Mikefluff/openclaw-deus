@@ -43,10 +43,23 @@ Accumulators updated from commit metrics:
 
 Decay: all × (1 - decay_rate), clamped to [0, 5].
 
-## Reactive Events
+## Learning (verified working)
 
-- `nn_hebbian` on nn_edge: when edge fires strongly, auto-strengthen (0.001/firing)
-- `fn::nn_decay("affect", rate)`: unused edges fade during RESTRUCTURE + sleep
+- Forward: accumulators → weighted sum → sigmoid → hormones (**0.5 → 0.978 confirmed**)
+- Backward: fn::nn_backward with loss = pred_error + pain - convergence - reward
+- Correct activation derivatives: sigmoid f'=x(1-x), tanh f'=1-x²
+- SurrealDB #6382 workaround: LET binding to isolate ?? from +
+- Accumulator decay 0.99× per learning step (slow, carries signal between batches)
+- Neural weights 0.19 → 0.95 after 200 world ticks (636 backward updates)
+
+## Three-Factor Hebbian on Trace Edges
+
+- fn::learn_edge: Δw = η × eligibility × M (Frémaux & Gerstner 2016)
+- M = dopamine × TD_error + (1-dopamine) × surprise
+- TD_error = valence + γ×target.weight - source.weight
+- Surprise = 1 - exp(-pred_error²)
+- Eligibility traces decay per cycle: e *= γ×λ
+- 107 edges created after 200 world ticks
 
 ## Five Drives (Desire Gradient)
 

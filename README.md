@@ -87,10 +87,13 @@ npm test   # 463 tests, 38 suites
 ```
 200 world ticks, 200,000 brain cycles:
   Actions:     1,000 (autonomous, affect-driven)
-  Traces:      7 → 250 (stabilized by forgetting)
+  Traces:      29 active (sensorimotor dedup)
+  Edges:       107 (three-factor Hebbian)
+  Hormones:    0.5 → 0.978 (affect model learning!)
+  Neural wt:   0.19 → 0.95 (updated 636×)
+  Clustering:  push:кукла↔push:книжка = 0.132 (similar physics = close)
+  Speech:      4 mama-named objects (symbol grounding starts)
   Energy:      oscillates 0.1↔0.55 (sleep/wake cycles)
-  World model: confidence 1.0
-  Introspection: coherence 0.5, posture "review"
 
 Performance: 24,000+ tps (internal ticks, zero JS roundtrip)
 ```
@@ -116,7 +119,7 @@ Performance: 24,000+ tps (internal ticks, zero JS roundtrip)
 ```
 ~240 files, ~27,000 lines TypeScript
 463 tests, 38 suites
-32 SurrealDB migrations, 50+ stored procedures
+34 SurrealDB migrations, 55+ stored procedures
 56 neural graph nodes, 214 edges (3 models)
 HNSW vector index (64-dim), ASYNC events
 4 cognitive circuits with preemptive scheduling

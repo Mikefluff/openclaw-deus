@@ -3,9 +3,9 @@
 ## Current State (v3.0)
 
 ```
-~240 files │ ~27,000 lines │ 463 tests │ 32 migrations │ 50+ stored procs
-Architecture: Autonomous brain in SurrealDB (fn::brain_tick), preemptive scheduler, agency
-Status: Brain learns autonomously, 200K cycles, 1000 actions, 24K+ tps
+~240 files │ ~27,000 lines │ 463 tests │ 34 migrations │ 55+ stored procs
+Brain: autonomous in SurrealDB, three-factor Hebbian, sensorimotor interface
+Training: hormones move (0.5→0.978), 107 edges, traces cluster by physics, 24K+ tps
 ```
 
 ## What's Done
@@ -84,12 +84,27 @@ Status: Brain learns autonomously, 200K cycles, 1000 actions, 24K+ tps
 
 ### Phase 11: Autonomous Agency + Training (COMPLETE)
 - [x] fn::agency_tick — brain decides actions from affect (dopamine/cortisol)
-- [x] fn::process_consequence — sensory feedback → traces + accumulators
 - [x] fn::brain_tick — unified internal loop, all circuits at natural frequencies
-- [x] Membrane (training/membrane.ts) — thin world↔brain translator
-- [x] 200K cycles, 1000 autonomous actions, traces stabilize ~245
 - [x] Archive never delete (Pointer Architecture)
 - [x] 1M+ cognitive ops in 45s (24K+ tps)
+
+### Phase 12: Sensorimotor Interface (COMPLETE)
+- [x] PhysicsWorld: 12 objects with mass/hardness/friction/roundness/fragility/etc.
+- [x] 13 sensory channels: position_delta[3], rotation, force, sound, surface, temp, breakage, visual
+- [x] 16 speech channels: Cyrillic character codes (mama speech)
+- [x] fn::process_sensory — brain receives 29 numbers, never text
+- [x] Traces position = sensory vector (64-dim padded for HNSW)
+- [x] Push-trace clustering confirmed: similar physics = closer in concept space
+
+### Phase 13: Three-Factor Learning (COMPLETE)
+- [x] fn::learn_edge: Δw = η × eligibility × M (Frémaux & Gerstner 2016)
+  M = dopamine × TD_error + (1-dopamine) × surprise
+- [x] Eligibility traces on activates edges (temporal credit assignment)
+- [x] fn::nn_backward: correct tanh derivative (1-x²)
+- [x] SurrealDB #6382 workaround: LET binding for ?? precedence bug
+- [x] Hormones: 0.5 → 0.978 (affect model learning!)
+- [x] Edges: 0 → 107 (three-factor Hebbian creates associations)
+- [x] Neural weights: 0.19 → 0.95 (updated 636×)
 
 ## What's Next
 

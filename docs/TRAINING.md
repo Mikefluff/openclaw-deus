@@ -1,79 +1,118 @@
 # Training the Child
 
-## Evolving World (5 levels)
+## PhysicsWorld: Numerical Sensorimotor Environment
 
-The world IS the teacher. No separate adult module.
+Brain sees ONLY numbers. 13 sensory channels + 16 speech channels = 29 floats per transition.
+Objects are internal physics models. Brain infers properties from action-outcome patterns.
 
-### Level Progression
+See [SENSORIMOTOR-INTERFACE.md](SENSORIMOTOR-INTERFACE.md) for full spec.
 
-| Level | Locations | Objects | Mama | Hidden States | Novelty |
-|-------|-----------|---------|------|---------------|---------|
-| 0 | 1 room | 5 | always | basic | none |
-| 1 | 2 rooms | 10 | 80% | weight, temp | none |
-| 2 | 3 rooms | 15 | 60% | + fragility | weather |
-| 3 | 5 rooms | 20 | 30% | + edibility | social chars |
-| 4 | all | 25+ | 15% | all | novel objects 3% |
+### Sensory Channels (what brain receives)
 
-Progression triggered by developmental metrics (not tick count).
+```
+position_delta[3]   -1..1    How much the thing moved
+rotation            0..1     How much it rotated
+force_feedback      0..1     Resistance (heavy = high)
+sound_amplitude     0..1     How loud
+sound_frequency     0..1     Low=bass, high=treble
+surface_hardness    0..1     Resistance to deformation
+surface_smoothness  0..1     Friction
+temperature_delta   -1..1    Warmer/colder on touch
+deformation         0..1     Shape change (rigid→squished)
+breakage            0..1     0=intact, 1=destroyed
+visual_change       0..1     How different after action
+```
 
-### Object Properties
+### Actions (abstract motor commands)
 
-**Observable** (directly in events):
-- shape, color, size, texture, physics, sound
+```
+0: touch    Apply small force, measure resistance + temperature
+1: push     Apply directional force, observe displacement + rotation
+2: drop     Release from height, observe fall + sound + breakage
+3: shake    Oscillating force, observe sound + movement
+4: look     No force, observe visual
+5: squeeze  Compression, measure deformation
+```
 
-**Hidden** (only observable via consequences):
-- **weight**: "Не получается поднять" / "Тонет в воде" / "Легко поднять!"
-- **temperature**: "Ой, холодное!" / "Тёплое и приятное" / "Палец прилипает!"
-- **fragility**: "Разбилось!" / "Порвалось!" / "Тает в руках!"
-- **edibility**: "Вкусно!" / "Мммм, можно кушать"
+### Object Physics (brain never sees these)
 
-20% chance per interaction to reveal a hidden consequence. Agent must INFER the property from observed effects.
+```
+mass, hardness, friction, roundness, fragility, temperature, elasticity, sound_base
+```
 
-### Learning Signals
+12 objects with different physics. World computes sensory consequences from physics + action + noise.
 
-1. **Prediction error**: push ball → rolls (confirmed) vs push cube → doesn't (error)
-2. **Reward shaping**: correct cluster structure → ambient reward
-3. **Adversarial curriculum**: weak clusters get more exposure
-4. **Mama teaching** (by level): naming → describing → cause-effect → questions → abstract
+### Speech Channel
 
-### Consequence-Based Learning
+Mama speech = character codes normalized to 0..1:
+```
+а=1/32, б=2/32, ..., я=32/32, silence=0
+speech[16]: padded character sequence
+```
 
-Agent never sees "тяжёлый" directly. It sees:
-- "Камень. Толкнул камень. Не получается поднять." (consequence of weight)
-- "Камень. Положил в воду. Тонет в воде." (another consequence)
+Brain learns word-object binding through co-occurrence of speech patterns with sensorimotor clusters.
 
-From multiple consequences → agent should form concept "heavy objects sink AND can't be lifted".
+## Membrane: World ↔ Brain Translator
 
-## Training Scripts
+`src/training/membrane.ts` — thin translator, zero text processing:
 
-### childhood.ts (main training)
-- `CorrectiveWorldBridge`: amplified consequences, reward shaping
-- `pump()` loop with `pushEvent(content, type, source)`
-- Developmental metrics every 50 ticks
-- Sleep when energy < 0.2 → fn::sleep_consolidation
+1. World.tick() → ambient sensory transitions → fn::process_sensory (numbers)
+2. fn::brain_tick(1000) — brain runs 1000 internal cycles
+3. Brain generates kernel_request type='action' → membrane maps to world.act()
+4. World returns sensory consequence → fn::process_sensory → brain learns
 
-### full-validation.ts (750 ticks)
-- 500 physical + 250 social ticks
-- 12/13 assertions: traces grow, dimensions capped, accuracy >50%, affect alive, energy spent
+Brain sees `"0:3"` (action 0 on object 3), not "touch подушка".
 
-### multi-world.ts
-- Physical → Social world transfer
-- Same kernel, different WorldBridge
-- Concept space carries over
+## Learning Pipeline
 
-## Developmental Metrics (6 domains)
+```
+World consequence: {action_id, channels[13], speech[16], valence, object_idx}
+  ↓
+fn::process_sensory: dedup (same action:object → reactivate), create trace with position = channels
+  ↓
+fn::brain_tick: affect forward (accumulators → hormones), backward (loss → weight update)
+  ↓
+fn::learn_edge: three-factor Hebbian (Δw = η × eligibility × dopamine × TD_error)
+  ↓
+Traces cluster by sensorimotor similarity → objects emerge as patterns
+```
 
-Tracked every 50 ticks during training:
+## Training Results (200 world ticks)
 
-1. **Cognitive**: dimension growth, abstractions, schema complexity, coverage, retention
-2. **Vitality**: sleep regularity, energy efficiency, fatigue resilience
-3. **Affect**: valence trend, cortisol baseline, curiosity sustain, mode diversity
-4. **Agency**: action diversity, explore→exploit shift, consequence learning
-5. **World Model**: object coverage, accuracy, prediction precision, causal understanding
-6. **Neural Graph**: total nodes/edges/updates, dead edges, mean weight, per-model stats
+```
+Brain cycles:     200,000
+Actions:          1,000 (autonomous, affect-driven)
+Active traces:    29 (≈ 5 objects × 6 actions, dedup working)
+Archived:         8
+Edges:            107 (three-factor Hebbian)
+Hormones:         0.5 → 0.978 (affect model learning!)
+Neural weights:   0.19 → 0.95 (updated 636×)
+Convergence:      5.0 (world predictable)
+Speech traces:    4 (mama named 4 objects)
 
-### Developmental Stages
+Push-trace clustering:
+  push:кукла ↔ push:книжка = 0.132 (both soft, don't roll)
+  push:кубик ↔ push:кукла = 0.413 (hard vs soft)
+  → Brain clusters by physics, not names!
+```
 
-sensory → categorical → predictive → agentic → reflective
+## Running Training
 
-Stage detection: weighted score across all domains, highest wins with progression bonus.
+```bash
+# Start SurrealDB
+docker run -d --name deus-surrealdb -p 8000:8000 surrealdb/surrealdb:v3.0.4 start --user root --pass root memory
+
+# Bootstrap
+npx tsx src/training/bootstrap.ts
+
+# Train (default 5000 ticks)
+npx tsx src/training/membrane.ts 1000
+```
+
+## What Brain Learns
+
+1. **Sensorimotor contingencies**: push(round thing) → high rotation + displacement
+2. **Object clusters**: similar action-outcomes cluster together in 64-dim space
+3. **Valence associations**: breaking things = negative, rolling things = positive
+4. **Word-concept binding**: mama's speech pattern co-occurs with sensorimotor cluster
+5. **Energy management**: sleep when depleted, wake when recovered
