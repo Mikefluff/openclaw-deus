@@ -1,127 +1,124 @@
-# Affect Model — Phasic/Tonic Neuromodulator Dynamics
+# Affect Model — Phasic/Tonic Neuromodulators + Self-Tuning Config
 
 ## Architecture
 
-Neural network weights are GRAPH EDGES in SurrealDB. Hormones are now **dynamic**: phasic spikes that decay + tonic baselines that drift.
-
 ```
-7 acc nodes (nn_node)         4 hormone nodes (phasic+tonic)   6 config nodes + 4 mode nodes
-[acc:pred_error]              [hormone:cortisol]               [config:convergence_threshold]
-[acc:tension]    ──nn_edge──> [hormone:dopamine]    ──>        [config:spread_factor]
-[acc:pain]       (28 edges)   [hormone:norepinephrine]         [config:hebbian_lr]
-[acc:convergence]             [hormone:serotonin]              [config:energy_threshold]
-[acc:reward]                       │                           [config:activation_boost]
-[acc:novelty]                      │ ──nn_edge──>              [config:freshness_decay]
-[acc:stability]                    │ (24 edges)
-                                   │
+7 accumulators (nn_node)      4 hormones (phasic+tonic)     8 config + 4 mode outputs
+[acc:pred_error]              [hormone:cortisol  τ=500]     [config:hebbian_lr]
+[acc:tension]   ──nn_edge──>  [hormone:dopamine  τ=30]  ──> [config:energy_threshold]
+[acc:pain]      (28 edges)    [hormone:norepineph τ=20]     [config:spread_factor]
+[acc:convergence]             [hormone:serotonin τ=200]     [config:endurance]
+[acc:reward]                       │                        [config:sleep_need]
+[acc:novelty]                      │ ──nn_edge──>           [config:activation_boost]
+[acc:stability]                    │ (32+16 edges)          [config:freshness_decay]
+                                   │                        [config:convergence_threshold]
                                    └──nn_edge──> [mode:explore|exploit|defensive|resting]
-                                      (16 edges)
 ```
+
+All forward/backward passes execute in SurrealDB (Rust). JS only passes sensory numbers.
 
 ## Phasic/Tonic Model (Migration 039)
 
-Each hormone node stores: `{ value, phasic, tonic, tau }`
+Each hormone: `{ value, phasic, tonic, tau }`
 
-**Update rule per HIGH tick:**
+**Per HIGH tick (every 100 internal ticks):**
 ```
-phasic *= (1 - 1/τ)                          -- exponential decay
-tonic += drift_rate × (forward_target - tonic) -- slow drift to NN output
-value = clamp(tonic + phasic, 0, 1.2)         -- effective level
+phasic *= (1 - 1/τ)                          — exponential decay
+tonic += drift_rate × (forward_target - tonic) — slow drift to NN output
+value = clamp(tonic + phasic, 0, 1.2)         — effective level
 ```
 
-**Spike injection on events:**
+**Spike injection (max-replace, not additive):**
 ```
 fn::hormone_spike('dopamine', magnitude)
-phasic = clamp(phasic + magnitude, -cap, +cap) -- cap=0.5
+if |magnitude| > |current_phasic|:
+  phasic = clamp(magnitude, -cap, +cap)      — REPLACE (no stacking)
+else:
+  phasic += magnitude × 0.1                  — small nudge only
 ```
 
 ## Per-Hormone Dynamics
 
-| Hormone | τ (ticks) | Spike triggers | Role |
-|---------|-----------|----------------|------|
-| **Dopamine** | 30 | New trace (+0.1), reward (+0.2×valence) | Reward prediction error, exploration drive |
-| **Norepinephrine** | 20 | New trace (+0.15), valence flip (+0.25) | Alertness, surprise, gain control |
-| **Serotonin** | 200 | None (tonic only) | Contentment, patience, rises from convergence |
-| **Cortisol** | 500 | Pain (+0.4×|valence|), pred_error (+0.1) | Stress, very slow decay like HPA axis |
+| Hormone | τ | Spike triggers | Role |
+|---------|---|----------------|------|
+| **Dopamine** | 30 | RPE > 0 (reward prediction error) | Reward signal, exploration drive |
+| **Norepinephrine** | 20 | New trace, valence flip, |RPE| > threshold | Alertness, surprise, gain control |
+| **Serotonin** | 200 | None (tonic only) | Contentment, rises from convergence/stability |
+| **Cortisol** | 500 | Pain (negative valence), pred_error | Stress response, very slow HPA axis decay |
 
-## Verified Dynamics (300 tick test)
+## Cognitive Cycle Integration (Migration 043)
 
+Dopamine spikes from **RPE (reward prediction error)**, not raw valence:
 ```
-t=0   sero=0.50(ph=0.00)  dopa=0.70(ph=0.20)  nore=0.79(ph=0.29)  cort=0.50(ph=0.00)
-t=60  sero=0.58(ph=0.00)  dopa=0.81(ph=0.23)  nore=0.68(ph=0.11)  cort=0.58(ph=0.00)
-t=150 sero=0.68(ph=0.00)  dopa=1.08(ph=0.41)  nore=0.83(ph=0.15)  cort=0.68(ph=0.00)
-t=270 sero=0.75(ph=0.00)  dopa=1.12(ph=0.37)  nore=0.80(ph=0.05)  cort=0.75(ph=0.00)
+predicted = Q(action, object)     — from action_value table
+actual = valence from world
+RPE = actual - predicted
+DA_spike = RPE × rpe_dopamine_scale
 ```
 
-- **Dopamine**: pulsating 0.7-1.15 (spikes on new traces + reward)
-- **NE**: fast spikes 0.29 → decays quickly → new spike → decays
-- **Serotonin**: smooth tonic rise 0.50 → 0.75 (satisfaction accumulates)
-- **Cortisol**: same tonic rise (no pain events at level 0)
+This is the Schultz model: dopamine signals **surprise about reward**, not reward itself.
+
+## Self-Tuning Config (Migration 040-041)
+
+Output layer (tanh) → **log-space multiplicative modulation**:
+```
+config.param = default × exp(tanh_output × sensitivity)
+```
+
+No hardcoded ranges. `sensitivity` (default 0.3) is the only hyperparameter.
+
+**8 self-tuned parameters:**
+- hebbian_lr, agency_energy_threshold, spread_weight_rate
+- accumulator_valence_threshold, reactivation_weight_boost, trace_freshness_decay
+- energy_drain_rate (via endurance node), sleep_threshold (via sleep_need node)
+
+## Behavioral Mode (REINFORCE Learning)
+
+4 modes: explore, exploit, defensive, resting. Softmax over mode nodes.
+
+**Mode learning:** after each action with outcome:
+```
+advantage = RPE - running_baseline
+Δw_mode = lr × advantage × (1_{selected} - π(mode)) × hormone_value
+```
+
+Agency uses mode: explore→more random, exploit→pick highest Q-value, defensive→avoid negative Q, resting→conserve energy.
 
 ## Accumulator Sources
 
-**New trace (never seen before):**
-- acc:novelty += 0.2, acc:pred_error += 0.3
-- Dopamine spike (novelty is rewarding)
-- Norepinephrine spike (new = unexpected)
+| Event | Accumulators | Hormone spikes |
+|-------|-------------|----------------|
+| **New trace** | novelty += 0.2, pred_error += 0.3 | DA +0.1, NE +0.15 |
+| **Reactivation** | convergence += 0.1, stability += 0.15 | (none — familiar) |
+| **Valence flip** | tension += 0.3, pred_error += 0.3 | NE +0.25 |
+| **Positive valence** | reward += valence | DA += valence × 0.2 |
+| **Negative valence** | pain += |valence| | Cortisol += |val| × 0.4, DA -= |val| × 0.15 |
+| **RPE > 0** | pred_error += |RPE|, reward += RPE | DA += RPE × 0.3 |
+| **RPE < 0** | pred_error += |RPE|, pain += |RPE| | DA += RPE × 0.15 |
 
-**Reactivation (seen before):**
-- acc:convergence += 0.1, acc:stability += 0.15
-- NO phasic spikes (familiar = not surprising)
-- Serotonin rises via tonic drift from convergence
+## Structural Plasticity (Migration 047)
 
-**Valence flip (outcome changed sign):**
-- acc:tension += 0.3, acc:pred_error += 0.3
-- NE spike (surprise)
-
-**Positive valence > threshold:**
-- acc:reward += valence
-- Dopamine spike
-
-**Negative valence < -threshold:**
-- acc:pain += |valence|
-- Cortisol spike, negative dopamine spike
-
-## Targeted Backward Learning (Migration 038)
-
-Per-hormone error signals instead of single scalar loss:
+**Synaptic element growth** (Butz-Wörgötter homeostatic model):
 ```
-fn::affect_backward_targeted(lr):
-  for each hormone:
-    target = fn::compute_hormone_targets()  -- per-hormone target from accumulators
-    error = target - hormone.value
-    deriv = value × (1 - value)             -- sigmoid derivative
-    Δw = lr × error × deriv × input_value   -- per-edge update
+activity = weight × freshness
+dz = η × exp(-(activity - target)² / 2σ²)
+synaptic_elements += dz
 ```
 
-Hormone targets:
-- Cortisol target = f(pain, pred_error, -convergence, tension)
-- Dopamine target = f(reward, novelty, -pain)
-- NE target = f(pred_error, novelty, tension)
-- Serotonin target = f(convergence, stability, -pain, -pred_error)
+**Edge sprouting:** when elements > 1.0, connect to nearest trace (cosine similarity) with excess elements.
 
-## Three-Factor Hebbian on Trace Edges
+**Edge pruning:** inactivity (low co_activation_count) + competitive (max K incoming per trace).
 
-- fn::learn_edge: Δw = η × eligibility × M × cosine_similarity (Frémaux & Gerstner 2016)
-- M = dopamine.value × TD_error + (1-dopamine.value) × surprise
-- Dopamine's phasic component amplifies learning during reward events
-- Cosine similarity between trace positions modulates learning strength
+**Sleep consolidation (Tononi SHY):** weak edges ×0.9, strong edges ×1.05, plus replay + homeostasis + element growth.
 
-## Five Drives (Desire Gradient)
+## Training Results
 
-1. **Pain avoidance**: cortisol spike → repel from painful actions
-2. **Novelty hunger**: dopamine spike → attract toward new experiences
-3. **Uncertainty aversion**: NE decay → settle toward familiar patterns
-4. **Mastery drive**: serotonin tonic rise → sustained engagement
-5. **Prediction accuracy**: NE spike on error → model update
+```
+t=1000: DA=0.97(ph0.06) NE=0.23 cort=0.21 sero=0.04 | 631 edges | RPE=0.046
+```
 
-## Energy Coupling
+Hormones differentiated. Config self-tunes ±5%. Mode learning active. Q-values diverge per action×object. RPE decreases over time (brain learns to predict).
 
-- Positive affect (dopamine > baseline) partially restores energy
-- Negative affect (cortisol spike) drains energy faster
-- Low energy → attention narrows, forgetting accelerates
-- Sleep: fn::sleep_consolidation() — neural decay ×5, Hebbian boost, prune
+## 159 Config Parameters (ALL from kernel_state.config)
 
-## Config Parameters (78 total, ALL from kernel_state.config)
-
-Spike magnitudes, τ decay rates, tonic drift rate, phasic cap, hormone min/max, accumulator thresholds — all affect-modulatable via config deltas.
+Spike magnitudes, τ decay rates, tonic drift, phasic cap, accumulator thresholds, agency coefficients, circuit frequencies, learning rates, growth rates, pruning thresholds, consolidation parameters, maturity weights, mode modulation — all affect-modulatable via output layer.
