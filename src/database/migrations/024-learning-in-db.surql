@@ -52,27 +52,27 @@ DEFINE FUNCTION IF NOT EXISTS fn::nn_set_inputs($values: array) {
 
 -- Forward pass: compute output layer values from input layer via weighted edges.
 -- Returns array of {node_id, value} for the output layer.
--- nn_forward: batch UPDATE using $parent (3x faster than FOR loop)
+-- nn_forward: batch UPDATE using $parent (3x faster than FOR loop, hormones ACTUALLY move)
 DEFINE FUNCTION OVERWRITE fn::nn_forward($model: string, $from_layer: string, $to_layer: string) {
-  -- Sigmoid nodes
+  -- Sigmoid nodes (note: parens around ?? to fix precedence)
   UPDATE nn_node SET value = fn::sigmoid(
-    (SELECT math::sum(in.value * weight) AS s FROM nn_edge
+    ((SELECT math::sum(in.value * weight) AS s FROM nn_edge
      WHERE out = $parent.id AND in.model = $model AND in.layer = $from_layer
-     GROUP ALL)[0].s ?? 0.0 + bias
+     GROUP ALL)[0].s ?? 0.0) + bias
   ) WHERE model = $model AND layer = $to_layer AND activation = 'sigmoid';
 
   -- Tanh nodes
   UPDATE nn_node SET value = fn::nn_tanh(
-    (SELECT math::sum(in.value * weight) AS s FROM nn_edge
+    ((SELECT math::sum(in.value * weight) AS s FROM nn_edge
      WHERE out = $parent.id AND in.model = $model AND in.layer = $from_layer
-     GROUP ALL)[0].s ?? 0.0 + bias
+     GROUP ALL)[0].s ?? 0.0) + bias
   ) WHERE model = $model AND layer = $to_layer AND activation = 'tanh';
 
   -- Linear/none nodes
   UPDATE nn_node SET value = (
-    (SELECT math::sum(in.value * weight) AS s FROM nn_edge
+    ((SELECT math::sum(in.value * weight) AS s FROM nn_edge
      WHERE out = $parent.id AND in.model = $model AND in.layer = $from_layer
-     GROUP ALL)[0].s ?? 0.0 + bias
+     GROUP ALL)[0].s ?? 0.0) + bias
   ) WHERE model = $model AND layer = $to_layer AND activation NOT IN ['sigmoid', 'tanh'];
 
   RETURN (SELECT node_id, value FROM nn_node WHERE model = $model AND layer = $to_layer);

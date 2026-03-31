@@ -219,7 +219,14 @@ DEFINE FUNCTION OVERWRITE fn::brain_tick($n: int) {
     -- HIGH (every 100): affect forward + backward (LEARNING!)
     IF $x % 100 = 0 {
       -- Forward: accumulators → hormones
-      fn::nn_forward('affect', 'input', 'hidden');
+      -- SurrealDB bug #6382: function compiler strips parens, breaks ?? + precedence
+      -- Workaround: FOR loop with LET to isolate ?? from +
+      LET $h_nodes = (SELECT id, bias FROM nn_node WHERE model = 'affect' AND layer = 'hidden');
+      FOR $h IN $h_nodes {
+        LET $ws = (SELECT math::sum(in.value * weight) AS s FROM nn_edge
+          WHERE out = $h.id AND in.layer = 'input' GROUP ALL)[0].s ?? 0.0;
+        UPDATE nn_node SET value = fn::sigmoid($ws + $h.bias) WHERE id = $h.id;
+      };
 
       -- Compute loss from accumulators: error + pain - convergence - reward
       LET $pred_err = (SELECT * FROM nn_node WHERE node_id = 'acc:pred_error' LIMIT 1)[0].value ?? 0;
