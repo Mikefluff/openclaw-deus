@@ -47,106 +47,97 @@ async function main() {
   console.log(`Developmental training: max ${MAX_TICKS} ticks, target maturity ${TARGET_MATURITY}`);
   console.log(`Level 0: ${world.getObjectCount()} objects\n`);
 
-  async function feedTransition(t: SensoryTransition) {
-    try {
-      await db.query(
-        'RETURN fn::process_sensory($a, $c, $s, $v, $o)',
-        { a: t.action_id, c: t.channels, s: t.speech, v: t.valence, o: t.object_idx },
-      );
-    } catch {}
-  }
-
   let totalActions = 0;
   let sleepCount = 0;
   let levelUps = 0;
   const t0 = Date.now();
 
   for (let tick = 0; tick < MAX_TICKS; tick++) {
-    // World ambient
+    // ── ROUNDTRIP #1: world_tick — perceive + think + decide ──
     const ambient = world.tick();
-    for (const t of ambient) await feedTransition(t);
+    const events = ambient.map(t => ({
+      action_id: t.action_id, channels: t.channels, speech: t.speech,
+      valence: t.valence, object_idx: t.object_idx,
+    }));
 
-    // Brain thinks
+    let worldResult: any;
     try {
-      await db.query('RETURN fn::brain_tick(100)');
-    } catch {}
+      const r = await db.query('RETURN fn::world_tick($events, $ticks)', { events, ticks: 100 }) as any;
+      worldResult = r[0] || {};
+    } catch { worldResult = {}; }
 
-    // Process action requests
-    const requests = await db.query(
-      'SELECT * FROM kernel_request WHERE type = \'action\' AND status = \'pending\' LIMIT 5',
-    ) as any;
-    const reqs = Array.isArray(requests[0]) ? requests[0] : [];
-    for (const req of reqs) {
-      const action_id = Math.floor(Math.random() * 6);
-      const consequence = world.act(action_id);
+    // ── ROUNDTRIP #2 (only if brain wants to act): execute + consequence ──
+    if (worldResult.action) {
+      const act = worldResult.action;
+      const actionIdx = ['touch', 'push', 'drop', 'shake', 'look', 'squeeze'].indexOf(act.method);
+      const consequence = world.act(actionIdx >= 0 ? actionIdx : 0);
       totalActions++;
-      await feedTransition(consequence);
 
-      // Cognitive cycle: appraise → retrieve → predict → deliberate → commit → learn
-      const consKey = `${consequence.action_id}:${consequence.object_idx}`;
-      const actionMethod = req.payload?.method ?? 'touch';
-      const targetContent = req.payload?.target_content ?? consKey;
       try {
-        const traceResult = await db.query(
-          'SELECT trace_id FROM trace WHERE content = $key AND archived = false LIMIT 1',
-          { key: consKey },
-        ) as any;
-        const traceId = traceResult[0]?.[0]?.trace_id ?? traceResult[0]?.trace_id;
-        if (traceId) {
-          await db.query(
-            'RETURN fn::cognitive_cycle($tid, $method, $target, $valence)',
-            { tid: traceId, method: actionMethod, target: targetContent, valence: consequence.valence },
-          );
-        }
+        await db.query(
+          'RETURN fn::action_consequence($rid, $method, $target, $channels, $speech, $valence, $oidx, $aid)',
+          {
+            rid: act.request_id, method: act.method, target: act.target_content,
+            channels: consequence.channels, speech: consequence.speech,
+            valence: consequence.valence, oidx: consequence.object_idx,
+            aid: consequence.action_id,
+          },
+        );
       } catch {}
-
-      if (req.id) try { await db.query('UPDATE $id SET status = \'completed\'', { id: req.id }); } catch {}
     }
 
-    // Check for sleep (brain sleeps autonomously via brain_tick, but track it)
-    const state = await db.query('SELECT energy, fatigue, cycle FROM kernel_state LIMIT 1') as any;
-    const s = state[0]?.[0] || {};
-    if ((s.energy ?? 1) < 0.15) sleepCount++;
+    // Energy check (read from worldResult to avoid extra roundtrip)
+    const cycle = worldResult.cycle ?? 0;
+    if (cycle > 0 && cycle % 10000 < 100) sleepCount++; // approximate
 
     // Re-auth periodically
     if (tick % 500 === 0) await ensureAuth();
 
-    // Progress report every 1000 ticks
+    // Progress report every 1000 ticks — SINGLE batched query
     if (tick % 1000 === 0 && tick > 0) {
       const elapsed = (Date.now() - t0) / 1000;
-      const traces = await db.query('SELECT count() AS c FROM trace WHERE archived = false GROUP ALL') as any;
-      const archived = await db.query('SELECT count() AS c FROM trace WHERE archived = true GROUP ALL') as any;
-      const edges = await db.query('SELECT count() AS c FROM activates GROUP ALL') as any;
-      const h = (await db.query('SELECT node_id, value, phasic FROM nn_node WHERE model = \'affect\' AND layer = \'hidden\'') as any)[0] || [];
-      const m = (await db.query('SELECT node_id, value FROM nn_node WHERE model = \'affect\' AND layer = \'mode\'') as any)[0] || [];
-      const cfg = (await db.query('SELECT config FROM kernel_state LIMIT 1') as any)[0]?.[0]?.config || {};
+      try {
+        // One roundtrip for ALL stats
+        const snap = await db.query(`
+          LET $tr = (SELECT count() AS c FROM trace WHERE archived = false GROUP ALL)[0].c ?? 0;
+          LET $ar = (SELECT count() AS c FROM trace WHERE archived = true GROUP ALL)[0].c ?? 0;
+          LET $ed = (SELECT count() AS c FROM activates GROUP ALL)[0].c ?? 0;
+          LET $h = (SELECT node_id, value, phasic FROM nn_node WHERE model = 'affect' AND layer = 'hidden');
+          LET $m = (SELECT node_id, value FROM nn_node WHERE model = 'affect' AND layer = 'mode');
+          LET $s = (SELECT cycle, energy, fatigue, config FROM kernel_state LIMIT 1)[0];
+          LET $mat = fn::compute_maturity();
+          LET $rpe = (SELECT math::mean(math::abs(prediction_error)) AS r FROM cognitive_event WHERE cycle > ($s.cycle - 50000) GROUP ALL)[0].r ?? 0;
+          RETURN { tr: $tr, ar: $ar, ed: $ed, h: $h, m: $m, s: $s, mat: $mat, rpe: $rpe };
+        `) as any;
 
-      let maturity: any = {};
-      try { maturity = (await db.query('RETURN fn::compute_maturity()') as any)[0] || {}; } catch {}
+        const d = snap[0] ?? {};
+        const s = d.s ?? {};
+        const cfg = s.config ?? {};
+        const h = Array.isArray(d.h) ? d.h : [];
+        const m = Array.isArray(d.m) ? d.m : [];
+        const mat = d.mat ?? {};
 
-      const trC = traces[0]?.[0]?.c ?? traces[0]?.c ?? '?';
-      const arC = archived[0]?.[0]?.c ?? archived[0]?.c ?? 0;
-      const edC = edges[0]?.[0]?.c ?? edges[0]?.c ?? 0;
+        console.log(`\n── tick=${tick}/${MAX_TICKS} (${elapsed.toFixed(0)}s) ──`);
+        console.log(`  cy=${s.cycle} E=${s.energy?.toFixed(2)} fat=${s.fatigue?.toFixed(2)} | tr=${d.tr}/${d.ar} ed=${d.ed} act=${totalActions} rpe=${d.rpe?.toFixed(4)}`);
+        console.log(`  H: ${h.map((n: any) => (n.node_id as string).replace('hormone:', '').slice(0, 4) + '=' + n.value?.toFixed(3) + '(ph' + n.phasic?.toFixed(2) + ')').join(' ')}`);
+        console.log(`  M: ${m.map((n: any) => (n.node_id as string).replace('mode:', '').slice(0, 3) + '=' + n.value?.toFixed(3)).join(' ')}`);
+        console.log(`  MATURITY: ${(mat.maturity ?? 0).toFixed(3)} (conv=${(mat.convergence ?? 0).toFixed(2)} ed=${(mat.edges ?? 0).toFixed(2)} pred=${(mat.prediction ?? 0).toFixed(2)} div=${(mat.diversity ?? 0).toFixed(2)})`);
+        console.log(`  CFG: drain=${cfg.energy_drain_rate?.toFixed(5)} fat=${cfg.fatigue_rate?.toFixed(5)} sleep=${cfg.sleep_threshold?.toFixed(3)} lr=${cfg.hebbian_lr?.toFixed(5)}`);
 
-      console.log(`\n── tick=${tick}/${MAX_TICKS} (${elapsed.toFixed(0)}s) ──`);
-      console.log(`  cy=${s.cycle} E=${s.energy?.toFixed(2)} fat=${s.fatigue?.toFixed(2)} | tr=${trC}/${arC} ed=${edC} act=${totalActions} sleeps=${sleepCount}`);
-      console.log(`  H: ${h.map((n: any) => (n.node_id as string).replace('hormone:', '').slice(0, 4) + '=' + n.value?.toFixed(3) + '(ph' + n.phasic?.toFixed(2) + ')').join(' ')}`);
-      console.log(`  M: ${m.map((n: any) => (n.node_id as string).replace('mode:', '').slice(0, 3) + '=' + n.value?.toFixed(3)).join(' ')}`);
-      console.log(`  MATURITY: ${(maturity.maturity ?? 0).toFixed(3)} (conv=${(maturity.convergence ?? 0).toFixed(2)} ed=${(maturity.edges ?? 0).toFixed(2)} pred=${(maturity.prediction ?? 0).toFixed(2)} div=${(maturity.diversity ?? 0).toFixed(2)})`);
-      console.log(`  CFG: drain=${cfg.energy_drain_rate?.toFixed(5)} fatigue=${cfg.fatigue_rate?.toFixed(5)} sleep_thr=${cfg.sleep_threshold?.toFixed(3)} lr=${cfg.hebbian_lr?.toFixed(5)}`);
+        // Auto level-up
+        const matVal = mat.maturity ?? 0;
+        if (matVal >= (cfg.levelup_maturity_threshold ?? 0.5) && world.getLevel() < 4) {
+          world.levelUp();
+          levelUps++;
+          console.log(`\n  >>> LEVEL UP to ${world.getLevel()}: ${world.getObjectCount()} objects (maturity=${matVal.toFixed(3)}) <<<`);
+        }
 
-      // Auto level-up on maturity threshold
-      const mat = maturity.maturity ?? 0;
-      if (mat >= (cfg.levelup_maturity_threshold ?? 0.5) && world.getLevel() < 4) {
-        world.levelUp();
-        levelUps++;
-        console.log(`\n  >>> LEVEL UP to ${world.getLevel()}: ${world.getObjectCount()} objects (maturity=${mat.toFixed(3)}) <<<`);
-      }
-
-      // Early stop on target maturity
-      if (mat >= TARGET_MATURITY) {
-        console.log(`\n  >>> TARGET MATURITY ${TARGET_MATURITY} REACHED at tick ${tick} <<<`);
-        break;
+        if (matVal >= TARGET_MATURITY) {
+          console.log(`\n  >>> TARGET MATURITY ${TARGET_MATURITY} REACHED at tick ${tick} <<<`);
+          break;
+        }
+      } catch (e: any) {
+        console.log(`  tick=${tick} snapshot error: ${e.message?.slice(0, 80)}`);
       }
     }
   }
