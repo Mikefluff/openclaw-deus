@@ -171,6 +171,70 @@ Brain sends action_id + target. Gets back numbers. Builds world model from numbe
 | Trace `position = [0,0,...,0]` | Trace `position = channels_after` (sensory vector) |
 | `fn::process_consequence(text)` | `fn::process_sensory(action, before, after, valence)` |
 
+## Language Channel: Speech as Sensory Input
+
+Text is NOT special. It's another sensory channel — sound patterns encoded as numbers.
+Brain doesn't know letters. Brain hears sequences of numerical signals.
+
+```
+Speech channel: speech_signal[16]  — padded character codes
+  а=1, б=2, в=3, г=4, д=5, е=6, ж=7, з=8, и=9, й=10,
+  к=11, л=12, м=13, н=14, о=15, п=16, р=17, с=18, т=19,
+  у=20, ф=21, х=22, ц=23, ч=24, ш=25, щ=26, ъ=27, ы=28,
+  ь=29, э=30, ю=31, я=32, пробел=0
+
+Total sensory input: 13 physical + 16 speech = 29 channels per transition
+```
+
+When mama is silent: `speech = [0, 0, 0, ..., 0]`
+When mama says "мячик": `speech = [13, 33, 24, 9, 11, 0, 0, ..., 0]`
+When mama says "круглый": `speech = [11, 17, 20, 4, 12, 28, 10, 0, ..., 0]`
+
+### How Language Emerges (5 phases from research)
+
+**Phase 1 — Co-occurrence detection:**
+Brain notices speech pattern [13,33,24,9,11] co-occurs with
+sensorimotor cluster {push→high_rotation, touch→low_hardness}.
+Creates edge: lexical_trace ↔ sensorimotor_cluster.
+
+**Phase 2 — Word-concept binding (symbol grounding):**
+After 100+ co-occurrences, the edge strengthens.
+Brain "knows" that sound [13,33,24,9,11] = the thing that rolls.
+No one taught it — statistical regularities did.
+
+**Phase 3 — Production (babbling → words):**
+Brain generates speech_signal from active cluster.
+If cluster {rolls, bounces} is active → recall associated speech pattern.
+First attempts are noisy. Reinforcement from mama refines them.
+
+**Phase 4 — Composition:**
+Brain learns that speech patterns combine.
+"красный мячик" = [color_signal] + [object_signal].
+Two lexical traces activated simultaneously → compound expression.
+
+**Phase 5 — Grammar emergence:**
+Ordering regularities in speech sequences create implicit syntax.
+Brain learns that [adjective_pattern, noun_pattern] is more common than reverse.
+Grammar is NOT hardcoded — it's a learned regularity in the speech channel.
+
+### Key: Mama Speech Events in World
+
+World generates mama speech as a sensory event WITH the speech channel filled in:
+
+```typescript
+// World generates:
+{
+  channels_after: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  // no physical change
+  speech: [13, 33, 24, 9, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  // "мячик"
+  valence: 0.1,  // mama's voice = mildly positive
+  action_id: -1,  // no action, just listening
+}
+```
+
+Brain treats this like any other sensory transition. The speech channel
+activates alongside whatever physical channels are active. Over time,
+the co-occurrence creates the word-concept binding.
+
 ## Verification
 
 Brain is learning if:

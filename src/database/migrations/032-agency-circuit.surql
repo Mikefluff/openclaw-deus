@@ -8,6 +8,9 @@
 
 DEFINE TABLE IF NOT EXISTS brain_action SCHEMALESS;
 
+-- Fix activates table: must be SCHEMALESS RELATION for RELATE inside functions
+DEFINE TABLE OVERWRITE activates SCHEMALESS TYPE RELATION FROM trace TO trace;
+
 -- ═══════════════════════════════════════════
 -- fn::agency_tick — brain decides to act
 --
