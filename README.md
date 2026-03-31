@@ -1,146 +1,148 @@
-# DEUS — Cognitive Runtime
+# DEUS — Autonomous Cognitive Kernel
 
-A pre-linguistic virtual organism that learns about reality through experience. Not a pipeline. Not a chatbot. A mind that builds its own model of the world from traces, spatial positions, and prediction errors.
+A pre-linguistic mind that lives inside SurrealDB. Not a pipeline. Not a chatbot. A self-sustaining cognitive kernel with preemptive scheduling, autonomous agency, and sleep/wake cycles.
 
 ## What This Is
 
-DEUS is a cognitive architecture where:
-- **One structure holds everything** — concept space IS the world model, self model, predictions, and desires
-- **Modalities are discovered**, not predefined — the system learns what "types of experience" exist
-- **Abstractions emerge** from graph clustering — categories are born when traces cluster in concept space
-- **Time is emergent** — not `Date.now()` but the rate of cognitive reconfiguration
-- **Emotions are learned** — gradient descent on a differentiable affect model (4 hormones, 7 accumulators)
-- **The kernel IS the agent** — it decides what to explore, when to rest, based on desire gradient
-- **The world IS the teacher** — learning from prediction errors and consequences, no linguistic feedback
-- **The world evolves WITH the child** — 5 progressive levels triggered by developmental metrics
-- **Zero text analysis in learning path** — all learning is graph-structural, spatial, and numerical
-- **Clusters are graph entities** — soft membership, hierarchy, cluster-level Q-learning
+The brain runs **entirely inside SurrealDB** as stored procedures (Rust). NestJS is just a thin membrane for world interaction. The kernel:
+
+- **Runs autonomously** — `fn::brain_tick()` executes all cognitive circuits in one FOR loop
+- **4 priority circuits** — CRITICAL (energy/sleep), HIGH (affect/decay), MEDIUM (inference/forget), LOW (world model/introspection)
+- **Decides its own actions** — agency circuit driven by affect (dopamine→explore, cortisol→cautious)
+- **Sleeps and wakes** — energy drops below threshold → `fn::sleep_consolidation` → recovery
+- **Builds world model** — `fn::build_world_model()` from traces, beliefs, knowledge
+- **Introspects itself** — `fn::introspect()` coherence scoring + posture classification
+- **Neural graph** — 56 nodes + 214 edges, forward/backward pass as graph traversal
+- **Archive, never delete** — traces are computational memory (Pointer Architecture)
+- **Zero hardcoded thresholds** — all parameters from `kernel_state.config`, modulated by affect
 
 ## Quick Start
 
 ```bash
-# Start SurrealDB
-npm run deus:db
+# Start SurrealDB in Docker
+docker run -d --name deus-surrealdb -p 8000:8000 surrealdb/surrealdb:v3.0.4 start --user root --pass root memory
 
-# Bootstrap (migrations + seed beliefs + cognitive baseline)
-npx ts-node src/cli.ts bootstrap
+# Install
+npm install
 
-# Run childhood training (child lives in evolving world)
-npx ts-node src/training/childhood.ts 500
+# Bootstrap (migrations + seed neural graph)
+npx tsx src/training/bootstrap.ts
 
-# Multi-world training (physical → social, transfer learning)
-npx ts-node src/training/multi-world.ts 500
+# Train (brain explores world autonomously)
+npx tsx src/training/membrane.ts 500
 
 # Tests
-npm test   # 568+ tests, 45+ suites
+npm test   # 463 tests, 38 suites
 ```
 
 ## Architecture
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for full diagram.
+```
+┌─────────────────────────────────────────────────────────────┐
+│  SurrealDB 3.0 (THE BRAIN)                                  │
+│                                                              │
+│  fn::brain_tick($n) — all circuits in one FOR loop:          │
+│    CRITICAL (×100): energy drain + sleep detection           │
+│    HIGH     (×100): affect forward (nn_forward)              │
+│    AGENCY   (×200): decide action (dopamine/cortisol-driven) │
+│    MEDIUM   (×500): active inference + forgetting            │
+│    LOW     (×2000): neural decay + consolidation             │
+│    DEEP    (×5000): world model + introspection              │
+│                                                              │
+│  Neural Graph: 56 nn_nodes + 214 nn_edges                    │
+│    Affect:    7 acc → 4 hormones → 6 config + 4 modes       │
+│    Cone:      9 inputs → 2 outputs (depth/spread)            │
+│    Predictor: 16 inputs → 8 delta outputs                    │
+│                                                              │
+│  32 migrations, 50+ stored procedures                        │
+│  fn::build_world_model, fn::introspect, fn::nightly_run     │
+│  fn::sleep_consolidation, fn::nn_forward/backward            │
+│  fn::agency_tick, fn::process_consequence                    │
+└─────────────────────┬───────────────────────────────────────┘
+                      │ kernel_request (brain asks to act)
+                      │ kernel_event (sensory consequences)
+┌─────────────────────▼───────────────────────────────────────┐
+│  NestJS (MEMBRANE)                                           │
+│                                                              │
+│  KernelLoopService: watchdog + health monitor                │
+│  Membrane script: world ↔ brain translator                   │
+│  LLM calls: only when brain requests (deliberation)          │
+│  HTTP API: external monitoring                               │
+│  Boot: 12ms, zero circular deps                              │
+└─────────────────────┬───────────────────────────────────────┘
+                      │ actions (touch, push, look...)
+                      │ consequences (sensory feedback)
+┌─────────────────────▼───────────────────────────────────────┐
+│  EvolvingWorld                                               │
+│                                                              │
+│  5 levels, 25+ objects with hidden properties                │
+│  Partial observability: weight, temperature, fragility       │
+│  revealed through consequences, not directly                 │
+│  Mama teaches labels, but brain must infer meaning            │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## Training Results
 
 ```
-Evolving World (objects + physics + consequences)
-  ↓ events (no language — raw sensory)
-Sensory Layer (fingerprint → modality discovery → attention)
-  ↓ gated signals
-Brain: Concept Space + Agents + Commits + Affect + Energy
-  │
-  ├── Traces: spatial positions, edge weights, co-activation
-  ├── Clusters: materialized graph entities (soft membership, hierarchy)
-  ├── Trajectories: cluster→cluster (abstract Q-learning)
-  ├── Affect: 7 accumulators → 4 hormones → config modulation
-  └── Dimensions: born from graph conflicts, not predefined
-  │
-  ↓ desire gradient (5 drives)
-Agency (gradient field → spatial target selection → predict → act → compare → backprop)
-  ↓ consequences
-World (amplified consequences + adversarial curriculum + reward shaping)
-```
+200 world ticks, 200,000 brain cycles:
+  Actions:     1,000 (autonomous, affect-driven)
+  Traces:      7 → 250 (stabilized by forgetting)
+  Energy:      oscillates 0.1↔0.55 (sleep/wake cycles)
+  World model: confidence 1.0
+  Introspection: coherence 0.5, posture "review"
 
-Training loop: `pushEvent()` → `pump()` — 0.25s/tick, zero LLM tokens.
-
-## Training Results (300 ticks, 1 minute)
-
-```
-Dimensions:    39 (born from graph conflicts)
-Abstractions:  19 (emerged from co-activation patterns)
-Modalities:    11 (discovered from statistical fingerprints)
-World Level:   0 → 1 → 2 (3 locations, weather, surprises)
-Stage:         SENSORY → CATEGORICAL
-Health:        66%
-Accuracy:      86%
-Prediction:    1.0
+Performance: 24,000+ tps (internal ticks, zero JS roundtrip)
 ```
 
 ## Documentation
 
 | Document | What |
 |----------|------|
-| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Virtual metabody diagram, key principles |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Kernel-in-SurrealDB, 27 migrations, flat NestJS |
+| [RUNTIME-MODEL.md](docs/RUNTIME-MODEL.md) | Formal spec: circuits, interrupts, resets, budgets, personality |
 | [DYNAMICS.md](docs/DYNAMICS.md) | 7 update rules as equations |
-| [CONCEPT-SPACE.md](docs/CONCEPT-SPACE.md) | Adaptive dimensions, spatial forgetting, verification |
-| [SENSORY.md](docs/SENSORY.md) | Self-organized modality discovery, attention |
-| [AFFECT.md](docs/AFFECT.md) | Gradient descent hormones, 5 drives, energy coupling |
-| [AGENCY.md](docs/AGENCY.md) | WorldBridge, action selection, help requesting |
-| [TRAINING.md](docs/TRAINING.md) | Virtual world, energy budget, running training |
-| [LIGHT-CONE.md](docs/LIGHT-CONE.md) | Multi-frequency processing, hot memory, write batching |
-| [DEVELOPMENTAL-METRICS.md](docs/DEVELOPMENTAL-METRICS.md) | 5 metric domains, developmental stages, evolving world |
+| [CONCEPT-SPACE.md](docs/CONCEPT-SPACE.md) | Adaptive dimensions, spatial forgetting |
+| [SENSORY.md](docs/SENSORY.md) | Self-organized modality discovery |
+| [AFFECT.md](docs/AFFECT.md) | Neural graph hormones, 5 drives |
+| [AGENCY.md](docs/AGENCY.md) | WorldBridge, action selection |
+| [TRAINING.md](docs/TRAINING.md) | Evolving world, hidden states, consequence-based learning |
+| [LIGHT-CONE.md](docs/LIGHT-CONE.md) | Cognitive cone (learned depth/spread) |
+| [DEVELOPMENTAL-METRICS.md](docs/DEVELOPMENTAL-METRICS.md) | 6 metric domains + neural graph health |
+| [ROADMAP.md](docs/ROADMAP.md) | What's done (9 phases), what's next |
 
 ## Numbers
 
 ```
-200+ files, ~25,000 lines TypeScript
-45+ test suites, 568+ tests
-22 NestJS modules
-18 SurrealDB migrations, 4 stored procedures, MTREE vector index
-57+ database tables (including cluster, belongs_to, cluster_trajectory)
-5 cognitive agents, 4 hormones, 7 accumulators, 5 desire drives
-6 commit types, 6 child actions, 2 world types
-5 developmental metric domains, 5 world levels
-~80 tunable config params + ~40 gradient-learned affect params
-Zero text analysis in learning path
+~240 files, ~27,000 lines TypeScript
+463 tests, 38 suites
+32 SurrealDB migrations, 50+ stored procedures
+56 neural graph nodes, 214 edges (3 models)
+HNSW vector index (64-dim), ASYNC events
+4 cognitive circuits with preemptive scheduling
+3 reset classes (soft/safe_mode/hard)
+NestJS boot: 12ms
+Brain: 24,000+ tps (internal), 1M ticks in 45s
 ```
 
 ## Stack
 
-- **NestJS** — dependency injection, modules, lifecycle
-- **SurrealDB 3.0** — graph DB, MTREE vectors, stored procedures, graph relations
-- **Claude API** — LLM for rare world enrichment only (zero tokens during training)
-- **neverthrow** — Result<T,E> error handling
-- **TypeScript** — strict mode, zero `as any` in source
+- **SurrealDB 3.0** — the brain lives here (graph DB, stored procs, HNSW, async events)
+- **NestJS** — thin membrane (watchdog, HTTP API, LLM bridge)
+- **TypeScript** — membrane code only
+- **Docker** — SurrealDB container
+- **Claude API** — LLM for deliberation (zero tokens during training)
 
-## Project Structure
+## Key Principles
 
-```
-src/
-├── kernel/                    # The Brain
-│   ├── kernel-loop.service    # Continuous event loop + pump() fast path
-│   ├── agency.types           # WorldBridge, AgentAction
-│   ├── energy.service         # Cognitive energy budget
-│   ├── agents/                # 5 cognitive agents (sensory→strategic)
-│   ├── memory/                # Trace graph (Hebbian, spreading activation)
-│   ├── space/                 # Concept space (dimensions, clusters, positions)
-│   ├── sensory/               # Modality discovery, fingerprinting, attention
-│   ├── commit/                # Attention bottleneck (typed commits, energy)
-│   ├── affect/                # Gradient descent affect model
-│   ├── cognition/             # Active cognition (dreaming, curiosity, inference)
-│   ├── narrative/             # Commit compaction, temporal storytelling
-│   ├── developmental-metrics  # 5-domain developmental observation
-│   └── substrate-bridge       # Reptilian brain ↔ traces ↔ world model
-├── cognitive/                 # Substrate services + config (~80 tunable params)
-├── training/                  # Evolving world + social world + multi-world runner
-├── database/                  # SurrealDB service + 18 migrations
-├── beliefs/                   # Belief system
-├── knowledge/                 # Knowledge extraction + gaps
-├── intention/                 # BDI intentions
-├── deliberation/              # LLM deliberation
-├── experience/                # Episodes, procedures, self-assessment
-├── memory/                    # Activity log, aggregation
-├── metrics/                   # Cognitive metrics, diagnosis, benchmarks
-├── nightly/                   # 18-stage nightly pipeline
-└── ...                        # world-model, policy, llm, embeddings, events
-```
+1. **Brain lives in SurrealDB** — all cognition is stored procedures in Rust
+2. **NestJS = membrane** — monitoring only, not control
+3. **Archive, never delete** — traces are computational memory (Pointer Architecture)
+4. **Zero hardcode** — all thresholds from `kernel_state.config`, modulated by affect
+5. **No inline SQL in TypeScript** — everything through `fn::` stored procs
+6. **No mock tests** — only math invariants, convergence, integration
+7. **Personality = scheduler policy** — budget allocation between circuits = cognitive style
+8. **Pure RL** — brain doesn't know object names, learns from exploration + consequences
 
 ## License
 

@@ -3,9 +3,9 @@
 ## Current State (v3.0)
 
 ```
-~240 files │ ~27,000 lines │ 463 tests │ 27 migrations │ 45+ stored procs
-Architecture: Kernel lives in SurrealDB (fn::kernel_tick), NestJS = flat membrane
-Status: Brain in DB, NestJS boots 12ms, neural graph + kernel tick verified
+~240 files │ ~27,000 lines │ 463 tests │ 32 migrations │ 50+ stored procs
+Architecture: Autonomous brain in SurrealDB (fn::brain_tick), preemptive scheduler, agency
+Status: Brain learns autonomously, 200K cycles, 1000 actions, 24K+ tps
 ```
 
 ## What's Done
@@ -73,6 +73,23 @@ Status: Brain in DB, NestJS boots 12ms, neural graph + kernel tick verified
 - [x] TraceGraphService rewritten: thin DB wrapper, no forwardRef
 - [x] NestJS boot: 12ms (was: infinite hang from circular deps)
 - [x] Deleted 8 useless mock-verification test files (-3504 lines)
+
+### Phase 10: Preemptive Scheduler + Runtime Model (COMPLETE)
+- [x] 4 priority circuits: CRITICAL/HIGH/MEDIUM/LOW
+- [x] Preemptive scheduling with budget accounting
+- [x] fn::interrupt(), fn::check_preemption() — 13 interrupt types
+- [x] 3 reset classes: soft/safe_mode/hard
+- [x] Formal runtime model (docs/RUNTIME-MODEL.md)
+- [x] Personality = scheduler policy (budget ratios)
+
+### Phase 11: Autonomous Agency + Training (COMPLETE)
+- [x] fn::agency_tick — brain decides actions from affect (dopamine/cortisol)
+- [x] fn::process_consequence — sensory feedback → traces + accumulators
+- [x] fn::brain_tick — unified internal loop, all circuits at natural frequencies
+- [x] Membrane (training/membrane.ts) — thin world↔brain translator
+- [x] 200K cycles, 1000 autonomous actions, traces stabilize ~245
+- [x] Archive never delete (Pointer Architecture)
+- [x] 1M+ cognitive ops in 45s (24K+ tps)
 
 ## What's Next
 

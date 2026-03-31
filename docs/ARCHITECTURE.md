@@ -128,17 +128,19 @@ Depth/spread are LEARNED by the cognitive cone model (9→2 neural graph).
 - Sequential DB calls → single stored proc
 - N+1 patterns → batch stored proc (fn::batch_*)
 
-## fn::kernel_tick — The Brain Runs in SurrealDB
+## fn::brain_tick — The Brain Runs in SurrealDB
 
-One stored procedure = one full cognitive cycle in Rust:
+One stored procedure = all cognitive circuits at their natural frequencies:
 
 ```
-fn::kernel_tick($cycle) → {cycle, depth, energy, fatigue, needs_sleep, spread}
-  ├── Energy tick (drain + fatigue)
-  ├── Cognitive scope (fn::compute_cognitive_scope)
-  ├── LOCAL: trace weight/freshness decay
-  ├── REFLECT (depth 3+): active_inference, detect_schemas, forget, drift
-  ├── RESTRUCTURE (depth 5+): nn_decay_all, consolidate_episodic
+fn::brain_tick($n) — FOR loop, all circuits:
+  CRITICAL  (×100):  energy drain + sleep detection + recovery
+  HIGH      (×100):  affect forward pass (nn_forward)
+  TRACE     (×50):   trace weight/freshness decay
+  AGENCY    (×200):  decide action (dopamine→explore, cortisol→cautious)
+  MEDIUM    (×500):  active inference + forgetting
+  LOW       (×2000): neural decay + episodic consolidation
+  DEEP      (×5000): world model + introspection
   ├── SLEEP (energy < 0.1): fn::sleep_consolidation
   └── Phenomenal state capture → kernel_state table
 ```
@@ -161,7 +163,7 @@ NestJS only handles:
 - World bridge (action execution)
 - Bootstrap (migrations)
 
-## 27 Migrations
+## 32 Migrations
 
 | # | Name | What |
 |---|------|------|
@@ -178,6 +180,11 @@ NestJS only handles:
 | 025 | Neural graph events | nn_hebbian, nn_decay, nn_sprout, nn_metrics |
 | 026 | SurrealDB 3.0 | COMPUTED fields, vector::, batch procs, sleep_consolidation |
 | 027 | Kernel in DB | kernel_state, kernel_request, kernel_event, fn::kernel_tick |
+| 028 | Brain services | fn::build_world_model, fn::introspect, fn::nightly_run, fn::belief_decay |
+| 029 | Preemptive scheduler | 4 circuits with semaphores, fn::kernel_start/stop/reset/status |
+| 030 | Runtime model | fn::interrupt, fn::check_preemption, 3 reset classes, budget accounting |
+| 031 | Parallel circuits | fn::circuit_*, archive-never-delete, fn::run_parallel_status |
+| 032 | Agency circuit | fn::agency_tick, fn::process_consequence, fn::brain_tick |
 
 ## Developmental Metrics (6 domains)
 
@@ -195,5 +202,6 @@ Stages: sensory → categorical → predictive → agentic → reflective
 - **463 tests**, 38 suites, 0 failures
 - Property invariants (trace weight, hormones, distance, mode probabilities)
 - Convergence tests (predictor loss decreases, affect stabilizes)
-- fn::kernel_tick verified on SurrealDB 3.0.4
-- fn::nn_forward verified: neural graph forward pass returns real values
+- fn::brain_tick: 200K cycles, 1000 autonomous actions, traces stabilize ~245
+- fn::nn_forward: neural graph forward pass verified on SurrealDB 3.0.4
+- 1M+ cognitive operations in 45s (24K+ tps, parallel circuits)
