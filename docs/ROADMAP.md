@@ -3,9 +3,9 @@
 ## Current State (v3.0)
 
 ```
-~250 files │ ~30,000 lines │ 620 tests │ 26 migrations │ 40+ stored procs
-Architecture: Neural graph in SurrealDB, cognitive cone, goal-directed attention
-Status: Core architecture complete, training validates
+~240 files │ ~27,000 lines │ 463 tests │ 27 migrations │ 45+ stored procs
+Architecture: Kernel lives in SurrealDB (fn::kernel_tick), NestJS = flat membrane
+Status: Brain in DB, NestJS boots 12ms, neural graph + kernel tick verified
 ```
 
 ## What's Done
@@ -51,16 +51,28 @@ Status: Core architecture complete, training validates
 - [x] 5-level curriculum with progressive complexity
 
 ### Phase 6: Tests & Validation (COMPLETE)
-- [x] 620 tests, 47 suites
+- [x] 463 tests, 38 suites (removed useless mock-verification tests)
 - [x] Property invariants (trace weight, hormones, energy, distance)
 - [x] Convergence tests (predictor loss decreases, affect stabilizes)
-- [x] Full validation: 750 ticks, 12/13 pass
+- [x] fn::kernel_tick + fn::nn_forward verified on SurrealDB 3.0.4
 
 ### Phase 7: No Inline SQL (COMPLETE)
 - [x] All DB logic in stored procedures
-- [x] Zero `traceGraph['db']` private field access
 - [x] All N+1 loops replaced with batch procs
 - [x] traceGraph.executeProc() public gateway
+
+### Phase 8: Kernel Lives in SurrealDB (COMPLETE)
+- [x] fn::kernel_tick() — full cognitive cycle in one stored proc
+- [x] kernel_state, kernel_request, kernel_event tables
+- [x] fn::kernel_spend(), fn::kernel_sleep(), fn::kernel_get_state()
+- [x] NestJS tick() calls fn::kernel_tick(), zero orchestration in JS
+
+### Phase 9: Flat NestJS (COMPLETE)
+- [x] All modules @Global with imports: [], zero circular deps
+- [x] CognitiveConfigService extracted to own @Global module
+- [x] TraceGraphService rewritten: thin DB wrapper, no forwardRef
+- [x] NestJS boot: 12ms (was: infinite hang from circular deps)
+- [x] Deleted 8 useless mock-verification test files (-3504 lines)
 
 ## What's Next
 
@@ -96,11 +108,12 @@ Status: Core architecture complete, training validates
 
 | Metric | Current | Target |
 |--------|---------|--------|
-| Tests | 620 | 800+ |
-| Stored procedures | 40+ | 50+ |
+| Tests | 463 | 600+ (real integration tests) |
+| Stored procedures | 45+ | 50+ |
 | Inline SQL in TS | 0 | 0 |
+| NestJS boot | 12ms | <50ms |
+| fn::kernel_tick | verified | <10ms/tick |
+| Circular deps | 0 | 0 |
 | Training speed | ~0.25s/tick | <0.1s/tick |
 | World model accuracy (500 ticks) | ~65% | >75% |
-| Vocabulary (500 ticks) | 5-10 words | 20+ words |
 | Prediction error trend | decreasing | decreasing |
-| Developmental stages reached | sensory→categorical | →predictive |

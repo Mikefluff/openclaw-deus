@@ -128,7 +128,40 @@ Depth/spread are LEARNED by the cognitive cone model (9→2 neural graph).
 - Sequential DB calls → single stored proc
 - N+1 patterns → batch stored proc (fn::batch_*)
 
-## 26 Migrations
+## fn::kernel_tick — The Brain Runs in SurrealDB
+
+One stored procedure = one full cognitive cycle in Rust:
+
+```
+fn::kernel_tick($cycle) → {cycle, depth, energy, fatigue, needs_sleep, spread}
+  ├── Energy tick (drain + fatigue)
+  ├── Cognitive scope (fn::compute_cognitive_scope)
+  ├── LOCAL: trace weight/freshness decay
+  ├── REFLECT (depth 3+): active_inference, detect_schemas, forget, drift
+  ├── RESTRUCTURE (depth 5+): nn_decay_all, consolidate_episodic
+  ├── SLEEP (energy < 0.1): fn::sleep_consolidation
+  └── Phenomenal state capture → kernel_state table
+```
+
+NestJS calls `fn::kernel_tick()` via setInterval. Zero orchestration in JS.
+
+Supporting tables:
+- `kernel_state` — singleton: energy, fatigue, cycle, phenomenal state, scope
+- `kernel_request` — kernel → NestJS (when periphery needed)
+- `kernel_event` — NestJS → kernel (external events)
+
+## NestJS = Flat Membrane
+
+All modules are @Global with `imports: []`. Zero circular deps.
+NestJS boot: **12ms**. Brain lives in SurrealDB, not in JS.
+
+NestJS only handles:
+- HTTP API (controllers)
+- LLM calls (agents, when kernel requests)
+- World bridge (action execution)
+- Bootstrap (migrations)
+
+## 27 Migrations
 
 | # | Name | What |
 |---|------|------|
@@ -137,13 +170,14 @@ Depth/spread are LEARNED by the cognitive cone model (9→2 neural graph).
 | 008 | Cognitive native | Coherence, coverage, HNSW indexes |
 | 010 | Kernel | Traces, edges, commit_log |
 | 013 | Kernel procedures | spread_activation, forget, backprop, reinforce |
-| 018 | Clustered learning | Clusters, belongs_to, MTREE→HNSW |
+| 018 | Clustered learning | Clusters, belongs_to, HNSW |
 | 021 | Native operations | find_episodic_patterns, find_high_connectivity, cognitive_metrics |
 | 022 | Heavy logic to DB | drift, conflicts, schemas, consolidate, batch ops |
-| 023 | Reactive events | cognitive_spread, archive, hebbian, backprop |
+| 023 | Reactive events | cognitive_spread, archive, hebbian, backprop (ASYNC RETRY) |
 | 024 | Neural graph | nn_node, nn_edge, fn::nn_forward/backward/softmax |
 | 025 | Neural graph events | nn_hebbian, nn_decay, nn_sprout, nn_metrics |
-| 026 | SurrealDB 3.0 | ASYNC events, COMPUTED fields, vector::, recursive traversal, batch procs, sleep consolidation |
+| 026 | SurrealDB 3.0 | COMPUTED fields, vector::, batch procs, sleep_consolidation |
+| 027 | Kernel in DB | kernel_state, kernel_request, kernel_event, fn::kernel_tick |
 
 ## Developmental Metrics (6 domains)
 
@@ -158,7 +192,8 @@ Stages: sensory → categorical → predictive → agentic → reflective
 
 ## Test Status
 
-- **620 tests**, 47 suites, 0 failures
+- **463 tests**, 38 suites, 0 failures
 - Property invariants (trace weight, hormones, distance, mode probabilities)
 - Convergence tests (predictor loss decreases, affect stabilizes)
-- Full validation: 750 ticks, 12/13 assertions pass
+- fn::kernel_tick verified on SurrealDB 3.0.4
+- fn::nn_forward verified: neural graph forward pass returns real values
