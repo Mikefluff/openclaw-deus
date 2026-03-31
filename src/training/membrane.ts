@@ -151,6 +151,65 @@ async function main() {
   const es = nnStats[0]?.[0] ?? nnStats[0] ?? {};
   console.log(`  Mean |weight|: ${(es.w ?? 0).toFixed?.(4)} | Mean updates: ${(es.u ?? 0).toFixed?.(0)}`);
 
+  // ═══════════════════════════════════════════
+  // LEARNING METRICS — does brain ACTUALLY learn?
+  // ═══════════════════════════════════════════
+
+  console.log('\n--- LEARNING METRICS ---');
+
+  // 1. Trace clustering: do similar objects cluster?
+  // Push(мячик=0) and push(яблоко=8) should have similar positions (both roll)
+  // Push(кубик=1) should be far from push(мячик=0) (doesn't roll)
+  const pushTraces = await db.query('SELECT content, position FROM trace WHERE archived = false AND string::starts_with(content, \'1:\')') as any;
+  const pushList = Array.isArray(pushTraces[0]) ? pushTraces[0] : pushTraces;
+  if ((pushList as any[]).length >= 2) {
+    // Compute distance between push-traces
+    const dists: Array<{ a: string; b: string; dist: number }> = [];
+    for (let i = 0; i < Math.min(pushList.length, 5); i++) {
+      for (let j = i + 1; j < Math.min(pushList.length, 5); j++) {
+        const pa = (pushList as any)[i].position || [];
+        const pb = (pushList as any)[j].position || [];
+        let d = 0;
+        for (let k = 0; k < Math.min(pa.length, pb.length); k++) d += (pa[k] - pb[k]) ** 2;
+        dists.push({ a: (pushList as any)[i].content, b: (pushList as any)[j].content, dist: Math.sqrt(d) });
+      }
+    }
+    dists.sort((a, b) => a.dist - b.dist);
+    console.log('  Push-trace distances (closer = similar physics):');
+    for (const d of dists.slice(0, 5)) {
+      console.log(`    ${d.a} ↔ ${d.b}: dist=${d.dist.toFixed(3)}`);
+    }
+  }
+
+  // 2. Reactivation distribution: highly reactivated = well-learned
+  const reactDist = await db.query('SELECT content, reactivation_count, weight FROM trace WHERE archived = false') as any;
+  const reactList = Array.isArray(reactDist[0]) ? reactDist[0] : reactDist;
+  if ((reactList as any[]).length > 0) {
+    const reacts = (reactList as any[]).map((t: any) => t.reactivation_count ?? 0);
+    const mean = reacts.reduce((s: number, r: number) => s + r, 0) / reacts.length;
+    const max = Math.max(...reacts);
+    const weights = (reactList as any[]).map((t: any) => t.weight ?? 0);
+    const meanW = weights.reduce((s: number, w: number) => s + w, 0) / weights.length;
+    console.log(`  Reactivation: mean=${mean.toFixed(1)} max=${max} (more = better learning)`);
+    console.log(`  Mean trace weight: ${meanW.toFixed(3)} (higher = stronger memories)`);
+  }
+
+  // 3. Speech binding: mama traces linked to action traces?
+  const speechTraces = await db.query('SELECT content, weight, reactivation_count FROM trace WHERE string::starts_with(content, \'-1:\') AND archived = false') as any;
+  const speechList = Array.isArray(speechTraces[0]) ? speechTraces[0] : speechTraces;
+  console.log(`  Speech traces: ${(speechList as any[]).length} (mama named ${(speechList as any[]).length} objects)`);
+  for (const st of (speechList as any[]).slice(0, 5)) {
+    console.log(`    "${st.content}" w=${st.weight?.toFixed(3)} react=${st.reactivation_count}`);
+  }
+
+  // 4. Accumulator balance: convergence should grow, novelty should decay
+  const accFinal = Array.isArray(accumulators[0]) ? accumulators[0] : accumulators;
+  const conv = (accFinal as any[]).find((a: any) => a.node_id === 'acc:convergence')?.value ?? 0;
+  const nov = (accFinal as any[]).find((a: any) => a.node_id === 'acc:novelty')?.value ?? 0;
+  const pred = (accFinal as any[]).find((a: any) => a.node_id === 'acc:pred_error')?.value ?? 0;
+  console.log(`  Learning signal: convergence=${conv.toFixed(3)} novelty=${nov.toFixed(3)} pred_error=${pred.toFixed(3)}`);
+  console.log(`  ${conv > nov ? 'CONVERGING (world becoming predictable)' : 'EXPLORING (still discovering)'}`);
+
   await db.query('UPDATE kernel_state SET running = false');
   await db.close();
   process.exit(0);
