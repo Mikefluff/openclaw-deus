@@ -82,24 +82,23 @@ async function main() {
       totalActions++;
       await feedTransition(consequence);
 
-      // Three-factor edge learning
+      // Cognitive cycle: appraise → retrieve → predict → deliberate → commit → learn
       const consKey = `${consequence.action_id}:${consequence.object_idx}`;
+      const actionMethod = req.payload?.method ?? 'touch';
+      const targetContent = req.payload?.target_content ?? consKey;
       try {
-        await db.query(
-          `LET $to = (SELECT * FROM trace WHERE content = $key AND archived = false LIMIT 1)[0];
-           IF $to != NONE AND $to.id != NONE {
-             LET $pe = 1.0 / (1.0 + ($to.reactivation_count ?? 0));
-             LET $r = (SELECT id FROM trace WHERE archived = false AND id != $to.id LIMIT 3);
-             FOR $x IN $r { IF $x.id IS NOT NONE { fn::learn_edge($x.id, $to.id, $v, $pe); }; };
-           }`,
-          { key: consKey, v: consequence.valence },
-        );
+        const traceResult = await db.query(
+          'SELECT trace_id FROM trace WHERE content = $key AND archived = false LIMIT 1',
+          { key: consKey },
+        ) as any;
+        const traceId = traceResult[0]?.[0]?.trace_id ?? traceResult[0]?.trace_id;
+        if (traceId) {
+          await db.query(
+            'RETURN fn::cognitive_cycle($tid, $method, $target, $valence)',
+            { tid: traceId, method: actionMethod, target: targetContent, valence: consequence.valence },
+          );
+        }
       } catch {}
-
-      // Mode learning on valence events
-      if (Math.abs(consequence.valence) > 0.01) {
-        try { await db.query('RETURN fn::mode_learn($v)', { v: consequence.valence }); } catch {}
-      }
 
       if (req.id) try { await db.query('UPDATE $id SET status = \'completed\'', { id: req.id }); } catch {}
     }
