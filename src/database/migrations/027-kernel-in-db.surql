@@ -234,3 +234,16 @@ DEFINE FUNCTION IF NOT EXISTS fn::kernel_sleep() {
 DEFINE FUNCTION IF NOT EXISTS fn::kernel_get_state() {
   RETURN (SELECT * FROM kernel_state LIMIT 1)[0];
 };
+
+-- ═══════════════════════════════════════════
+-- 9. SELF-TRIGGER: brain ticks itself
+-- kernel_state UPDATE → EVENT → fn::kernel_tick → UPDATE kernel_state → ...
+-- Chain depth up to 256. Watchdog re-kicks when exhausted.
+-- ═══════════════════════════════════════════
+
+DEFINE EVENT IF NOT EXISTS kernel_heartbeat ON kernel_state
+  ASYNC RETRY 1 MAXDEPTH 16
+  WHEN $event = 'UPDATE' AND $after.running = true
+  THEN {
+    fn::kernel_tick(($after.cycle ?? 0) + 1);
+  };
