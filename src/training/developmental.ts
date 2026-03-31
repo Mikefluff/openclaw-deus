@@ -107,7 +107,8 @@ async function main() {
           LET $m = (SELECT node_id, value FROM nn_node WHERE model = 'affect' AND layer = 'mode');
           LET $s = (SELECT cycle, energy, fatigue, config FROM kernel_state LIMIT 1)[0];
           LET $mat = fn::compute_maturity();
-          LET $rpe = (SELECT math::mean(math::abs(prediction_error)) AS r FROM cognitive_event WHERE cycle > (($s.cycle ?? 0) - 50000) GROUP ALL)[0].r ?? 0;
+          LET $ce_c = (SELECT count() AS c FROM cognitive_event GROUP ALL)[0].c ?? 0;
+          LET $rpe = IF $ce_c > 1 THEN (SELECT math::mean(math::abs(prediction_error)) AS r FROM cognitive_event GROUP ALL)[0].r ?? 0 ELSE 0 END;
           RETURN { tr: $tr, ar: $ar, ed: $ed, h: $h, m: $m, s: $s, mat: $mat, rpe: $rpe };
         `) as any;
 
