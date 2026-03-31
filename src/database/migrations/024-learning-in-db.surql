@@ -52,24 +52,19 @@ DEFINE FUNCTION IF NOT EXISTS fn::nn_set_inputs($values: array) {
 
 -- Forward pass: compute output layer values from input layer via weighted edges.
 -- Returns array of {node_id, value} for the output layer.
-DEFINE FUNCTION IF NOT EXISTS fn::nn_forward($model: string, $from_layer: string, $to_layer: string) {
-  -- For each output node: compute weighted sum of inputs, add bias, apply activation
-  LET $output_nodes = (SELECT id, node_id, bias, activation FROM nn_node
-    WHERE model = $model AND layer = $to_layer);
-
-  FOR $out IN $output_nodes {
-    -- Sum incoming edge weights × input values
+-- nn_forward: batch UPDATE all output nodes in one pass (no FOR loop)
+DEFINE FUNCTION OVERWRITE fn::nn_forward($model: string, $from_layer: string, $to_layer: string) {
+  -- Single batch update: compute weighted_sum + bias + activation for ALL output nodes
+  UPDATE nn_node SET value = {
     LET $ws = (SELECT math::sum(in.value * weight) AS s FROM nn_edge
-      WHERE out = $out.id AND in.model = $model AND in.layer = $from_layer
+      WHERE out = id AND in.model = $model AND in.layer = $from_layer
       GROUP ALL)[0].s ?? 0.0;
-
-    LET $raw = $ws + $out.bias;
-    LET $activated = IF $out.activation = 'sigmoid' THEN fn::sigmoid($raw)
-                     ELSE IF $out.activation = 'tanh' THEN fn::nn_tanh($raw)
-                     ELSE IF $out.activation = 'softplus' THEN math::ln(1.0 + math::pow(math::E, math::clamp($raw, -10.0, 10.0)))
-                     ELSE $raw END;
-    UPDATE nn_node SET value = $activated WHERE id = $out.id;
-  };
+    LET $raw = $ws + bias;
+    IF activation = 'sigmoid' THEN fn::sigmoid($raw)
+    ELSE IF activation = 'tanh' THEN fn::nn_tanh($raw)
+    ELSE IF activation = 'softplus' THEN math::ln(1.0 + math::pow(math::E, math::clamp($raw, -10.0, 10.0)))
+    ELSE $raw END
+  } WHERE model = $model AND layer = $to_layer;
 
   RETURN (SELECT node_id, value FROM nn_node WHERE model = $model AND layer = $to_layer);
 };
