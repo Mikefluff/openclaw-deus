@@ -118,7 +118,7 @@ async function main() {
       for (const t of ambient) await feedTransition(t);
 
       // Brain thinks
-      await db.query('RETURN fn::brain_tick(1000)');
+      await db.query('RETURN fn::brain_tick(100)');
 
       // Process action requests
       const requests = await db.query(
@@ -132,15 +132,18 @@ async function main() {
         await feedTransition(consequence);
 
         // Three-factor edge learning
+        // Prediction error = inverse of familiarity (reactivation_count)
+        // Novel traces → high pred_error → stronger learning signal
         const consKey = `${consequence.action_id}:${consequence.object_idx}`;
         try {
           await db.query(
-            `LET $to = (SELECT id FROM trace WHERE content = $key AND archived = false LIMIT 1)[0].id;
-             IF $to != NONE {
-               LET $recent = (SELECT id FROM trace WHERE archived = false AND id != $to LIMIT 3);
-               FOR $r IN $recent { fn::learn_edge($r.id, $to, $valence, $pred_error); };
+            `LET $to = (SELECT * FROM trace WHERE content = $key AND archived = false LIMIT 1)[0];
+             IF $to != NONE AND $to.id != NONE {
+               LET $pred_error = 1.0 / (1.0 + ($to.reactivation_count ?? 0));
+               LET $recent = (SELECT id FROM trace WHERE archived = false AND id != $to.id LIMIT 3);
+               FOR $r IN $recent { fn::learn_edge($r.id, $to.id, $valence, $pred_error); };
              }`,
-            { key: consKey, valence: consequence.valence, pred_error: 0.3 },
+            { key: consKey, valence: consequence.valence },
           );
         } catch {}
 

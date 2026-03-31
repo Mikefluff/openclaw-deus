@@ -164,7 +164,7 @@ NestJS only handles:
 - World bridge (action execution)
 - Bootstrap (migrations)
 
-## 32 Migrations
+## 39 Migrations
 
 | # | Name | What |
 |---|------|------|
@@ -188,6 +188,11 @@ NestJS only handles:
 | 032 | Agency circuit | fn::agency_tick, fn::process_sensory, fn::brain_tick |
 | 033 | Sensorimotor | fn::process_sensory (13 channels + 16 speech = 29 numbers) |
 | 034 | Three-factor learning | fn::learn_edge (Δw = η×eligibility×M), fn::decay_eligibility |
+| 035 | Zero hardcode | ALL coefficients from kernel_state.config, affect-modulatable |
+| 036 | Graph×vector | fn::learn_edge with cosine modulation, fn::prune_dissimilar_edges, fn::graph_vector_retrieve |
+| 037 | Graph×vector wiring | Cosine-weighted spreading activation, vector pruning in LOW circuit, zero hardcode in all circuits |
+| 038 | Hormone differentiation | Per-hormone targets (cortisol→stress, dopamine→reward, NE→surprise, serotonin→satisfaction) |
+| 039 | Phasic/tonic hormones | Spike+decay dynamics: DA τ=30, NE τ=20, serotonin tonic-only, cortisol τ=500 (HPA axis) |
 
 ## Developmental Metrics (6 domains)
 
@@ -205,6 +210,7 @@ Stages: sensory → categorical → predictive → agentic → reflective
 - **463 tests**, 38 suites, 0 failures
 - Property invariants (trace weight, hormones, distance, mode probabilities)
 - Convergence tests (predictor loss decreases, affect stabilizes)
-- Training: 200K cycles, 1000 actions, hormones 0.5→0.978, 107 edges, traces cluster by physics
+- Training: 610K cycles, 6K actions, 454 edges, traces cluster by physics
+- Phasic/tonic hormones: DA pulsates 0.7-1.15, NE fast spikes, serotonin smooth tonic rise
 - 1M+ cognitive operations in 45s (24K+ tps)
 - PhysicsWorld: 13 sensory channels + 16 speech = brain sees only 29 numbers
