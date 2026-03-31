@@ -75,9 +75,12 @@ DEFINE FUNCTION OVERWRITE fn::kernel_tick($cycle: int) {
   LET $depth = IF type::is_object($scope_raw) THEN $scope_raw.suggested_depth ?? 1 ELSE 1 END;
   LET $spread = IF type::is_object($scope_raw) THEN $scope_raw.suggested_spread ?? 10 ELSE 10 END;
 
-  -- ── LOCAL (always): trace decay ──
-  -- Hormone-modulated decay done by fn::nn_forward in affect model
-  -- Here just basic freshness decay on active traces
+  -- ── LOCAL (always): affect forward + trace decay ──
+  -- Run affect model forward pass (hormones update from accumulators)
+  fn::nn_forward('affect', 'input', 'hidden');
+  fn::nn_forward('affect', 'hidden', 'output');
+
+  -- Trace weight/freshness decay
   UPDATE trace SET
     weight = math::clamp(weight * 0.999, 0.0, 1.0),
     freshness = freshness * 0.999
@@ -119,17 +122,20 @@ DEFINE FUNCTION OVERWRITE fn::kernel_tick($cycle: int) {
     LET $energy = math::max([0.0, $energy - 0.03]);
   };
 
-  -- ── SLEEP (energy depleted) ──
+  -- ── NIGHTLY (autonomous: brain decides when, not cron) ──
+  -- Trigger: enough cycles awake + after a sleep + low activity
+  LET $cycles_awake = ($state.cycles_since_sleep ?? 0) + 1;
+  IF $cycles_awake > 500 AND $energy > 0.5 AND $depth >= 5 {
+    fn::nightly_run();
+    LET $energy = math::max([0.0, $energy - 0.1]);
+  };
+
+  -- ── SLEEP (energy depleted — brain decides, not NestJS) ──
   LET $needs_sleep = $energy < 0.1;
   IF $needs_sleep {
     fn::sleep_consolidation(0.001);
     LET $energy = math::min([($state.max_energy ?? 1.5), $energy + 0.8]);
     LET $fatigue = 0.0;
-    CREATE kernel_request CONTENT {
-      type: 'sleep_completed',
-      status: 'pending',
-      created_at: time::now()
-    };
   };
 
   -- ── PHENOMENAL STATE ──
