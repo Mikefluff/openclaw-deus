@@ -98,6 +98,7 @@ async function main() {
       const elapsed = (Date.now() - t0) / 1000;
       try {
         // One roundtrip for ALL stats
+        // Multi-statement query: results are array, RETURN is last element
         const snap = await db.query(`
           LET $tr = (SELECT count() AS c FROM trace WHERE archived = false GROUP ALL)[0].c ?? 0;
           LET $ar = (SELECT count() AS c FROM trace WHERE archived = true GROUP ALL)[0].c ?? 0;
@@ -106,11 +107,13 @@ async function main() {
           LET $m = (SELECT node_id, value FROM nn_node WHERE model = 'affect' AND layer = 'mode');
           LET $s = (SELECT cycle, energy, fatigue, config FROM kernel_state LIMIT 1)[0];
           LET $mat = fn::compute_maturity();
-          LET $rpe = (SELECT math::mean(math::abs(prediction_error)) AS r FROM cognitive_event WHERE cycle > ($s.cycle - 50000) GROUP ALL)[0].r ?? 0;
+          LET $rpe = (SELECT math::mean(math::abs(prediction_error)) AS r FROM cognitive_event WHERE cycle > (($s.cycle ?? 0) - 50000) GROUP ALL)[0].r ?? 0;
           RETURN { tr: $tr, ar: $ar, ed: $ed, h: $h, m: $m, s: $s, mat: $mat, rpe: $rpe };
         `) as any;
 
-        const d = snap[0] ?? {};
+        // RETURN is the last element in the results array
+        const results = Array.isArray(snap) ? snap : [snap];
+        const d = results[results.length - 1] ?? results[0] ?? {};
         const s = d.s ?? {};
         const cfg = s.config ?? {};
         const h = Array.isArray(d.h) ? d.h : [];
