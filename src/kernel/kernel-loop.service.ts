@@ -2,107 +2,145 @@ import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/commo
 import { SurrealService } from '../database/surreal.service';
 
 /**
- * KernelLoopService: Watchdog + monitor for autonomous SurrealDB brain.
+ * KernelLoopService: Watchdog for autonomous preemptive brain scheduler.
  *
- * The brain runs INSIDE SurrealDB via self-triggering events:
- *   kernel_state UPDATE → EVENT kernel_heartbeat → fn::kernel_tick → UPDATE kernel_state → ...
- *   Chain depth: up to 256 ticks per kick. Watchdog re-kicks when chain exhausts.
+ * Brain runs 4 concurrent loops inside SurrealDB (Rust):
+ *   CRITICAL (1024 depth): energy management, sleep detection
+ *   HIGH     (1024 depth): affect forward, trace decay
+ *   MEDIUM   (512 depth):  inference, schemas, forgetting
+ *   LOW      (256 depth):  world model, introspection, nightly
  *
- * This service:
- * 1. Kicks the brain (starts self-trigger chain) — once on init, re-kick every few seconds
- * 2. Monitors brain health via LIVE SELECT on kernel_state
- * 3. Pushes external events to kernel_event table
- * 4. Debug mode: logs every Nth tick
+ * Higher priority preempts lower (energy check at start of each tick).
+ * Each loop = self-triggering EVENT chain on its own semaphore table.
  *
- * NOT an orchestrator. The brain orchestrates itself.
+ * This service: watchdog (re-kicks exhausted chains) + debug + health.
  */
 
-export interface KernelState {
-  cycle: number;
+export interface KernelStatus {
+  running: boolean;
   energy: number;
   fatigue: number;
-  mode: string;
-  depth?: number;
-  spread?: number;
-  needs_sleep?: boolean;
-  phenomenal?: {
-    dominant_traces: Array<{ trace_id: string; content: string; weight: number }>;
-    conflicts: Array<{ a: string; b: string; w: number }>;
+  cycle: number;
+  debug_break: boolean;
+  loops: {
+    critical: { tick: number; ts?: string };
+    high: { tick: number; ts?: string };
+    medium: { tick: number; ts?: string };
+    low: { tick: number; ts?: string };
   };
 }
 
 @Injectable()
 export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(KernelLoopService.name);
-  private kickHandle: ReturnType<typeof setInterval> | null = null;
+  private watchdogHandle: ReturnType<typeof setInterval> | null = null;
   private running = false;
-  private debugMode = false;
-  private lastState: KernelState | null = null;
-  private kickCount = 0;
+  private lastStatus: KernelStatus | null = null;
+  private lastLoopTicks = { critical: 0, high: 0, medium: 0, low: 0 };
 
   constructor(private readonly db: SurrealService) {}
 
   onModuleInit(): void {
-    this.running = true;
-    // Watchdog: re-kick brain every 2s if chain exhausted (256 ticks per chain)
-    this.kickHandle = setInterval(() => this.kick(), 2000);
-    this.logger.log('Brain watchdog started (re-kick every 2s, 256 ticks/chain)');
+    // Watchdog: check loop health every 2s, re-kick stalled loops
+    this.watchdogHandle = setInterval(() => this.watchdog(), 2000);
+    this.logger.log('Brain watchdog started (4-loop preemptive scheduler)');
   }
 
   onModuleDestroy(): void {
-    this.running = false;
-    if (this.kickHandle) clearInterval(this.kickHandle);
+    if (this.watchdogHandle) clearInterval(this.watchdogHandle);
     this.stop().catch(() => {});
-    this.logger.log('Brain watchdog stopped');
   }
 
   // ═══════════════════════════════════════════
-  // KICK: restarts the self-trigger chain in SurrealDB
+  // WATCHDOG: re-kick stalled loops
   // ═══════════════════════════════════════════
 
-  private async kick(): Promise<void> {
-    if (!this.running) return;
+  private async watchdog(): Promise<void> {
     try {
-      // Kick the brain: increment cycle → triggers EVENT → chain of 256 ticks
-      const result = await this.db.execute(
-        `UPDATE kernel_state SET running = true, cycle = (cycle ?? 0) + 1`,
-      );
-      this.kickCount++;
+      const result = await this.db.execute('RETURN fn::kernel_status()');
+      if (!result.isOk()) return;
+      const status = (result as any).value?.[0] as KernelStatus;
+      if (!status) return;
+      this.lastStatus = status;
 
-      // Read state for monitoring
-      const state = await this.db.execute('RETURN fn::kernel_get_state()');
-      if (state.isOk()) {
-        this.lastState = (state as any).value?.[0] as KernelState;
-        if (this.debugMode) {
-          const s = this.lastState;
-          this.logger.debug(
-            `kick #${this.kickCount} cycle=${s?.cycle} energy=${s?.energy?.toFixed(3)} fatigue=${s?.fatigue?.toFixed(3)} depth=${s?.depth} mode=${s?.mode}`,
-          );
-        }
+      if (!status.running) return;
+
+      // Re-kick any loop whose tick count hasn't changed (chain exhausted)
+      const loops = status.loops;
+      if (loops.critical.tick === this.lastLoopTicks.critical) {
+        await this.db.execute('UPDATE sched_critical:main SET tick = tick + 1, ts = time::now()');
       }
-    } catch (e) {
-      // DB not ready yet — silent, will retry
+      if (loops.high.tick === this.lastLoopTicks.high) {
+        await this.db.execute('UPDATE sched_high:main SET tick = tick + 1, ts = time::now()');
+      }
+      if (loops.medium.tick === this.lastLoopTicks.medium && status.energy > 0.2) {
+        await this.db.execute('UPDATE sched_medium:main SET tick = tick + 1, ts = time::now()');
+      }
+      if (loops.low.tick === this.lastLoopTicks.low && status.energy > 0.4) {
+        await this.db.execute('UPDATE sched_low:main SET tick = tick + 1, ts = time::now()');
+      }
+
+      this.lastLoopTicks = {
+        critical: loops.critical.tick,
+        high: loops.high.tick,
+        medium: loops.medium.tick,
+        low: loops.low.tick,
+      };
+    } catch {
+      // DB not ready — silent
     }
   }
 
   // ═══════════════════════════════════════════
-  // START / STOP
+  // CONTROL
   // ═══════════════════════════════════════════
 
-  async start(): Promise<void> {
-    await this.db.execute(`UPDATE kernel_state SET running = true`);
+  async start(): Promise<KernelStatus | null> {
+    const result = await this.db.execute('RETURN fn::kernel_start()');
     this.running = true;
-    this.logger.log('Brain started');
+    this.logger.log('Brain started (4 loops kicked)');
+    return this.getStatus();
   }
 
   async stop(): Promise<void> {
-    await this.db.execute(`UPDATE kernel_state SET running = false`);
+    await this.db.execute('RETURN fn::kernel_stop()');
     this.running = false;
     this.logger.log('Brain stopped');
   }
 
+  async reset(): Promise<void> {
+    await this.db.execute('RETURN fn::kernel_reset()');
+    this.lastLoopTicks = { critical: 0, high: 0, medium: 0, low: 0 };
+    this.logger.log('Brain reset');
+  }
+
   // ═══════════════════════════════════════════
-  // EXTERNAL EVENTS (world → brain)
+  // DEBUG
+  // ═══════════════════════════════════════════
+
+  async enableDebug(): Promise<void> {
+    await this.db.execute('UPDATE kernel_state SET debug_break = true');
+    this.logger.log('Debug: brain paused');
+  }
+
+  async disableDebug(): Promise<void> {
+    await this.db.execute('UPDATE kernel_state SET debug_break = false');
+    this.logger.log('Debug: brain resumed');
+  }
+
+  async stepOnce(): Promise<KernelStatus | null> {
+    // One tick of each loop, then pause again
+    const s = this.lastStatus;
+    await this.db.execute('RETURN fn::sched_critical_tick($t)', { t: (s?.loops.critical.tick ?? 0) + 1 });
+    await this.db.execute('RETURN fn::sched_high_tick($t)', { t: (s?.loops.high.tick ?? 0) + 1 });
+    await this.db.execute('RETURN fn::sched_medium_tick($t)', { t: (s?.loops.medium.tick ?? 0) + 1 });
+    await this.db.execute('RETURN fn::sched_low_tick($t)', { t: (s?.loops.low.tick ?? 0) + 1 });
+    await this.db.execute('UPDATE kernel_state SET debug_break = true');
+    return this.getStatus();
+  }
+
+  // ═══════════════════════════════════════════
+  // EVENTS + MONITORING
   // ═══════════════════════════════════════════
 
   async pushEvent(content: string, type = 'message', source?: string): Promise<void> {
@@ -111,20 +149,18 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
     } as Record<string, unknown>);
   }
 
-  // ═══════════════════════════════════════════
-  // MONITORING
-  // ═══════════════════════════════════════════
-
-  enableDebug(): void { this.debugMode = true; this.logger.log('Debug ON'); }
-  disableDebug(): void { this.debugMode = false; this.logger.log('Debug OFF'); }
-
-  getState(): KernelState | null { return this.lastState; }
-  isRunning(): boolean { return this.running; }
-
-  getHealth(): { running: boolean; kickCount: number; lastState: KernelState | null } {
-    return { running: this.running, kickCount: this.kickCount, lastState: this.lastState };
+  async getStatus(): Promise<KernelStatus | null> {
+    const result = await this.db.execute('RETURN fn::kernel_status()');
+    if (result.isOk()) {
+      this.lastStatus = (result as any).value?.[0] as KernelStatus;
+      return this.lastStatus;
+    }
+    return null;
   }
 
-  // Legacy compatibility
-  registerAgent(_agent: any): void { /* agents now in SurrealDB */ }
+  getLastStatus(): KernelStatus | null { return this.lastStatus; }
+  isRunning(): boolean { return this.running; }
+
+  // Legacy
+  registerAgent(_agent: any): void {}
 }

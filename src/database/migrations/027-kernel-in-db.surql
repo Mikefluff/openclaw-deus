@@ -241,9 +241,13 @@ DEFINE FUNCTION IF NOT EXISTS fn::kernel_get_state() {
 -- Chain depth up to 256. Watchdog re-kicks when exhausted.
 -- ═══════════════════════════════════════════
 
+-- Brain self-trigger: 1024 ticks per chain in Rust, re-kicked by watchdog.
+-- Stops when: running = false OR debug_break = true
 DEFINE EVENT IF NOT EXISTS kernel_heartbeat ON kernel_state
-  ASYNC RETRY 1 MAXDEPTH 16
-  WHEN $event = 'UPDATE' AND $after.running = true
+  ASYNC RETRY 1 MAXDEPTH 1024
+  WHEN $event = 'UPDATE'
+    AND $after.running = true
+    AND ($after.debug_break ?? false) = false
   THEN {
     fn::kernel_tick(($after.cycle ?? 0) + 1);
   };
