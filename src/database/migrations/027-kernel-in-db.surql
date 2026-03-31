@@ -63,17 +63,34 @@ DEFINE FUNCTION OVERWRITE fn::kernel_tick($cycle: int) {
     LET $state = (SELECT * FROM kernel_state LIMIT 1)[0];
   };
 
+  -- ── LOAD CONFIG (from kernel_state.config object, set by affect model) ──
+  -- Thresholds stored IN kernel_state itself — not in separate table.
+  -- Affect model modulates these via fn::nn_forward config deltas.
+  LET $cfg = $state.config ?? {};
+  LET $cfg_drain = $cfg.energy_drain_rate ?? 0.002;
+  LET $cfg_fatigue_rate = $cfg.fatigue_rate ?? 0.001;
+  LET $cfg_sleep_threshold = $cfg.sleep_threshold ?? 0.1;
+  LET $cfg_nightly_fatigue = $cfg.nightly_fatigue_threshold ?? 0.3;
+  LET $cfg_nightly_energy = $cfg.nightly_energy_threshold ?? 0.5;
+  LET $cfg_trace_decay = $cfg.trace_weight_decay ?? 0.999;
+  LET $cfg_freshness_decay = $cfg.freshness_decay ?? 0.999;
+  LET $cfg_trace_min_weight = $cfg.trace_min_weight ?? 0.05;
+
   -- ── ENERGY TICK ──
   LET $fatigue = $state.fatigue ?? 0.0;
-  LET $drain = 0.002 * (1.0 + $fatigue);
+  LET $drain = $cfg_drain * (1.0 + $fatigue);
   LET $energy = math::max([0.0, ($state.energy ?? 1.0) - $drain]);
-  LET $fatigue = math::min([1.0, $fatigue + 0.001]);
+  LET $fatigue = math::min([1.0, $fatigue + $cfg_fatigue_rate]);
 
   -- ── COGNITIVE SCOPE ──
-  -- fn::compute_cognitive_scope returns object, extract fields safely
   LET $scope_raw = fn::compute_cognitive_scope();
   LET $depth = IF type::is_object($scope_raw) THEN $scope_raw.suggested_depth ?? 1 ELSE 1 END;
   LET $spread = IF type::is_object($scope_raw) THEN $scope_raw.suggested_spread ?? 10 ELSE 10 END;
+
+  -- Depth thresholds from kernel_state config (affect model modulates via config deltas)
+  LET $depth_reflect = $cfg.depth_reflect ?? 3;
+  LET $depth_restructure = $cfg.depth_restructure ?? 5;
+  LET $depth_consolidate = $cfg.depth_consolidate ?? 10;
 
   -- ── LOCAL (always): affect forward + trace decay ──
   -- Run affect model forward pass (hormones update from accumulators)
@@ -82,12 +99,12 @@ DEFINE FUNCTION OVERWRITE fn::kernel_tick($cycle: int) {
 
   -- Trace weight/freshness decay
   UPDATE trace SET
-    weight = math::clamp(weight * 0.999, 0.0, 1.0),
-    freshness = freshness * 0.999
-  WHERE archived = false AND weight > 0.05;
+    weight = math::clamp(weight * $cfg_trace_decay, 0.0, 1.0),
+    freshness = freshness * $cfg_freshness_decay
+  WHERE archived = false AND weight > $cfg_trace_min_weight;
 
   -- ── REFLECT (depth 3+) ──
-  IF $depth >= 3 {
+  IF $depth >= $depth_reflect {
     -- Active inference
     fn::active_inference(0.3, 10);
 
@@ -107,7 +124,7 @@ DEFINE FUNCTION OVERWRITE fn::kernel_tick($cycle: int) {
   };
 
   -- ── RESTRUCTURE (depth 5+) ──
-  IF $depth >= 5 {
+  IF $depth >= $depth_restructure {
     fn::nn_decay_all(0.001);
     fn::consolidate_episodic(3);
     fn::belief_decay(0.005);
@@ -116,7 +133,7 @@ DEFINE FUNCTION OVERWRITE fn::kernel_tick($cycle: int) {
   };
 
   -- ── CONSOLIDATE (depth 10+) ──
-  IF $depth >= 10 {
+  IF $depth >= $depth_consolidate {
     fn::build_world_model();
     fn::introspect();
     LET $energy = math::max([0.0, $energy - 0.03]);
@@ -128,14 +145,14 @@ DEFINE FUNCTION OVERWRITE fn::kernel_tick($cycle: int) {
   --   AND energy recovered (just slept or resting)
   --   AND processing depth allows it
   -- This is the brain saying "I need maintenance" — not a cron job.
-  IF $fatigue > 0.3 AND $energy > 0.5 AND $depth >= 5 {
+  IF $fatigue > $cfg_nightly_fatigue AND $energy > $cfg_nightly_energy AND $depth >= $depth_restructure {
     fn::nightly_run();
     LET $energy = math::max([0.0, $energy - 0.1]);
     LET $fatigue = math::max([0.0, $fatigue - 0.2]);
   };
 
   -- ── SLEEP (energy depleted — brain decides, not NestJS) ──
-  LET $needs_sleep = $energy < 0.1;
+  LET $needs_sleep = $energy < $cfg_sleep_threshold;
   IF $needs_sleep {
     fn::sleep_consolidation(0.001);
     LET $energy = math::min([($state.max_energy ?? 1.5), $energy + 0.8]);
@@ -146,7 +163,7 @@ DEFINE FUNCTION OVERWRITE fn::kernel_tick($cycle: int) {
   LET $dominant = (SELECT trace_id, content, weight FROM trace
     WHERE archived = false ORDER BY weight DESC LIMIT 10);
   LET $conflicts = (SELECT in.content AS a, out.content AS b, weight AS w
-    FROM inhibits WHERE weight > 0.2
+    FROM inhibits WHERE weight > $cfg_trace_min_weight
     ORDER BY w DESC LIMIT 5);
 
   -- ── UPDATE STATE ──
