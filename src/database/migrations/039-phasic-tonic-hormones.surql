@@ -83,16 +83,23 @@ WHERE node_id = 'hormone:cortisol';
 DEFINE FUNCTION OVERWRITE fn::hormone_spike($hormone_name: string, $magnitude: float) {
   LET $cfg = (SELECT * FROM kernel_state LIMIT 1)[0].config ?? {};
   LET $phasic_cap = $cfg.phasic_cap ?? 0.5;
-  LET $hmax = $cfg.hormone_max ?? 1.5;
+  LET $hmax = $cfg.hormone_max ?? 1.2;
   LET $hmin = $cfg.hormone_min ?? 0.0;
   LET $node_id = 'hormone:' + $hormone_name;
 
-  -- Phasic is CAPPED: can't accumulate beyond phasic_cap
-  -- Positive spikes: max(current, current+magnitude) capped at phasic_cap
-  -- Negative spikes: min(current, current+magnitude) capped at -phasic_cap
+  -- MAX-SPIKE: new spike replaces current phasic if |new| > |current|
+  -- This prevents additive stacking. Like real neurotransmitter release:
+  -- a burst is a burst, two bursts in quick succession don't double.
+  LET $current = (SELECT phasic, tonic FROM nn_node WHERE node_id = $node_id LIMIT 1)[0];
+  LET $cur_ph = $current.phasic ?? 0;
+  LET $new_ph = IF math::abs($magnitude) > math::abs($cur_ph)
+    THEN math::clamp($magnitude, 0.0 - $phasic_cap, $phasic_cap)
+    ELSE math::clamp($cur_ph + $magnitude * 0.1, 0.0 - $phasic_cap, $phasic_cap)
+  END;
+
   UPDATE nn_node SET
-    phasic = math::clamp((phasic ?? 0) + $magnitude, 0.0 - $phasic_cap, $phasic_cap),
-    value = math::clamp((tonic ?? 0.5) + math::clamp((phasic ?? 0) + $magnitude, 0.0 - $phasic_cap, $phasic_cap), $hmin, $hmax)
+    phasic = $new_ph,
+    value = math::clamp(($current.tonic ?? 0.5) + $new_ph, $hmin, $hmax)
   WHERE node_id = $node_id;
 
   RETURN true;
