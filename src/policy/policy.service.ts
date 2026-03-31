@@ -1,4 +1,4 @@
-import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Result, ok, err } from 'neverthrow';
 import { DomainError } from '../common/types/result.types';
 import { SurrealService } from '../database/surreal.service';
@@ -18,7 +18,6 @@ export class PolicyService {
     private readonly normalizer: IntentNormalizerService,
     private readonly dissensus: DissensusService,
     private readonly ripeness: RipenessService,
-    @Inject(forwardRef(() => WorldModelService))
     private readonly worldModel: WorldModelService,
     private readonly db: SurrealService,
     private readonly events: EventsService,

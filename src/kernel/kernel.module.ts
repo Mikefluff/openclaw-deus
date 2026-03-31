@@ -1,4 +1,4 @@
-import { Module, OnModuleInit } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { TraceGraphService } from './memory/trace-graph.service';
 import { CommitKernelService } from './commit/commit-kernel.service';
 import { KernelLoopService } from './kernel-loop.service';
@@ -21,23 +21,12 @@ import { LightConeService } from './light-cone.service';
 import { DevelopmentalMetricsService } from './developmental-metrics.service';
 import { SensorimotorPredictorService } from './sensorimotor-predictor.service';
 import { CognitiveConeService } from './cognitive-cone.service';
-import { WorldModelModule } from '../world-model/world-model.module';
-import { IntentionModule } from '../intention/intention.module';
-import { KnowledgeModule } from '../knowledge/knowledge.module';
-import { DeliberationModule } from '../deliberation/deliberation.module';
-import { ExperienceModule } from '../experience/experience.module';
-import { OperatorModelModule } from '../operator-model/operator-model.module';
-import { PolicyModule } from '../policy/policy.module';
 
 @Module({
   imports: [
-    IntentionModule,
-    KnowledgeModule,
-    DeliberationModule,
-    ExperienceModule,
-    OperatorModelModule,
-    PolicyModule,
-    WorldModelModule,
+    // Explicit imports to work around NestJS 11 @Global resolution bug
+    require('../database/database.module').DatabaseModule,
+    require('../cognitive/cognitive-config.module').CognitiveConfigModule,
   ],
   providers: [
     TraceGraphService,
@@ -64,44 +53,19 @@ import { PolicyModule } from '../policy/policy.module';
     StrategicAgent,
   ],
   exports: [
+    KernelLoopService,
     TraceGraphService,
     CommitKernelService,
-    KernelLoopService,
     AffectiveStateService,
-    NarrativeService,
-    SubstrateBridgeService,
-    ActiveCognitionService,
     ConceptSpaceService,
+    DevelopmentalMetricsService,
+    CognitiveConeService,
+    EnergyService,
+    NarrativeService,
+    SensorimotorPredictorService,
     RawStreamService,
     ModalityDiscoveryService,
-    EnergyService,
     LightConeService,
-    DevelopmentalMetricsService,
-    SensorimotorPredictorService,
-    CognitiveConeService,
   ],
 })
-export class KernelModule implements OnModuleInit {
-  constructor(
-    private readonly kernelLoop: KernelLoopService,
-    private readonly conceptSpace: ConceptSpaceService,
-    private readonly modalityDiscovery: ModalityDiscoveryService,
-    private readonly sensory: SensoryAgent,
-    private readonly predictive: PredictiveAgent,
-    private readonly affective: AffectiveAgent,
-    private readonly priority: PriorityAgent,
-    private readonly strategic: StrategicAgent,
-  ) {}
-
-  async onModuleInit() {
-    await this.conceptSpace.loadDimensions();
-    await this.modalityDiscovery.load();
-
-    // Register agents into the kernel swarm
-    this.kernelLoop.registerAgent(this.sensory);
-    this.kernelLoop.registerAgent(this.predictive);
-    this.kernelLoop.registerAgent(this.affective);
-    this.kernelLoop.registerAgent(this.priority);
-    this.kernelLoop.registerAgent(this.strategic);
-  }
-}
+export class KernelModule {}

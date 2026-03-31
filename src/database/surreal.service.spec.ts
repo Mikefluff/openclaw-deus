@@ -41,9 +41,8 @@ describe('SurrealService', () => {
       expect(stmts).toEqual(['CREATE foo', 'CREATE bar']);
     });
 
-    it('should skip comment-only statements', () => {
-      const stmts = parse('-- this is a comment; CREATE foo;');
-      // The part before ; is "-- this is a comment" which starts with -- and should be skipped
+    it('should strip comments with semicolons inside', () => {
+      const stmts = parse('-- comment with; semicolons\nCREATE foo;');
       expect(stmts).toEqual(['CREATE foo']);
     });
 

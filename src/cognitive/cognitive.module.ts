@@ -23,20 +23,12 @@ import { KernelModule } from '../kernel/kernel.module';
 
 @Global()
 @Module({
-  imports: [
-    IntentionModule,
-    KnowledgeModule,
-    DeliberationModule,
-    ExperienceModule,
-    OperatorModelModule,
-    MemoryModule,
-    WorldModelModule,
-    KernelModule,
-    BeliefsModule,
-  ],
+  // No imports: CognitiveConfigService extracted to CognitiveConfigModule (@Global).
+  // All data access via SurrealService. IntentionModule + KnowledgeModule are @Global.
+  imports: [],
   controllers: [CognitiveConfigController, CognitivePipelineController],
   providers: [
-    CognitiveConfigService,
+    // CognitiveConfigService moved to CognitiveConfigModule (@Global)
     SimilarityProvider,
     BayesianUpdaterService,
     CausalGraphService,
@@ -48,7 +40,6 @@ import { KernelModule } from '../kernel/kernel.module';
     TemporalCognitionService,
   ],
   exports: [
-    CognitiveConfigService,
     SimilarityProvider,
     BayesianUpdaterService,
     CausalGraphService,

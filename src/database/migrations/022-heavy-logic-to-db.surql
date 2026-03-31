@@ -50,7 +50,7 @@ DEFINE FUNCTION IF NOT EXISTS fn::drift_traces($drift_rate: float, $archive_thre
 DEFINE FUNCTION IF NOT EXISTS fn::find_convergent_clusters($min_agents: int) {
   -- Find traces targeted by multiple agents in recent commits
   LET $recent = (SELECT source_agents, changes FROM commit_log
-    ORDER BY cycle DESC LIMIT 20);
+    LIMIT 20);
   RETURN $recent;
 };
 

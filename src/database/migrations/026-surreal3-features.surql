@@ -91,11 +91,9 @@ DEFINE EVENT nn_hebbian ON nn_edge
     AND $after.update_count > $before.update_count
     AND math::abs($after.weight) > 0.01
   THEN {
-    LET $in_active = (SELECT value FROM nn_node WHERE id = $after.in)[0].value;
-    IF $in_active > 0.3 THEN
-      UPDATE $after.id SET
-        weight = math::clamp(weight + 0.001 * $in_active * math::sign(weight), -2.0, 2.0);
-    END;
+    UPDATE nn_edge SET
+      weight = math::clamp(weight + 0.001 * in.value * math::sign(weight), -2.0, 2.0)
+    WHERE id = $after.id AND in.value > 0.3;
   };
 
 -- ═══════════════════════════════════════════
@@ -220,10 +218,9 @@ DEFINE INDEX idx_trace_position ON trace FIELDS position
   HNSW DIMENSION 64 TYPE F32 DIST EUCLIDEAN
   CONCURRENTLY;
 
--- Add COUNT index for fast GROUP ALL on common tables
-DEFINE INDEX IF NOT EXISTS idx_trace_count ON trace FIELDS archived COUNT;
-DEFINE INDEX IF NOT EXISTS idx_nn_edge_count ON nn_edge FIELDS in COUNT;
-DEFINE INDEX IF NOT EXISTS idx_commit_count ON commit_log FIELDS cycle COUNT;
+-- Standard indexes for common aggregation queries
+DEFINE INDEX IF NOT EXISTS idx_trace_archived ON trace FIELDS archived;
+DEFINE INDEX IF NOT EXISTS idx_commit_cycle ON commit_log FIELDS cycle;
 
 -- ═══════════════════════════════════════════
 -- 6. SEQUENCE for monotonic IDs
@@ -329,11 +326,7 @@ DEFINE FUNCTION IF NOT EXISTS fn::sleep_consolidation($decay_rate: float) {
     WHERE archived = false AND weight * freshness < 0.02
     RETURN BEFORE);
 
-  -- 7. Compact old narrative frames (keep last 10)
-  LET $old_frames = (SELECT id FROM narrative_frame ORDER BY created_at DESC LIMIT 1000 START 10);
-  FOR $f IN $old_frames {
-    DELETE $f.id;
-  };
+  -- 7. Narrative cleanup deferred to NestJS (narrative.compact())
 
   RETURN {
     consolidated: $consolidated.consolidated ?? 0,

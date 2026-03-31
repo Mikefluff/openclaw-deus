@@ -9,12 +9,12 @@
 
 DEFINE FUNCTION IF NOT EXISTS fn::sigmoid($x: float) {
   LET $c = math::clamp($x, -10, 10);
-  RETURN 1.0 / (1.0 + math::exp(0.0 - $c));
+  RETURN 1.0 / (1.0 + math::pow(math::E,0.0 - $c));
 };
 
 DEFINE FUNCTION IF NOT EXISTS fn::nn_tanh($x: float) {
   LET $c = math::clamp($x, -10, 10);
-  LET $e2x = math::exp(2.0 * $c);
+  LET $e2x = math::pow(math::E,2.0 * $c);
   RETURN ($e2x - 1.0) / ($e2x + 1.0);
 };
 
@@ -53,36 +53,32 @@ DEFINE FUNCTION IF NOT EXISTS fn::nn_set_inputs($values: array) {
 -- Forward pass: compute output layer values from input layer via weighted edges.
 -- Returns array of {node_id, value} for the output layer.
 DEFINE FUNCTION IF NOT EXISTS fn::nn_forward($model: string, $from_layer: string, $to_layer: string) {
-  -- Gather weighted sums: for each output node, sum(input.value × edge.weight) + bias
-  LET $edges = SELECT
-    out.node_id AS nid,
-    out.activation AS act,
-    out.bias AS b,
-    math::sum(in.value * weight) AS weighted_sum
-  FROM nn_edge
-  WHERE in.model = $model AND in.layer = $from_layer
-    AND out.model = $model AND out.layer = $to_layer
-  GROUP BY out;
+  -- For each output node: compute weighted sum of inputs, add bias, apply activation
+  LET $output_nodes = (SELECT id, node_id, bias, activation FROM nn_node
+    WHERE model = $model AND layer = $to_layer);
 
-  -- Apply activation and store
-  FOR $o IN $edges {
-    LET $raw = $o.weighted_sum + $o.b;
-    LET $activated = IF $o.act = 'sigmoid' THEN fn::sigmoid($raw)
-                     ELSE IF $o.act = 'tanh' THEN fn::nn_tanh($raw)
-                     ELSE IF $o.act = 'softplus' THEN math::log(1.0 + math::exp(math::clamp($raw, -10.0, 10.0)))
+  FOR $out IN $output_nodes {
+    -- Sum incoming edge weights × input values
+    LET $ws = (SELECT math::sum(in.value * weight) AS s FROM nn_edge
+      WHERE out = $out.id AND in.model = $model AND in.layer = $from_layer
+      GROUP ALL)[0].s ?? 0.0;
+
+    LET $raw = $ws + $out.bias;
+    LET $activated = IF $out.activation = 'sigmoid' THEN fn::sigmoid($raw)
+                     ELSE IF $out.activation = 'tanh' THEN fn::nn_tanh($raw)
+                     ELSE IF $out.activation = 'softplus' THEN math::ln(1.0 + math::pow(math::E, math::clamp($raw, -10.0, 10.0)))
                      ELSE $raw END;
-    UPDATE nn_node SET value = $activated WHERE node_id = $o.nid;
+    UPDATE nn_node SET value = $activated WHERE id = $out.id;
   };
 
-  -- Return output node values
-  RETURN SELECT node_id, value FROM nn_node WHERE model = $model AND layer = $to_layer;
+  RETURN (SELECT node_id, value FROM nn_node WHERE model = $model AND layer = $to_layer);
 };
 
 -- Softmax forward for mode layer (special: normalize across nodes)
 DEFINE FUNCTION IF NOT EXISTS fn::nn_softmax($model: string, $layer: string) {
   LET $nodes = SELECT node_id, value FROM nn_node WHERE model = $model AND layer = $layer;
   LET $max_val = math::max($nodes.value);
-  LET $exps = $nodes.map(|$n| { node_id: $n.node_id, exp_val: math::exp($n.value - $max_val) });
+  LET $exps = $nodes.map(|$n| { node_id: $n.node_id, exp_val: math::pow(math::E,$n.value - $max_val) });
   LET $sum_exp = math::sum($exps.exp_val);
   FOR $e IN $exps {
     UPDATE nn_node SET value = $e.exp_val / $sum_exp WHERE node_id = $e.node_id;

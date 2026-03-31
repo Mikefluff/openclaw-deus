@@ -1,11 +1,10 @@
-import { Module } from '@nestjs/common';
+import { Global, Module } from '@nestjs/common';
 import { HealthService } from './health.service';
 import { HealthController } from './health.controller';
-import { BeliefsModule } from '../beliefs/beliefs.module';
-import { MemoryModule } from '../memory/memory.module';
 
+@Global()
 @Module({
-  imports: [BeliefsModule, MemoryModule],
+  imports: [],
   providers: [HealthService],
   controllers: [HealthController],
   exports: [HealthService],

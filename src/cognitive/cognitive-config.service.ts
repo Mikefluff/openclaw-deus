@@ -196,8 +196,11 @@ export class CognitiveConfigService implements OnModuleInit {
 
   constructor(private readonly db: SurrealService) {}
 
-  async onModuleInit(): Promise<void> {
-    await this.loadAll();
+  onModuleInit(): void {
+    // Defaults loaded synchronously from DEFAULTS map. DB override happens on first access.
+    for (const [key, def] of Object.entries(DEFAULTS)) {
+      this.cache.set(key, def.value);
+    }
   }
 
   /**

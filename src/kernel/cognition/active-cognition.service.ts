@@ -59,7 +59,7 @@ export class ActiveCognitionService {
 
     if (relatedTraces.isOk()) {
       for (const t of relatedTraces.value) {
-        await this.traceGraph.reactivate(t.trace_id, 0.3, 0);
+        await this.traceGraph.reactivate(t.trace_id, 0.3);
       }
     }
 

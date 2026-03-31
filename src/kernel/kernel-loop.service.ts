@@ -19,6 +19,7 @@ import { CognitiveConeService } from './cognitive-cone.service';
 import { ConceptSpaceService } from './space/concept-space.service';
 import { SensorimotorPredictorService } from './sensorimotor-predictor.service';
 import { EnergyService } from './energy.service';
+import { SurrealService } from '../database/surreal.service';
 import { IntentionService } from '../intention/intention.service';
 import { Intention } from '../common/types/intention.types';
 
@@ -119,15 +120,16 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   onModuleInit(): void {
+    // Agents registered externally via registerAgent() or auto-discovered
     this.running = true;
-    this.scheduleNext(100); // start the loop
-    this.logger.log('Kernel event loop started');
+    this.scheduleNext(100);
+    this.logger.log('Kernel loop started (default mode in SurrealDB)');
   }
 
   onModuleDestroy(): void {
     this.running = false;
     if (this.loopHandle) clearTimeout(this.loopHandle);
-    this.logger.log('Kernel event loop stopped');
+    this.logger.log('Kernel loop stopped');
   }
 
   registerAgent(agent: CognitiveAgent): void {
@@ -565,112 +567,67 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
    * Consciousness is ALWAYS running. But not everything
    * at the same frequency. Local = fast. Global = slow.
    */
+  /**
+   * One tick of the kernel.
+   *
+   * DEFAULT MODE: fn::kernel_tick() in SurrealDB — all internal processing in Rust.
+   * PERIPHERY MODE: external event → NestJS agents/LLM/world bridge.
+   *
+   * NestJS only orchestrates WHEN to call, never WHAT to compute.
+   */
+  private getDb(): SurrealService {
+    // Workaround NestJS 11 @Global DI bug — get from app container if not injected
+    if (!this.traceGraph && (global as any).__nestApp) {
+      const app = (global as any).__nestApp;
+      (this as any).traceGraph = app.get(TraceGraphService);
+      (this as any).config = app.get(CognitiveConfigService);
+      (this as any).affect = app.get(AffectiveStateService);
+    }
+    return (this.traceGraph as any)?.db;
+  }
+
   private async tick(): Promise<void> {
     if (!this.running || this.processing) return;
     this.processing = true;
+    this.getDb(); // ensure deps resolved
 
     try {
-      // FAST: always runs, in-memory only
-      const schedule = this.lightCone.fastTick();
-      this.energy.tick();
-
-      // Check for external events (INTERRUPT — full processing)
+      // Check for external events (INTERRUPT → periphery mode)
       const event = this.eventQueue.shift();
 
       if (event) {
-        const cycle = this.traceGraph.tick();
+        // PERIPHERY: external event needs LLM/agents/world bridge
+        const cycle = this.traceGraph?.tick() ?? 0;
         await this.processExternalEvent(event, cycle);
       } else {
-        // No external event: layered idle processing
+        // DEFAULT MODE: one tick entirely in SurrealDB (Rust)
+        const cycle = this.traceGraph.tick();
+        const result = await this.traceGraph.executeProc(
+          'RETURN fn::kernel_tick($cycle)', { cycle },
+        );
 
-        // MEDIUM cadence: affect-modulated spreading activation on hot traces
-        if (schedule.shouldMedium) {
-          this.lightCone.markMedium();
-          const hotTraces = this.lightCone.getHotTraces(10);
-          const affectSnap = this.affect.getSnapshot();
-
-          // Concurrent affect modulation: hormones modulate in-memory dynamics
-          const spreadBoost = affectSnap.hormones.norepinephrine * 0.03; // NE → wider activation
-          const decayRate = 1 - affectSnap.hormones.serotonin * 0.01;    // serotonin → slower decay
-          const emotionalAmplify = affectSnap.hormones.cortisol * 0.02;   // stress → emotional traces amplified
-
-          for (const ht of hotTraces) {
-            // Emotional traces get amplified by stress hormones
-            if (Math.abs(ht.emotionalCharge) > 0.1) {
-              ht.weight = Math.min(1, ht.weight + 0.01 + emotionalAmplify);
-            }
-            // Norepinephrine boosts all active traces
-            if (spreadBoost > 0.005) {
-              ht.weight = Math.min(1, ht.weight + spreadBoost);
-            }
-            // Serotonin slows decay
-            ht.weight *= decayRate;
+        // Read kernel state for periphery decisions
+        if (result.isOk()) {
+          const tick = (result.value as any)?.[0] || result.value;
+          // If kernel needs sleep, record it
+          if (tick?.needs_sleep) {
+            this.cognitiveCone.recordSleep();
           }
-        }
-
-        // SLOW cadence: DB sync + agency + reflection
-        if (schedule.shouldSlow) {
-          this.lightCone.markSlow();
-          const cycle = this.traceGraph.tick();
-
-          // Sync hot trace count for concept-space projection spread estimation
-          this.conceptSpace.setHotTraceCount(this.lightCone.getHotTraceCount());
-
-          // Batch flush all in-memory operations to DB (traces, links, reactivations)
-          await this.traceGraph.flushToDb();
-
-          // Flush sensorimotor transitions queued during FAST/MEDIUM paths
-          await this.sensorimotorPredictor.flushTransitions();
-
-          // Flush pending writes to DB
-          const { writes, edgeUpdates } = this.lightCone.flushWrites();
-          await this.traceGraph.flushBatchWrites(writes);
-          if (edgeUpdates.length > 0) {
-            await this.traceGraph.flushBatchEdgeUpdates(edgeUpdates);
+          // Periodically try to act on world (periphery: needs world bridge)
+          if (cycle % 50 === 0 && this.worldBridge) {
+            await this.tryAct(cycle);
           }
-
-          // Sync DB → hot memory
-          const activeTraces = await this.traceGraph.getActiveTraces(50);
-          if (activeTraces.isOk()) {
-            this.lightCone.loadFromDb(activeTraces.value.map(t => ({
-              traceId: t.trace_id, content: t.content,
-              weight: t.weight, emotionalCharge: t.emotional_charge,
-            })));
-          }
-
-          // Agency: try to act on world
-          await this.tryAct(cycle);
-
-          // Idle reflection (dreaming, curiosity, inference)
-          await this.idleReflection(cycle);
-
-          // Forgetting
-          await this.traceGraph.forget();
-        }
-
-        // GLOBAL cadence: convergence, clustering, dimension naming
-        if (schedule.shouldGlobal) {
-          this.lightCone.markGlobal();
-          // These are expensive — run infrequently
-          await this.conceptSpace?.nameDimensions();
-          await this.substrateBridge.syncSubstrateToTraces(this.traceGraph.getCycle());
-        }
-
-        // DEEP cadence: narrative compaction, world model rebuild
-        if (schedule.shouldDeep) {
-          this.lightCone.markDeep();
-          await this.narrative.compact();
-          await this.substrateBridge.applyCommitsToWorldModel(this.allCommits.slice(-50));
         }
       }
+    } catch (e) {
+      this.logger.error(`Tick error: ${e}`);
     } finally {
       this.processing = false;
     }
 
-    // Schedule next tick: arousal modulates sleep duration
+    // Schedule next tick
     if (this.running) {
-      const sleepMs = this.computeSleepDuration();
-      this.scheduleNext(sleepMs);
+      this.scheduleNext(100);
     }
   }
 
@@ -1145,12 +1102,12 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
    * one consultation, then back to internal processing.
    */
   private async idleReflection(cycle: number): Promise<void> {
-    // Energy gate: if system needs sleep → CONSOLIDATE then sleep
-    if (this.energy.needsSleep()) {
+    // Energy gate: kernel_state in DB handles sleep in default mode.
+    // Only check here for periphery-mode sleep.
+    const kernelState = await this.traceGraph.executeProc('RETURN fn::kernel_get_state()');
+    const ks = (kernelState as any)?.value?.[0];
+    if (ks && ks.energy < 0.1) {
       await this.sleepConsolidation();
-      this.energy.sleep();
-      this.cognitiveCone.recordSleep();
-      await new Promise(resolve => setTimeout(resolve, 200));
       return;
     }
 
@@ -1283,13 +1240,9 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
   private async sleepConsolidation(): Promise<void> {
     this.logger.log('Sleep: consolidation...');
     try {
-      const result = await this.traceGraph.executeProc(
-        'RETURN fn::sleep_consolidation($rate)',
-        { rate: 0.001 },
-      );
-      if (result.isOk()) {
-        this.logger.log(`Sleep: done (${JSON.stringify(result.value)})`);
-      }
+      await this.traceGraph.executeProc('RETURN fn::kernel_sleep()');
+      this.cognitiveCone.recordSleep();
+      this.logger.log('Sleep: done');
     } catch (e) {
       this.logger.warn(`Sleep consolidation error: ${e}`);
     }

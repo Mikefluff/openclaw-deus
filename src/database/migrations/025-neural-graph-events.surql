@@ -13,13 +13,10 @@ DEFINE EVENT IF NOT EXISTS nn_hebbian ON nn_edge
     AND $after.update_count > $before.update_count
     AND math::abs($after.weight) > 0.01
   THEN {
-    -- Hebbian nudge: if input was active and edge was used, strengthen slightly
-    -- Scale: 0.001 per firing — slow, cumulative, emergent
-    LET $in_active = (SELECT value FROM nn_node WHERE id = $after.in)[0].value;
-    IF $in_active > 0.3 THEN
-      UPDATE $after.id SET
-        weight = math::clamp(weight + 0.001 * $in_active * math::sign(weight), -2.0, 2.0);
-    END;
+    -- Hebbian nudge: strengthen edge if input node was active (>0.3)
+    UPDATE nn_edge SET
+      weight = math::clamp(weight + 0.001 * in.value * math::sign(weight), -2.0, 2.0)
+    WHERE id = $after.id AND in.value > 0.3;
   };
 
 -- ═══════════════════════════════════════════
@@ -71,38 +68,26 @@ DEFINE FUNCTION IF NOT EXISTS fn::nn_edge_stats($model: string) {
 -- can grow new connections. Called explicitly, not as event.
 -- ═══════════════════════════════════════════
 
+-- Simplified neuroplasticity: sprout edges where connectivity is missing
+-- Avoids nested LET (SurrealDB 3.0.4 limitation)
+-- Neuroplasticity: sprout missing edges between layers
 DEFINE FUNCTION IF NOT EXISTS fn::nn_sprout($model: string, $from_layer: string, $to_layer: string) {
-  -- Find output nodes with high bias but low connectivity
-  LET $outputs = SELECT id, node_id, bias FROM nn_node
-    WHERE model = $model AND layer = $to_layer;
+  -- For each output node, check if all input nodes are connected
+  -- If not, create the missing edge with small random weight
+  LET $outputs = (SELECT id FROM nn_node WHERE model = $model AND layer = $to_layer);
+  LET $inputs = (SELECT id FROM nn_node WHERE model = $model AND layer = $from_layer);
 
-  LET $inputs = SELECT id, node_id FROM nn_node
-    WHERE model = $model AND layer = $from_layer;
-
-  -- Count existing edges per output
-  FOR $out IN $outputs {
-    LET $edge_count = (SELECT count() AS c FROM nn_edge
-      WHERE out = $out.id AND in.model = $model AND in.layer = $from_layer
-      GROUP ALL)[0].c ?? 0;
-
-    LET $expected = array::len($inputs);
-
-    -- If output has fewer edges than expected inputs, sprout missing ones
-    IF $edge_count < $expected THEN
-      -- Find which inputs are NOT connected to this output
-      LET $connected = SELECT in.id AS src FROM nn_edge WHERE out = $out.id;
-      LET $connected_ids = $connected.src;
-
-      FOR $inp IN $inputs {
-        IF $inp.id NOT IN $connected_ids THEN
-          -- Sprout new edge with small random weight
-          RELATE $inp.id->nn_edge->$out.id SET
-            weight = (math::random() - 0.5) * 0.1,
-            grad_acc = 0.0,
-            update_count = 0;
-        END;
+  FOR $out_rec IN $outputs {
+    FOR $inp_rec IN $inputs {
+      LET $exists = (SELECT count() AS c FROM nn_edge
+        WHERE in = $inp_rec.id AND out = $out_rec.id GROUP ALL)[0].c ?? 0;
+      IF $exists = 0 {
+        RELATE ($inp_rec.id)->nn_edge->($out_rec.id) SET
+          weight = (rand::float() - 0.5) * 0.1,
+          grad_acc = 0.0,
+          update_count = 0;
       };
-    END;
+    };
   };
 
   RETURN true;

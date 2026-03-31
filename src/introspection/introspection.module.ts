@@ -1,12 +1,11 @@
-import { Module } from '@nestjs/common';
+import { Global, Module } from '@nestjs/common';
 import { IntrospectionService } from './introspection.service';
 import { IntrospectionController } from './introspection.controller';
-import { BeliefsModule } from '../beliefs/beliefs.module';
-import { MemoryModule } from '../memory/memory.module';
-import { WorldModelModule } from '../world-model/world-model.module';
 
+@Global()
 @Module({
-  imports: [BeliefsModule, MemoryModule, WorldModelModule],
+  // No imports: all data access via SurrealService (@Global). IntentionModule + KnowledgeModule + CognitiveConfigModule are @Global.
+  imports: [],
   providers: [IntrospectionService],
   controllers: [IntrospectionController],
   exports: [IntrospectionService],

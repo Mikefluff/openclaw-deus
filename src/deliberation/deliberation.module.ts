@@ -1,11 +1,10 @@
-import { Module } from '@nestjs/common';
+import { Global, Module } from '@nestjs/common';
 import { DeliberationService } from './deliberation.service';
-import { BeliefsModule } from '../beliefs/beliefs.module';
-import { PolicyModule } from '../policy/policy.module';
-import { ExperienceModule } from '../experience/experience.module';
 
+@Global()
 @Module({
-  imports: [BeliefsModule, PolicyModule, ExperienceModule],
+  // No imports: all data access via SurrealService (@Global). IntentionModule + KnowledgeModule + CognitiveConfigModule are @Global.
+  imports: [],
   providers: [DeliberationService],
   exports: [DeliberationService],
 })

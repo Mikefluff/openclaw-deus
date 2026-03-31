@@ -1,10 +1,9 @@
 import { Module } from '@nestjs/common';
 import { BootstrapService } from './bootstrap.service';
-import { IntrospectionModule } from '../introspection/introspection.module';
-import { WorldModelModule } from '../world-model/world-model.module';
+import { DatabaseModule } from '../database/database.module';
 
 @Module({
-  imports: [IntrospectionModule, WorldModelModule],
+  imports: [DatabaseModule],
   providers: [BootstrapService],
   exports: [BootstrapService],
 })

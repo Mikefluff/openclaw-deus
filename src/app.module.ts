@@ -19,6 +19,7 @@ import { EventsModule } from './events/events.module';
 import { EmbeddingsModule } from './embeddings/embeddings.module';
 import { LlmModule } from './llm/llm.module';
 import { CognitiveModule } from './cognitive/cognitive.module';
+import { CognitiveConfigModule } from './cognitive/cognitive-config.module';
 import { IntentionModule } from './intention/intention.module';
 import { KnowledgeModule } from './knowledge/knowledge.module';
 import { OperatorModelModule } from './operator-model/operator-model.module';
@@ -39,26 +40,27 @@ import { KernelModule } from './kernel/kernel.module';
     }]),
     ScheduleModule.forRoot(),
     DatabaseModule,
+    CognitiveConfigModule,
     AuthModule,
     BootstrapModule,
-    BeliefsModule,
-    MemoryModule,
-    PolicyModule,
-    WorldModelModule,
-    IntrospectionModule,
-    NightlyModule,
-    HealthModule,
     EventsModule,
     EmbeddingsModule,
     LlmModule,
-    CognitiveModule,
     IntentionModule,
     KnowledgeModule,
+    BeliefsModule,
+    MemoryModule,
     OperatorModelModule,
-    DeliberationModule,
     ExperienceModule,
+    PolicyModule,
+    WorldModelModule,
+    DeliberationModule,
+    IntrospectionModule,
+    HealthModule,
     MetricsModule,
+    CognitiveModule,
     KernelModule,
+    NightlyModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

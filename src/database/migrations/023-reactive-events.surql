@@ -96,7 +96,7 @@ DEFINE FUNCTION IF NOT EXISTS fn::compute_cognitive_scope() {
   LET $traces = (SELECT count() AS c FROM trace WHERE archived = false GROUP ALL);
   LET $dims = (SELECT count() AS c FROM concept_dimension GROUP ALL);
   LET $recent_commits = (SELECT count() AS c, math::mean(prediction_error) AS avg_err 
-    FROM commit_log ORDER BY cycle DESC LIMIT 20 GROUP ALL);
+    FROM commit_log GROUP ALL);
   LET $hot_edges = (SELECT count() AS c FROM activates WHERE co_activation_count > 3 GROUP ALL);
   
   LET $trace_count = $traces[0].c OR 0;

@@ -87,8 +87,9 @@ export class SensorimotorPredictorService implements OnModuleInit {
     private readonly config: CognitiveConfigService,
   ) {}
 
-  async onModuleInit(): Promise<void> {
-    await this.loadOrInitWeights();
+  onModuleInit(): void {
+    // Zero async — init weights synchronously. DB load deferred to first predict.
+    this.initWeights();
   }
 
   // ═══════════════════════════════════════════
@@ -331,7 +332,7 @@ export class SensorimotorPredictorService implements OnModuleInit {
   // ═══════════════════════════════════════════
 
   private computeLoss(predicted: number[], actual: number[], reward: number): number {
-    const beta = this.config.get('predictor.beta_kl') ?? 0.1;
+    const beta = this.config?.get('predictor.beta_kl') ?? 0.1;
 
     let predError = 0;
     for (let i = 0; i < this.posDim; i++) {
@@ -347,7 +348,7 @@ export class SensorimotorPredictorService implements OnModuleInit {
     }
     uncPenalty /= this.posDim;
 
-    const decorrelationWeight = this.config.get('predictor.decorrelation_weight') ?? 0.1;
+    const decorrelationWeight = this.config?.get('predictor.decorrelation_weight') ?? 0.1;
     let decorrelation = 0;
     for (let d1 = 0; d1 < this.posDim; d1++) {
       for (let d2 = d1 + 1; d2 < this.posDim; d2++) {
@@ -355,7 +356,7 @@ export class SensorimotorPredictorService implements OnModuleInit {
       }
     }
 
-    const vqWeight = this.config.get('predictor.vq_weight') ?? 0.1;
+    const vqWeight = this.config?.get('predictor.vq_weight') ?? 0.1;
     let vqCommitment = 0;
     for (let d = 0; d < this.posDim; d++) {
       vqCommitment += ((this.lastDelta[d] || 0) - (this.codebook[this.lastCodebookId]?.[d] || 0)) ** 2;
@@ -380,7 +381,7 @@ export class SensorimotorPredictorService implements OnModuleInit {
 
   private async backward(actual: number[], reward: number): Promise<void> {
     const inputDim = this.posDim + ACTION_EMBED_DIM;
-    const beta = this.config.get('predictor.beta_kl') ?? 0.1;
+    const beta = this.config?.get('predictor.beta_kl') ?? 0.1;
 
     // Compute prediction error direction for loss sign
     let predError = 0;
@@ -463,7 +464,7 @@ export class SensorimotorPredictorService implements OnModuleInit {
           this.W_delta_t2 = this.xavier(inputDim, this.posDim);
         }
         if (!this.codebook || this.codebook.length === 0) {
-          this.codebookSize = this.config.get('predictor.codebook_size') ?? 64;
+          this.codebookSize = this.config?.get('predictor.codebook_size') ?? 64;
           this.codebook = Array.from({ length: this.codebookSize }, () =>
             Array.from({ length: this.posDim }, () => (Math.random() - 0.5) * SCALE),
           );
@@ -493,7 +494,7 @@ export class SensorimotorPredictorService implements OnModuleInit {
     this.lr = 0.01;
     this.stepCount = 0;
 
-    this.codebookSize = this.config.get('predictor.codebook_size') ?? 64;
+    this.codebookSize = this.config?.get('predictor.codebook_size') ?? 64;
     this.codebook = Array.from({ length: this.codebookSize }, () =>
       Array.from({ length: this.posDim }, () => (Math.random() - 0.5) * SCALE),
     );

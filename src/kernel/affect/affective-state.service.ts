@@ -81,9 +81,8 @@ export class AffectiveStateService implements OnModuleInit {
     private readonly config: CognitiveConfigService,
   ) {}
 
-  async onModuleInit(): Promise<void> {
-    // Run one forward pass to initialize cached values from graph
-    await this.forward();
+  onModuleInit(): void {
+    // Zero async — defaults are fine. DB load deferred to first processCommits.
   }
 
   // ═══════════════════════════════════════════

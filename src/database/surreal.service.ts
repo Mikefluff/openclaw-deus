@@ -28,8 +28,9 @@ export class SurrealService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  async onModuleInit(): Promise<void> {
-    await this.connect();
+  onModuleInit(): void {
+    // NEVER block NestJS startup. Connect lazily on first query.
+    // All query methods check this.connected and auto-connect if needed.
   }
 
   async onModuleDestroy(): Promise<void> {
@@ -43,11 +44,19 @@ export class SurrealService implements OnModuleInit, OnModuleDestroy {
     if (config) this.config = { ...this.config, ...config };
     try {
       // SurrealDB SDK connect options are loosely typed; versionCheck is a valid but untyped option
+      this.logger.log(`Connecting to SurrealDB at ${this.config.url}...`);
       await this.db.connect(this.config.url, { versionCheck: false } as Record<string, unknown>);
+      this.logger.log('SurrealDB: signing in...');
       await this.db.signin({ username: this.config.username, password: this.config.password });
+      this.logger.log('SurrealDB: ensuring namespace/database...');
+      // Ensure namespace and database exist (SurrealDB 3.0 doesn't auto-create)
+      try {
+        await this.db.query(`DEFINE NAMESPACE IF NOT EXISTS ${this.config.namespace}`);
+        await this.db.query(`USE NS ${this.config.namespace}; DEFINE DATABASE IF NOT EXISTS ${this.config.database}`);
+      } catch {}
       await this.db.use({ namespace: this.config.namespace, database: this.config.database });
       this.connected = true;
-      this.logger.log(`Connected to SurrealDB at ${this.config.url} (${this.config.namespace}/${this.config.database})`);
+      this.logger.log(`Connected to SurrealDB (${this.config.namespace}/${this.config.database})`);
     } catch (error) {
       this.connected = false;
       this.logger.error(`Failed to connect to SurrealDB: ${error}`);
@@ -71,7 +80,17 @@ export class SurrealService implements OnModuleInit, OnModuleDestroy {
 
   // --- Core CRUD ---
 
+  private async ensureConnected(): Promise<void> {
+    if (this.connected) return;
+    // Timeout: if connect hangs, fail fast
+    await Promise.race([
+      this.connect(),
+      new Promise<void>((_, reject) => setTimeout(() => reject(new Error('Connect timeout')), 3000)),
+    ]);
+  }
+
   async query<T = unknown>(sql: string, vars?: Record<string, unknown>): Promise<Result<T[], DatabaseError>> {
+    try { await this.ensureConnected(); } catch { return err(new DatabaseError('Not connected')); }
     try {
       const results = await this.db.query<T[][]>(sql, vars);
       const data = Array.isArray(results) && results.length > 0
@@ -85,6 +104,7 @@ export class SurrealService implements OnModuleInit, OnModuleDestroy {
   }
 
   async queryRaw<T = unknown>(sql: string, vars?: Record<string, unknown>): Promise<Result<T, DatabaseError>> {
+    try { await this.ensureConnected(); } catch { return err(new DatabaseError('Not connected')); }
     try {
       const results = await this.db.query<T[]>(sql, vars);
       return ok(results as unknown as T);
@@ -95,6 +115,7 @@ export class SurrealService implements OnModuleInit, OnModuleDestroy {
   }
 
   async execute(sql: string, vars?: Record<string, unknown>): Promise<Result<unknown, DatabaseError>> {
+    try { await this.ensureConnected(); } catch { return err(new DatabaseError('Not connected')); }
     try {
       const result = await this.db.query(sql, vars);
       return ok(result);
@@ -104,6 +125,7 @@ export class SurrealService implements OnModuleInit, OnModuleDestroy {
   }
 
   async select<T>(table: string): Promise<Result<T[], DatabaseError>> {
+    try { await this.ensureConnected(); } catch { return err(new DatabaseError('Not connected')); }
     try {
       const results = await this.db.select(table) as unknown as T[];
       return ok(Array.isArray(results) ? results : [results]);
@@ -113,6 +135,7 @@ export class SurrealService implements OnModuleInit, OnModuleDestroy {
   }
 
   async create<T>(table: string, data: T): Promise<Result<T, DatabaseError>> {
+    try { await this.ensureConnected(); } catch { return err(new DatabaseError('Not connected')); }
     try {
       // SurrealDB SDK expects loosely typed data for create/merge operations
       const result = await this.db.create(table, this.coerceDatetimes(data) as Record<string, unknown>);
@@ -221,16 +244,19 @@ export class SurrealService implements OnModuleInit, OnModuleDestroy {
    * Splits on `;` only when brace depth is 0.
    */
   private parseSqlStatements(sql: string): string[] {
+    // Strip comments (-- to end of line) to prevent ; inside comments breaking the splitter
+    const cleaned = sql.replace(/--[^\n]*/g, '');
+
     const statements: string[] = [];
     let current = '';
     let depth = 0;
 
-    for (const char of sql) {
+    for (const char of cleaned) {
       if (char === '{') depth++;
       if (char === '}') depth--;
       if (char === ';' && depth === 0) {
         const trimmed = current.trim();
-        if (trimmed.length > 0 && !trimmed.startsWith('--')) {
+        if (trimmed.length > 0) {
           statements.push(trimmed);
         }
         current = '';

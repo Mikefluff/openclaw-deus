@@ -1,4 +1,4 @@
-import { Injectable, Inject, Logger, forwardRef } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Result, ok } from 'neverthrow';
 import { DomainError } from '../common/types/result.types';
 import { SurrealService } from '../database/surreal.service';
@@ -41,8 +41,8 @@ export class NightlyService {
     private readonly worldModel: WorldModelService,
     private readonly events: EventsService,
     private readonly db: SurrealService,
-    @Inject(forwardRef(() => MetricsService)) private readonly metrics: MetricsService,
-    @Inject(forwardRef(() => RecursiveImproveService)) private readonly recursiveImprove: RecursiveImproveService,
+    private readonly metrics: MetricsService,
+    private readonly recursiveImprove: RecursiveImproveService,
     private readonly causalGraph: CausalGraphService,
     private readonly metaLearning: MetaLearningService,
     private readonly narrative: NarrativeService,
