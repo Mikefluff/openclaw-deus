@@ -107,7 +107,16 @@ DEFINE FUNCTION OVERWRITE fn::kernel_tick($cycle: int) {
   IF $depth >= 5 {
     fn::nn_decay_all(0.001);
     fn::consolidate_episodic(3);
+    fn::belief_decay(0.005);
+    fn::narrative_compact(50);
     LET $energy = math::max([0.0, $energy - 0.02]);
+  };
+
+  -- ── CONSOLIDATE (depth 10+) ──
+  IF $depth >= 10 {
+    fn::build_world_model();
+    fn::introspect();
+    LET $energy = math::max([0.0, $energy - 0.03]);
   };
 
   -- ── SLEEP (energy depleted) ──
