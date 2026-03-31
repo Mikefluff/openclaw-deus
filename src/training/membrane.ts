@@ -119,23 +119,82 @@ async function main() {
     }
   }
 
-  // Final report
+  // Final report — deep learning metrics
   const elapsed = (Date.now() - t0) / 1000;
   const finalStatus = await db.query('RETURN fn::run_parallel_status()') as any;
   const traces = await db.query('SELECT count() AS c FROM trace WHERE archived = false GROUP ALL') as any;
+  const archivedTraces = await db.query('SELECT count() AS c FROM trace WHERE archived = true GROUP ALL') as any;
   const wm = await db.query('RETURN fn::build_world_model()') as any;
   const intro = await db.query('RETURN fn::introspect()') as any;
-  const actions = await db.query('SELECT count() AS c FROM brain_action GROUP ALL') as any;
+  const totalActions = await db.query('SELECT count() AS c FROM brain_action GROUP ALL') as any;
+
+  // Learning metrics: trace reactivation (dedup = learning same thing again)
+  const highReact = await db.query('SELECT trace_id, content, weight, reactivation_count FROM trace WHERE reactivation_count > 3 AND archived = false ORDER BY reactivation_count DESC LIMIT 10') as any;
+  const topTraces = await db.query('SELECT trace_id, content, weight, reactivation_count FROM trace WHERE archived = false ORDER BY weight DESC LIMIT 10') as any;
+
+  // Neural graph state
+  const hormones = await db.query('SELECT node_id, value FROM nn_node WHERE model = \'affect\' AND layer = \'hidden\'') as any;
+  const accumulators = await db.query('SELECT node_id, value FROM nn_node WHERE model = \'affect\' AND layer = \'input\'') as any;
+
+  // Edge stats (learning evidence)
+  const nnEdgeStats = await db.query('SELECT math::mean(math::abs(weight)) AS mean_w, math::mean(update_count) AS mean_updates, math::mean(grad_acc) AS mean_grad FROM nn_edge GROUP ALL') as any;
+  const traceEdges = await db.query('SELECT count() AS c FROM activates GROUP ALL') as any;
+
+  // Action diversity
+  const actionMethods = await db.query('SELECT method, count() AS c FROM brain_action GROUP BY method ORDER BY c DESC') as any;
 
   console.log('\n=== TRAINING COMPLETE ===');
+  console.log(`Time: ${elapsed.toFixed(1)}s`);
   console.log(`World ticks: ${TOTAL_TICKS}`);
   console.log(`Brain cycles: ${finalStatus[0]?.cycle ?? '?'}`);
-  console.log(`Actions taken: ${actions[0]?.[0]?.c ?? actions[0]?.c ?? actionCount}`);
-  console.log(`Active traces: ${traces[0]?.[0]?.c ?? traces[0]?.c ?? '?'}`);
   console.log(`Energy: ${(finalStatus[0]?.energy ?? 0).toFixed?.(3) ?? '?'}`);
-  console.log(`World model confidence: ${(wm[0]?.confidence ?? 0).toFixed?.(3) ?? '?'}`);
+  console.log(`Fatigue: ${(finalStatus[0]?.fatigue ?? 0).toFixed?.(3) ?? '?'}`);
+
+  console.log('\n--- TRACES ---');
+  console.log(`Active: ${traces[0]?.[0]?.c ?? traces[0]?.c ?? '?'}`);
+  console.log(`Archived: ${archivedTraces[0]?.[0]?.c ?? archivedTraces[0]?.c ?? 0}`);
+  console.log(`Trace edges: ${traceEdges[0]?.[0]?.c ?? traceEdges[0]?.c ?? 0}`);
+
+  console.log('\n--- MOST REACTIVATED (learning same thing = dedup working) ---');
+  const reacts = Array.isArray(highReact[0]) ? highReact[0] : highReact;
+  for (const t of (reacts as any[]).slice(0, 5)) {
+    console.log(`  ${t.reactivation_count}× w=${t.weight?.toFixed(3)} "${(t.content || '').slice(0, 60)}"`);
+  }
+
+  console.log('\n--- STRONGEST TRACES (what brain remembers most) ---');
+  const tops = Array.isArray(topTraces[0]) ? topTraces[0] : topTraces;
+  for (const t of (tops as any[]).slice(0, 5)) {
+    console.log(`  w=${t.weight?.toFixed(3)} react=${t.reactivation_count} "${(t.content || '').slice(0, 60)}"`);
+  }
+
+  console.log('\n--- AFFECT (hormones) ---');
+  const horms = Array.isArray(hormones[0]) ? hormones[0] : hormones;
+  for (const h of (horms as any[])) {
+    console.log(`  ${h.node_id}: ${h.value?.toFixed(4)}`);
+  }
+
+  console.log('\n--- ACCUMULATORS ---');
+  const accs = Array.isArray(accumulators[0]) ? accumulators[0] : accumulators;
+  for (const a of (accs as any[])) {
+    console.log(`  ${a.node_id}: ${a.value?.toFixed(4)}`);
+  }
+
+  console.log('\n--- NEURAL GRAPH ---');
+  const es = nnEdgeStats[0]?.[0] ?? nnEdgeStats[0] ?? {};
+  console.log(`  Mean |weight|: ${(es.mean_w ?? 0).toFixed?.(4) ?? '?'}`);
+  console.log(`  Mean update_count: ${(es.mean_updates ?? 0).toFixed?.(1) ?? '?'}`);
+  console.log(`  Mean grad_acc: ${(es.mean_grad ?? 0).toFixed?.(4) ?? '?'}`);
+
+  console.log('\n--- ACTIONS ---');
+  console.log(`Total: ${totalActions[0]?.[0]?.c ?? totalActions[0]?.c ?? actionCount}`);
+  const methods = Array.isArray(actionMethods[0]) ? actionMethods[0] : actionMethods;
+  for (const m of (methods as any[]).slice(0, 5)) {
+    console.log(`  ${m.method}: ${m.c}`);
+  }
+
+  console.log('\n--- WORLD MODEL ---');
+  console.log(`Confidence: ${(wm[0]?.confidence ?? 0).toFixed?.(3) ?? '?'}`);
   console.log(`Introspection: coherence=${(intro[0]?.coherence ?? 0).toFixed?.(3) ?? '?'} posture=${intro[0]?.posture ?? '?'}`);
-  console.log(`Time: ${elapsed.toFixed(1)}s`);
 
   await db.query('UPDATE kernel_state SET running = false');
   await db.close();

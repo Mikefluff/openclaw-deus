@@ -39,7 +39,7 @@ DEFINE FUNCTION OVERWRITE fn::agency_tick($tick: int) {
   -- Find candidate targets: active traces with highest weight (salient)
   LET $candidates = (SELECT trace_id, weight, content, position FROM trace
     WHERE archived = false AND suppressed = false
-    ORDER BY weight DESC LIMIT 10);
+     LIMIT 10);
 
   IF array::len($candidates) = 0 {
     -- Nothing in awareness → random poke (pure exploration)
@@ -168,6 +168,25 @@ DEFINE FUNCTION OVERWRITE fn::process_consequence($content: string, $source: str
   -- Novelty accumulator (new trace = novel)
   IF $existing = NONE {
     UPDATE nn_node SET value = math::min([5.0, value + 0.2]) WHERE node_id = 'acc:novelty';
+  } ELSE {
+    -- Seen before → convergence (world is predictable)
+    UPDATE nn_node SET value = math::min([5.0, value + 0.1]) WHERE node_id = 'acc:convergence';
+  };
+
+  -- Link to recent traces (co-occurrence → activates edge)
+  LET $recent = (SELECT trace_id FROM trace WHERE archived = false AND trace_id != $trace_id  LIMIT 3);
+  FOR $r IN $recent {
+    LET $from_id = (SELECT id FROM trace WHERE trace_id = $r.trace_id LIMIT 1)[0].id;
+    LET $to_id = (SELECT id FROM trace WHERE trace_id = $trace_id LIMIT 1)[0].id;
+    IF $from_id != NONE AND $to_id != NONE {
+      LET $edge_exists = (SELECT count() AS c FROM activates WHERE in = $from_id AND out = $to_id GROUP ALL)[0].c ?? 0;
+      IF $edge_exists = 0 {
+        RELATE ($from_id)->activates->($to_id) SET weight = 0.3, co_activation_count = 1;
+      } ELSE {
+        UPDATE activates SET weight = math::min([1.0, weight + 0.05]), co_activation_count = co_activation_count + 1
+          WHERE in = $from_id AND out = $to_id;
+      };
+    };
   };
 
   RETURN { trace_id: $trace_id, is_new: $existing = NONE, valence: $valence };
@@ -194,9 +213,24 @@ DEFINE FUNCTION OVERWRITE fn::brain_tick($n: int) {
       };
     };
 
-    -- HIGH (every 100): affect forward
+    -- HIGH (every 100): affect forward + backward (LEARNING!)
     IF $x % 100 = 0 {
+      -- Forward: accumulators → hormones
       fn::nn_forward('affect', 'input', 'hidden');
+
+      -- Compute loss from accumulators: error + pain - convergence - reward
+      LET $pred_err = (SELECT * FROM nn_node WHERE node_id = 'acc:pred_error' LIMIT 1)[0].value ?? 0;
+      LET $pain = (SELECT * FROM nn_node WHERE node_id = 'acc:pain' LIMIT 1)[0].value ?? 0;
+      LET $convergence = (SELECT * FROM nn_node WHERE node_id = 'acc:convergence' LIMIT 1)[0].value ?? 0;
+      LET $reward = (SELECT * FROM nn_node WHERE node_id = 'acc:reward' LIMIT 1)[0].value ?? 0;
+      LET $loss = $pred_err + $pain - $convergence - $reward;
+      LET $loss_sign = IF $loss > 0 THEN 1.0 ELSE -1.0 END;
+
+      -- Backward: update weights based on loss
+      fn::nn_backward('affect', 0.01, $loss_sign);
+
+      -- Decay accumulators (consumed by learning)
+      UPDATE nn_node SET value = value * 0.95 WHERE model = 'affect' AND layer = 'input';
     };
 
     -- Trace decay (every 50)
