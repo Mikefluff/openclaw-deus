@@ -136,10 +136,12 @@ async function main() {
         return;
       }
 
-      // Check if brain stalled (re-kick if needed)
+      // Re-kick brain if stalled (ASYNC event chain exhausted MAXDEPTH)
       if (cycle === lastCycle && cycle > 0) {
-        console.log('  [watchdog] Brain stalled, re-kicking...');
-        await db.query('UPDATE _ping SET cycle = $cy', { cy: cycle });
+        // Direct call — not via event, bypasses MAXDEPTH limit
+        try { await db.query('fn::brain_tick_auto()'); } catch {}
+        // Re-kick the tick pump for next async interval
+        try { await db.query('UPDATE _tick SET cycle = $cy', { cy: cycle }); } catch {}
       }
       lastCycle = cycle;
     } catch (e: any) {
