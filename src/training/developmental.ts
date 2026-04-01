@@ -17,7 +17,7 @@ const TARGET_MATURITY = parseFloat(process.argv[3] || '0.95');
 
 async function main() {
   const db = new Surreal();
-  await db.connect('http://127.0.0.1:8000/rpc', { versionCheck: false } as any);
+  await db.connect('ws://127.0.0.1:8000/rpc', { versionCheck: false } as any);
   await db.signin({ username: 'root', password: 'root' });
   await db.use({ namespace: 'deus', database: 'runtime' });
 
@@ -41,63 +41,40 @@ async function main() {
     } catch {}
   }, 100); // ambient every 100ms
 
-  // Subscribe to brain's action requests via LIVE SELECT
-  console.log('Subscribing to kernel_request...');
-  try {
-    const queryUuid = await db.live('kernel_request');
-    db.subscribeLive(queryUuid, async (action, result) => {
-      if (action !== 'CREATE') return;
-      const req = result as any;
-      if (req.type !== 'action' || req.status !== 'pending') return;
-
-      // Brain wants an action — execute in world
-      const method = req.payload?.method ?? 'touch';
-      const targetContent = req.payload?.target_content ?? '';
-      const actionIdx = ['touch', 'push', 'drop', 'shake', 'look', 'squeeze'].indexOf(method);
-      const consequence = world.act(actionIdx >= 0 ? actionIdx : 0);
-      totalActions++;
-
-      // Write consequence back as sensory_input (brain picks up via EVENT)
-      try {
+  // Poll for brain's action requests (EVENT chain commits as a batch, so LIVE SELECT
+  // can't see intermediate requests until chain completes. Polling is more reliable.)
+  async function processActions() {
+    try {
+      const reqs = await db.query('SELECT * FROM kernel_request WHERE type = \'action\' AND status = \'pending\' LIMIT 5') as any;
+      const pending = Array.isArray(reqs[0]) ? reqs[0] : [];
+      for (const req of pending) {
+        const method = req.payload?.method ?? 'touch';
+        const targetContent = req.payload?.target_content ?? '';
+        const actionIdx = ['touch', 'push', 'drop', 'shake', 'look', 'squeeze'].indexOf(method);
+        const consequence = world.act(actionIdx >= 0 ? actionIdx : 0);
+        totalActions++;
         await db.query(
           'CREATE sensory_input SET status = \'pending\', is_consequence = true, action_id = $aid, channels = $c, speech = $s, valence = $v, object_idx = $o, action_method = $method, target_content = $target',
-          {
-            aid: consequence.action_id, c: consequence.channels, s: consequence.speech,
-            v: consequence.valence, o: consequence.object_idx,
-            method, target: targetContent,
-          },
+          { aid: consequence.action_id, c: consequence.channels, s: consequence.speech, v: consequence.valence, o: consequence.object_idx, method, target: targetContent },
         );
-      } catch {}
-
-      // Mark request processing
-      try { await db.query('UPDATE $id SET status = \'processing\'', { id: req.id }); } catch {}
-    });
-  } catch (e: any) {
-    console.log('LIVE SELECT failed, falling back to polling:', e.message?.slice(0, 80));
-    // Fallback: poll every 200ms
-    setInterval(async () => {
-      try {
-        const reqs = await db.query('SELECT * FROM kernel_request WHERE type = \'action\' AND status = \'pending\' LIMIT 3') as any;
-        const pending = Array.isArray(reqs[0]) ? reqs[0] : [];
-        for (const req of pending) {
-          const method = req.payload?.method ?? 'touch';
-          const targetContent = req.payload?.target_content ?? '';
-          const actionIdx = ['touch', 'push', 'drop', 'shake', 'look', 'squeeze'].indexOf(method);
-          const consequence = world.act(actionIdx >= 0 ? actionIdx : 0);
-          totalActions++;
-          await db.query(
-            'CREATE sensory_input SET status = \'pending\', is_consequence = true, action_id = $aid, channels = $c, speech = $s, valence = $v, object_idx = $o, action_method = $method, target_content = $target',
-            { aid: consequence.action_id, c: consequence.channels, s: consequence.speech, v: consequence.valence, o: consequence.object_idx, method, target: targetContent },
-          );
-          await db.query('UPDATE $id SET status = \'processing\'', { id: req.id });
-        }
-      } catch {}
-    }, 200);
+        await db.query('UPDATE $id SET status = \'processing\'', { id: req.id });
+      }
+    } catch {}
   }
+  const actionInterval = setInterval(processActions, 100); // poll every 100ms
 
   // Start the brain (triggers EVENT chain)
+  // Clean old data from previous runs
+  await db.query('DELETE kernel_request');
+  await db.query('DELETE sensory_input');
+
+  // Ensure brain is ready
+  await db.query('UPDATE kernel_state SET running = false, energy = 1.0, fatigue = 0.0, debug_break = false');
+
   console.log('Starting brain...');
-  await db.query('RETURN fn::start_brain()');
+  await db.query('UPDATE kernel_state SET running = true');
+  // Give EVENT chain a moment to start
+  await new Promise(r => setTimeout(r, 500));
 
   // Monitor progress
   const monitorInterval = setInterval(async () => {
@@ -177,6 +154,7 @@ async function main() {
 
   async function cleanup() {
     clearInterval(ambientInterval);
+    clearInterval(actionInterval);
     clearInterval(monitorInterval);
     const totalElapsed = (Date.now() - t0) / 1000;
     try { await db.query('RETURN fn::stop_brain()'); } catch {}
