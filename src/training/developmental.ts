@@ -1,18 +1,19 @@
 /**
- * Developmental Training: brain starts as newborn, grows through experience.
+ * Developmental Training: Reactive Membrane
  *
- * No fixed sessions. Brain sleeps when tired, wakes up, explores.
- * Level-up when developmental maturity crosses threshold.
- * Runs until target maturity or max ticks.
+ * Brain ticks autonomously inside SurrealDB (ASYNC EVENT).
+ * Membrane subscribes via LIVE SELECT on kernel_request.
+ * When brain wants action → membrane executes in world → writes result back.
+ * 0 roundtrips per tick from JS. JS only reacts to brain's requests.
  *
- * Usage: npx tsx src/training/developmental.ts [max_ticks] [target_maturity]
+ * Usage: npx tsx src/training/developmental.ts [max_seconds] [target_maturity]
  */
 
 import Surreal from 'surrealdb';
-import { PhysicsWorld, SensoryTransition } from './physics-world';
+import { PhysicsWorld } from './physics-world';
 
-const MAX_TICKS = parseInt(process.argv[2] || '50000', 10);
-const TARGET_MATURITY = parseFloat(process.argv[3] || '0.8');
+const MAX_SECONDS = parseInt(process.argv[2] || '300', 10);
+const TARGET_MATURITY = parseFloat(process.argv[3] || '0.95');
 
 async function main() {
   const db = new Surreal();
@@ -20,146 +21,175 @@ async function main() {
   await db.signin({ username: 'root', password: 'root' });
   await db.use({ namespace: 'deus', database: 'runtime' });
 
-  // Re-auth every 30 minutes to prevent token expiry
-  let lastAuth = Date.now();
-  async function ensureAuth() {
-    if (Date.now() - lastAuth > 25 * 60 * 1000) {
-      await db.signin({ username: 'root', password: 'root' });
-      await db.use({ namespace: 'deus', database: 'runtime' });
-      lastAuth = Date.now();
-    }
-  }
-
-  // Kill conflicting events
-  for (const ev of [
-    'kernel_heartbeat ON kernel_state', 'critical_loop ON sched_critical',
-    'high_loop ON sched_high', 'medium_loop ON sched_medium', 'low_loop ON sched_low',
-    'kernel_wake ON kernel_event', 'cognitive_spread ON trace', 'cognitive_archive ON trace',
-    'cognitive_hebbian ON activates', 'cognitive_backprop ON commit_log', 'nn_hebbian ON nn_edge',
-  ]) { try { await db.query('REMOVE EVENT IF EXISTS ' + ev); } catch {} }
-
-  await db.query('DEFINE TABLE OVERWRITE kernel_request SCHEMALESS');
-  await db.query('DEFINE TABLE OVERWRITE brain_action SCHEMALESS');
-  await db.query('DEFINE TABLE OVERWRITE activates SCHEMALESS TYPE RELATION FROM trace TO trace');
-  // Ensure kernel_state exists (CREATE if empty, then UPDATE)
-  const ksCount = await db.query('SELECT count() AS c FROM kernel_state GROUP ALL') as any;
-  if ((ksCount[0]?.[0]?.c ?? 0) === 0) {
-    await db.query('CREATE kernel_state SET cycle = 0, energy = 1.0, fatigue = 0.0, running = true, config = {}');
-  } else {
-    await db.query('UPDATE kernel_state SET cycle = 0, energy = 1.0, fatigue = 0.0, running = true');
-  }
-
   const world = new PhysicsWorld();
-  console.log(`Developmental training: max ${MAX_TICKS} ticks, target maturity ${TARGET_MATURITY}`);
-  console.log(`Level 0: ${world.getObjectCount()} objects\n`);
-
   let totalActions = 0;
-  let sleepCount = 0;
-  let levelUps = 0;
+  let lastCycle = 0;
   const t0 = Date.now();
 
-  for (let tick = 0; tick < MAX_TICKS; tick++) {
-    // ── ROUNDTRIP #1: world_tick — perceive + think + decide ──
-    const ambient = world.tick();
-    const events = ambient.map(t => ({
-      action_id: t.action_id, channels: t.channels, speech: t.speech,
-      valence: t.valence, object_idx: t.object_idx,
-    }));
+  console.log(`Reactive membrane: max ${MAX_SECONDS}s, target maturity ${TARGET_MATURITY}`);
+  console.log(`Level 0: ${world.getObjectCount()} objects\n`);
 
-    let worldResult: any;
+  // Feed ambient sensory events periodically
+  const ambientInterval = setInterval(async () => {
     try {
-      const r = await db.query('RETURN fn::world_tick($events, $ticks)', { events, ticks: 100 }) as any;
-      worldResult = r[0] || {};
-    } catch { worldResult = {}; }
+      const ambient = world.tick();
+      for (const t of ambient) {
+        await db.query('CREATE sensory_input SET status = \'pending\', is_consequence = false, action_id = $a, channels = $c, speech = $s, valence = $v, object_idx = $o', {
+          a: t.action_id, c: t.channels, s: t.speech, v: t.valence, o: t.object_idx,
+        });
+      }
+    } catch {}
+  }, 100); // ambient every 100ms
 
-    // ── ROUNDTRIP #2 (only if brain wants to act): execute + consequence ──
-    if (worldResult.action) {
-      const act = worldResult.action;
-      const actionIdx = ['touch', 'push', 'drop', 'shake', 'look', 'squeeze'].indexOf(act.method);
+  // Subscribe to brain's action requests via LIVE SELECT
+  console.log('Subscribing to kernel_request...');
+  try {
+    const queryUuid = await db.live('kernel_request');
+    db.subscribeLive(queryUuid, async (action, result) => {
+      if (action !== 'CREATE') return;
+      const req = result as any;
+      if (req.type !== 'action' || req.status !== 'pending') return;
+
+      // Brain wants an action — execute in world
+      const method = req.payload?.method ?? 'touch';
+      const targetContent = req.payload?.target_content ?? '';
+      const actionIdx = ['touch', 'push', 'drop', 'shake', 'look', 'squeeze'].indexOf(method);
       const consequence = world.act(actionIdx >= 0 ? actionIdx : 0);
       totalActions++;
 
+      // Write consequence back as sensory_input (brain picks up via EVENT)
       try {
         await db.query(
-          'RETURN fn::action_consequence($rid, $method, $target, $channels, $speech, $valence, $oidx, $aid)',
+          'CREATE sensory_input SET status = \'pending\', is_consequence = true, action_id = $aid, channels = $c, speech = $s, valence = $v, object_idx = $o, action_method = $method, target_content = $target',
           {
-            rid: act.request_id, method: act.method, target: act.target_content,
-            channels: consequence.channels, speech: consequence.speech,
-            valence: consequence.valence, oidx: consequence.object_idx,
-            aid: consequence.action_id,
+            aid: consequence.action_id, c: consequence.channels, s: consequence.speech,
+            v: consequence.valence, o: consequence.object_idx,
+            method, target: targetContent,
           },
         );
       } catch {}
-    }
 
-    // Energy check (read from worldResult to avoid extra roundtrip)
-    const cycle = worldResult.cycle ?? 0;
-    if (cycle > 0 && cycle % 10000 < 100) sleepCount++; // approximate
-
-    // Re-auth periodically
-    if (tick % 500 === 0) await ensureAuth();
-
-    // Progress report every 1000 ticks — SINGLE batched query
-    if (tick % 1000 === 0 && tick > 0) {
-      const elapsed = (Date.now() - t0) / 1000;
+      // Mark request processing
+      try { await db.query('UPDATE $id SET status = \'processing\'', { id: req.id }); } catch {}
+    });
+  } catch (e: any) {
+    console.log('LIVE SELECT failed, falling back to polling:', e.message?.slice(0, 80));
+    // Fallback: poll every 200ms
+    setInterval(async () => {
       try {
-        // One roundtrip for ALL stats
-        // Multi-statement query: results are array, RETURN is last element
-        const snap = await db.query(`
-          LET $tr = (SELECT count() AS c FROM trace WHERE archived = false GROUP ALL)[0].c ?? 0;
-          LET $ar = (SELECT count() AS c FROM trace WHERE archived = true GROUP ALL)[0].c ?? 0;
-          LET $ed = (SELECT count() AS c FROM activates GROUP ALL)[0].c ?? 0;
-          LET $h = (SELECT node_id, value, phasic FROM nn_node WHERE model = 'affect' AND layer = 'hidden');
-          LET $m = (SELECT node_id, value FROM nn_node WHERE model = 'affect' AND layer = 'mode');
-          LET $s = (SELECT cycle, energy, fatigue, config FROM kernel_state LIMIT 1)[0];
-          LET $mat = fn::compute_maturity();
-          LET $ce_c = (SELECT count() AS c FROM cognitive_event GROUP ALL)[0].c ?? 0;
-          LET $rpe = IF $ce_c > 1 THEN (SELECT math::mean(math::abs(prediction_error)) AS r FROM cognitive_event GROUP ALL)[0].r ?? 0 ELSE 0 END;
-          RETURN { tr: $tr, ar: $ar, ed: $ed, h: $h, m: $m, s: $s, mat: $mat, rpe: $rpe };
-        `) as any;
-
-        // RETURN is the last element in the results array
-        const results = Array.isArray(snap) ? snap : [snap];
-        const d = results[results.length - 1] ?? results[0] ?? {};
-        const s = d.s ?? {};
-        const cfg = s.config ?? {};
-        const h = Array.isArray(d.h) ? d.h : [];
-        const m = Array.isArray(d.m) ? d.m : [];
-        const mat = d.mat ?? {};
-
-        console.log(`\n── tick=${tick}/${MAX_TICKS} (${elapsed.toFixed(0)}s) ──`);
-        console.log(`  cy=${s.cycle} E=${s.energy?.toFixed(2)} fat=${s.fatigue?.toFixed(2)} | tr=${d.tr}/${d.ar} ed=${d.ed} act=${totalActions} rpe=${d.rpe?.toFixed(4)}`);
-        console.log(`  H: ${h.map((n: any) => (n.node_id as string).replace('hormone:', '').slice(0, 4) + '=' + n.value?.toFixed(3) + '(ph' + n.phasic?.toFixed(2) + ')').join(' ')}`);
-        console.log(`  M: ${m.map((n: any) => (n.node_id as string).replace('mode:', '').slice(0, 3) + '=' + n.value?.toFixed(3)).join(' ')}`);
-        console.log(`  MATURITY: ${(mat.maturity ?? 0).toFixed(3)} (conv=${(mat.convergence ?? 0).toFixed(2)} ed=${(mat.edges ?? 0).toFixed(2)} pred=${(mat.prediction ?? 0).toFixed(2)} div=${(mat.diversity ?? 0).toFixed(2)})`);
-        console.log(`  CFG: drain=${cfg.energy_drain_rate?.toFixed(5)} fat=${cfg.fatigue_rate?.toFixed(5)} sleep=${cfg.sleep_threshold?.toFixed(3)} lr=${cfg.hebbian_lr?.toFixed(5)}`);
-
-        // Auto level-up
-        const matVal = mat.maturity ?? 0;
-        if (matVal >= (cfg.levelup_maturity_threshold ?? 0.5) && world.getLevel() < 4) {
-          world.levelUp();
-          levelUps++;
-          console.log(`\n  >>> LEVEL UP to ${world.getLevel()}: ${world.getObjectCount()} objects (maturity=${matVal.toFixed(3)}) <<<`);
+        const reqs = await db.query('SELECT * FROM kernel_request WHERE type = \'action\' AND status = \'pending\' LIMIT 3') as any;
+        const pending = Array.isArray(reqs[0]) ? reqs[0] : [];
+        for (const req of pending) {
+          const method = req.payload?.method ?? 'touch';
+          const targetContent = req.payload?.target_content ?? '';
+          const actionIdx = ['touch', 'push', 'drop', 'shake', 'look', 'squeeze'].indexOf(method);
+          const consequence = world.act(actionIdx >= 0 ? actionIdx : 0);
+          totalActions++;
+          await db.query(
+            'CREATE sensory_input SET status = \'pending\', is_consequence = true, action_id = $aid, channels = $c, speech = $s, valence = $v, object_idx = $o, action_method = $method, target_content = $target',
+            { aid: consequence.action_id, c: consequence.channels, s: consequence.speech, v: consequence.valence, o: consequence.object_idx, method, target: targetContent },
+          );
+          await db.query('UPDATE $id SET status = \'processing\'', { id: req.id });
         }
-
-        if (matVal >= TARGET_MATURITY) {
-          console.log(`\n  >>> TARGET MATURITY ${TARGET_MATURITY} REACHED at tick ${tick} <<<`);
-          break;
-        }
-      } catch (e: any) {
-        console.log(`  tick=${tick} snapshot error: ${e.message?.slice(0, 80)}`);
-      }
-    }
+      } catch {}
+    }, 200);
   }
 
-  const totalElapsed = (Date.now() - t0) / 1000;
-  console.log(`\n═══════════════════════════════════════════`);
-  console.log(`TOTAL: ${MAX_TICKS} ticks, ${totalElapsed.toFixed(1)}s, ${totalActions} actions, ${sleepCount} sleep events, ${levelUps} level-ups`);
-  console.log(`═══════════════════════════════════════════`);
+  // Start the brain (triggers EVENT chain)
+  console.log('Starting brain...');
+  await db.query('RETURN fn::start_brain()');
 
-  await db.query('UPDATE kernel_state SET running = false');
-  await db.close();
-  process.exit(0);
+  // Monitor progress
+  const monitorInterval = setInterval(async () => {
+    const elapsed = (Date.now() - t0) / 1000;
+    if (elapsed > MAX_SECONDS) {
+      console.log(`\nTime limit ${MAX_SECONDS}s reached.`);
+      cleanup();
+      return;
+    }
+
+    try {
+      // Re-auth periodically
+      if (elapsed % 1500 < 5) {
+        await db.signin({ username: 'root', password: 'root' });
+        await db.use({ namespace: 'deus', database: 'runtime' });
+      }
+
+      const snap = await db.query(`
+        LET $s = (SELECT cycle, energy, fatigue, config FROM kernel_state LIMIT 1)[0];
+        LET $tr = (SELECT count() AS c FROM trace_state WHERE archived = false GROUP ALL)[0].c ?? 0;
+        LET $ar = (SELECT count() AS c FROM trace WHERE archived = true GROUP ALL)[0].c ?? 0;
+        LET $ed = (SELECT count() AS c FROM activates WHERE (archived IS NONE OR archived = false) GROUP ALL)[0].c ?? 0;
+        LET $h = (SELECT node_id, value, phasic FROM nn_node WHERE model = 'affect' AND layer = 'hidden');
+        LET $m = (SELECT node_id, value FROM nn_node WHERE model = 'affect' AND layer = 'mode');
+        LET $ce_c = (SELECT count() AS c FROM cognitive_event GROUP ALL)[0].c ?? 0;
+        LET $ce_rpe = IF $ce_c > 1 THEN (SELECT math::mean(math::abs(prediction_error)) AS r FROM cognitive_event GROUP ALL)[0].r ?? 0 ELSE 0 END;
+        LET $mat = fn::compute_maturity();
+        RETURN { s: $s, tr: $tr, ar: $ar, ed: $ed, h: $h, m: $m, rpe: $ce_rpe, mat: $mat, ce: $ce_c };
+      `) as any;
+
+      const results = Array.isArray(snap) ? snap : [snap];
+      const d = results[results.length - 1] ?? {};
+      const s = d.s ?? {};
+      const cfg = s.config ?? {};
+      const h = Array.isArray(d.h) ? d.h : [];
+      const m = Array.isArray(d.m) ? d.m : [];
+      const mat = d.mat ?? {};
+
+      const cycle = s.cycle ?? 0;
+      const tps = cycle > 0 ? (cycle / elapsed).toFixed(0) : '?';
+
+      console.log(`\n── ${elapsed.toFixed(0)}s | cy=${cycle} (${tps} tps) ──`);
+      console.log(`  E=${s.energy?.toFixed(2)} fat=${s.fatigue?.toFixed(2)} | tr=${d.tr}/${d.ar} ed=${d.ed} act=${totalActions} ce=${d.ce} rpe=${d.rpe?.toFixed(4)}`);
+      console.log(`  H: ${h.map((n: any) => (n.node_id as string).replace('hormone:', '').slice(0, 4) + '=' + n.value?.toFixed(3) + '(ph' + n.phasic?.toFixed(2) + ')').join(' ')}`);
+      console.log(`  M: ${m.map((n: any) => (n.node_id as string).replace('mode:', '').slice(0, 3) + '=' + n.value?.toFixed(3)).join(' ')}`);
+      console.log(`  MAT: ${(mat.maturity ?? 0).toFixed(3)} (conv=${(mat.convergence ?? 0).toFixed(2)} ed=${(mat.edges ?? 0).toFixed(2)} pred=${(mat.prediction ?? 0).toFixed(2)} div=${(mat.diversity ?? 0).toFixed(2)})`);
+      console.log(`  CFG: drain=${cfg.energy_drain_rate?.toFixed(5)} lr=${cfg.hebbian_lr?.toFixed(5)}`);
+
+      // Auto level-up
+      const matVal = mat.maturity ?? 0;
+      if (matVal >= (cfg.levelup_maturity_threshold ?? 0.7) && world.getLevel() < 4) {
+        world.levelUp();
+        console.log(`\n  >>> LEVEL UP to ${world.getLevel()}: ${world.getObjectCount()} objects <<<`);
+      }
+
+      if (matVal >= TARGET_MATURITY) {
+        console.log(`\n  >>> TARGET MATURITY ${TARGET_MATURITY} REACHED <<<`);
+        cleanup();
+        return;
+      }
+
+      // Check if brain stalled (re-kick if needed)
+      if (cycle === lastCycle && cycle > 0) {
+        console.log('  [watchdog] Brain stalled, re-kicking...');
+        await db.query('UPDATE _ping SET cycle = $cy', { cy: cycle });
+      }
+      lastCycle = cycle;
+    } catch (e: any) {
+      if (e.message?.includes('fetch failed') || e.message?.includes('token')) {
+        try {
+          await db.signin({ username: 'root', password: 'root' });
+          await db.use({ namespace: 'deus', database: 'runtime' });
+        } catch {}
+      }
+    }
+  }, 5000); // report every 5 seconds
+
+  async function cleanup() {
+    clearInterval(ambientInterval);
+    clearInterval(monitorInterval);
+    const totalElapsed = (Date.now() - t0) / 1000;
+    try { await db.query('RETURN fn::stop_brain()'); } catch {}
+    console.log(`\n═══════════════════════════════════════════`);
+    console.log(`TOTAL: ${totalElapsed.toFixed(1)}s, ${totalActions} actions`);
+    console.log(`═══════════════════════════════════════════`);
+    await db.close();
+    process.exit(0);
+  }
+
+  // Graceful shutdown
+  process.on('SIGINT', cleanup);
+  process.on('SIGTERM', cleanup);
 }
 
 main().catch(e => { console.error('FATAL:', e.message || e); process.exit(1); });
