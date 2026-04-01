@@ -220,27 +220,13 @@ async function main() {
 
   console.log('\n--- LEARNING METRICS ---');
 
-  // 1. Trace clustering: do similar objects cluster?
-  // Push(мячик=0) and push(яблоко=8) should have similar positions (both roll)
-  // Push(кубик=1) should be far from push(мячик=0) (doesn't roll)
-  const pushTraces = await db.query('SELECT ts.content AS content, t.position AS position FROM trace_state AS ts, trace AS t WHERE ts.archived = false AND string::starts_with(ts.content, \'1:\') AND t.trace_id = ts.trace_id') as any;
-  const pushList = Array.isArray(pushTraces[0]) ? pushTraces[0] : pushTraces;
-  if ((pushList as any[]).length >= 2) {
-    // Compute distance between push-traces
-    const dists: Array<{ a: string; b: string; dist: number }> = [];
-    for (let i = 0; i < Math.min(pushList.length, 5); i++) {
-      for (let j = i + 1; j < Math.min(pushList.length, 5); j++) {
-        const pa = (pushList as any)[i].position || [];
-        const pb = (pushList as any)[j].position || [];
-        let d = 0;
-        for (let k = 0; k < Math.min(pa.length, pb.length); k++) d += (pa[k] - pb[k]) ** 2;
-        dists.push({ a: (pushList as any)[i].content, b: (pushList as any)[j].content, dist: Math.sqrt(d) });
-      }
-    }
-    dists.sort((a, b) => a.dist - b.dist);
-    console.log('  Push-trace distances (closer = similar physics):');
-    for (const d of dists.slice(0, 5)) {
-      console.log(`    ${d.a} ↔ ${d.b}: dist=${d.dist.toFixed(3)}`);
+  // 1. Q-values: what did brain learn about actions?
+  const qvals = await db.query('SELECT key, value, update_count FROM action_value WHERE update_count > 0 LIMIT 10') as any;
+  const qlist = Array.isArray(qvals[0]) ? qvals[0] : [];
+  if (qlist.length > 0) {
+    console.log(`  Q-values learned: ${qlist.length}`);
+    for (const q of qlist.slice(0, 5)) {
+      console.log(`    ${q.key}: Q=${(q.value ?? 0).toFixed(3)} (${q.update_count} updates)`);
     }
   }
 
@@ -272,6 +258,19 @@ async function main() {
   const pred = (accFinal as any[]).find((a: any) => a.node_id === 'acc:pred_error')?.value ?? 0;
   console.log(`  Learning signal: convergence=${conv.toFixed(3)} novelty=${nov.toFixed(3)} pred_error=${pred.toFixed(3)}`);
   console.log(`  ${conv > nov ? 'CONVERGING (world becoming predictable)' : 'EXPLORING (still discovering)'}`);
+
+  // 5. ECAN + Sheaves + Language + Predictor
+  const hebbCount = await db.query('SELECT count() AS c FROM hebbian GROUP ALL') as any;
+  const sectionCount = await db.query('SELECT count() AS c FROM trace_section WHERE connector_count > 0 GROUP ALL') as any;
+  const lexCount = await db.query('SELECT count() AS c FROM trace WHERE source_type = \'lexical\' GROUP ALL') as any;
+  const bindCount = await db.query('SELECT count() AS c FROM lexical_binding WHERE weight > 0.1 GROUP ALL') as any;
+  const transitions = await db.query('SELECT count() AS c FROM sensorimotor_transition GROUP ALL') as any;
+
+  console.log(`\n--- ATOMSPACE FEATURES ---`);
+  console.log(`  HebbianLinks: ${hebbCount[0]?.[0]?.c ?? 0}`);
+  console.log(`  Sheaf sections: ${sectionCount[0]?.[0]?.c ?? 0}`);
+  console.log(`  Lexical traces: ${lexCount[0]?.[0]?.c ?? 0} | Bindings: ${bindCount[0]?.[0]?.c ?? 0}`);
+  console.log(`  Predictor transitions: ${transitions[0]?.[0]?.c ?? 0}`);
 
   await db.query('UPDATE kernel_state SET running = false');
   await db.close();
