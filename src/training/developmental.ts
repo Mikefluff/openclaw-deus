@@ -17,6 +17,7 @@ async function main() {
   const world = new PhysicsWorld();
   let totalActions = 0;
   const seen = new Set<string>();
+  let seq = 0;
   const t0 = Date.now();
 
   console.log(`Membrane: max ${MAX_SECONDS}s, level 0: ${world.getObjectCount()} objects\n`);
@@ -37,8 +38,9 @@ async function main() {
     try {
       // 1. Feed ambient sensory
       for (const t of world.tick()) {
-        await db.query('CREATE sensory_input SET status=$s,is_consequence=false,action_id=$a,channels=$c,speech=$sp,valence=$v,object_idx=$o',
-          { s: 'pending', a: t.action_id, c: t.channels, sp: t.speech, v: t.valence, o: t.object_idx });
+        seq++;
+        await db.query('CREATE sensory_input SET seq=$seq,is_consequence=false,action_id=$a,channels=$c,speech=$sp,valence=$v,object_idx=$o',
+          { seq, a: t.action_id, c: t.channels, sp: t.speech, v: t.valence, o: t.object_idx });
       }
 
       // 2. Re-kick brain tick pump
@@ -55,8 +57,9 @@ async function main() {
         const idx = ['touch', 'push', 'drop', 'shake', 'look', 'squeeze'].indexOf(method);
         const c = world.act(idx >= 0 ? idx : 0);
         totalActions++;
-        await db.query('CREATE sensory_input SET status=$s,is_consequence=true,action_id=$a,channels=$ch,speech=$sp,valence=$v,object_idx=$o,action_method=$m,target_content=$t',
-          { s: 'pending', a: c.action_id, ch: c.channels, sp: c.speech, v: c.valence, o: c.object_idx, m: method, t: target });
+        seq++;
+        await db.query('CREATE sensory_input SET seq=$seq,is_consequence=true,action_id=$a,channels=$ch,speech=$sp,valence=$v,object_idx=$o,action_method=$m,target_content=$t',
+          { seq, a: c.action_id, ch: c.channels, sp: c.speech, v: c.valence, o: c.object_idx, m: method, t: target });
       }
     } catch {}
   }, 200);
