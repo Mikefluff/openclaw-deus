@@ -87,10 +87,10 @@ async function main() {
 
     for (const req of reqs) {
       const payload = req.payload || {};
-      const method = typeof payload.method === 'string'
-        ? ['touch', 'push', 'drop', 'shake', 'look', 'squeeze'].indexOf(payload.method)
+      // Brain sends action_id (int). Membrane translates to world action.
+      const action_id = typeof payload.action_id === 'number'
+        ? payload.action_id % 6
         : Math.floor(Math.random() * 6);
-      const action_id = method >= 0 ? method : Math.floor(Math.random() * 6);
 
       // Execute in physics world
       const consequence = world.act(action_id);
@@ -102,12 +102,12 @@ async function main() {
         `CREATE sensory_input CONTENT {
           seq: $seq, action_id: $action_id, channels: $channels,
           speech: $speech, valence: $valence, object_idx: $object_idx,
-          is_consequence: true, action_method: $method, target_content: $target
+          is_consequence: true, target_content: $target
         }`,
         {
           seq: seqCounter, action_id: consequence.action_id, channels: consequence.channels,
           speech: consequence.speech, valence: consequence.valence, object_idx: consequence.object_idx,
-          method: payload.method ?? 'touch', target: payload.target_content ?? '',
+          target: payload.target_content ?? '',
         },
       );
 
