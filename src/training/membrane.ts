@@ -141,7 +141,7 @@ async function main() {
   const traces = await db.query('SELECT count() AS c FROM trace WHERE archived = false GROUP ALL') as any;
   const archived = await db.query('SELECT count() AS c FROM trace WHERE archived = true GROUP ALL') as any;
   const edges = await db.query('SELECT count() AS c FROM activates GROUP ALL') as any;
-  const topTraces = await db.query('SELECT trace_id, content, weight, reactivation_count FROM trace WHERE archived = false LIMIT 10') as any;
+  const topTraces = await db.query('SELECT trace_id, content, weight, reactivation_count FROM trace_state WHERE archived = false LIMIT 10') as any;
   const hormones = await db.query('SELECT node_id, value FROM nn_node WHERE model = \'affect\' AND layer = \'hidden\'') as any;
   const accumulators = await db.query('SELECT node_id, value FROM nn_node WHERE model = \'affect\' AND layer = \'input\'') as any;
   const nnStats = await db.query('SELECT math::mean(math::abs(weight)) AS w, math::mean(update_count) AS u FROM nn_edge GROUP ALL') as any;
@@ -193,7 +193,7 @@ async function main() {
   // 1. Trace clustering: do similar objects cluster?
   // Push(мячик=0) and push(яблоко=8) should have similar positions (both roll)
   // Push(кубик=1) should be far from push(мячик=0) (doesn't roll)
-  const pushTraces = await db.query('SELECT content, position FROM trace WHERE archived = false AND string::starts_with(content, \'1:\')') as any;
+  const pushTraces = await db.query('SELECT ts.content AS content, t.position AS position FROM trace_state AS ts, trace AS t WHERE ts.archived = false AND string::starts_with(ts.content, \'1:\') AND t.trace_id = ts.trace_id') as any;
   const pushList = Array.isArray(pushTraces[0]) ? pushTraces[0] : pushTraces;
   if ((pushList as any[]).length >= 2) {
     // Compute distance between push-traces
@@ -215,7 +215,7 @@ async function main() {
   }
 
   // 2. Reactivation distribution: highly reactivated = well-learned
-  const reactDist = await db.query('SELECT content, reactivation_count, weight FROM trace WHERE archived = false') as any;
+  const reactDist = await db.query('SELECT content, reactivation_count, weight FROM trace_state WHERE archived = false') as any;
   const reactList = Array.isArray(reactDist[0]) ? reactDist[0] : reactDist;
   if ((reactList as any[]).length > 0) {
     const reacts = (reactList as any[]).map((t: any) => t.reactivation_count ?? 0);
@@ -228,7 +228,7 @@ async function main() {
   }
 
   // 3. Speech binding: mama traces linked to action traces?
-  const speechTraces = await db.query('SELECT content, weight, reactivation_count FROM trace WHERE string::starts_with(content, \'-1:\') AND archived = false') as any;
+  const speechTraces = await db.query('SELECT content, weight, reactivation_count FROM trace_state WHERE string::starts_with(content, \'-1:\') AND archived = false') as any;
   const speechList = Array.isArray(speechTraces[0]) ? speechTraces[0] : speechTraces;
   console.log(`  Speech traces: ${(speechList as any[]).length} (mama named ${(speechList as any[]).length} objects)`);
   for (const st of (speechList as any[]).slice(0, 5)) {
