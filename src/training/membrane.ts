@@ -75,12 +75,39 @@ async function main() {
       );
     }
 
-    // 2. Brain processes sensory + ticks
+    // 2. Brain: process sensory inputs (separate transaction)
     try {
-      await db.query('RETURN fn::brain_tick_auto()');
-    } catch (e: any) {
-      if (tick % 100 === 0) console.warn(`  brain_tick_auto error: ${e.message?.slice(0, 80)}`);
-    }
+      await db.query(`
+        LET $state = (SELECT * FROM kernel_state LIMIT 1)[0];
+        LET $cursor = $state.sensory_seq ?? 0;
+        LET $inputs = (SELECT * FROM sensory_input WHERE seq > $cursor LIMIT 10);
+        IF array::len($inputs) > 0 {
+          FOR $inp IN $inputs {
+            LET $action = $inp.action_id ?? 0;
+            IF $action < 0 {
+              fn::process_speech($inp.speech ?? [], $inp.valence ?? 0);
+            } ELSE {
+              fn::process_sensory($action, $inp.channels ?? [], $inp.speech ?? [],
+                $inp.valence ?? 0, $inp.object_idx ?? 0);
+              IF $inp.is_consequence = true {
+                LET $tkey = type::string($action) + ':' + type::string($inp.object_idx ?? 0);
+                LET $tr = (SELECT trace_id FROM trace_state WHERE content = $tkey AND archived = false LIMIT 1)[0];
+                IF $tr IS NOT NONE AND $tr.trace_id IS NOT NONE {
+                  fn::cognitive_cycle($tr.trace_id, $action, $tkey, $inp.valence ?? 0);
+                };
+              };
+            };
+          };
+          LET $seqs = $inputs.map(|$i| $i.seq ?? 0);
+          UPDATE kernel_state SET sensory_seq = math::max($seqs) ?? $cursor;
+        };
+      `);
+    } catch {}
+
+    // 3. Brain: tick (separate transaction — no conflict with sensory processing)
+    try {
+      await db.query('RETURN fn::brain_tick(100)');
+    } catch {}
 
     // 3. Brain's action requests → execute in world → feed consequence
     const requests = await db.query(
