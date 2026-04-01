@@ -32,7 +32,7 @@ export interface DeusConfig {
 export default (): DeusConfig => ({
   port: parseInt(process.env.PORT || '3000', 10),
   surreal: {
-    url: process.env.SURREAL_URL || 'http://127.0.0.1:8000/rpc',
+    url: process.env.SURREAL_URL || 'ws://127.0.0.1:8000/rpc',
     namespace: process.env.SURREAL_NS || 'deus',
     database: process.env.SURREAL_DB || 'runtime',
     username: process.env.SURREAL_USER || 'root',

@@ -2,7 +2,7 @@
  * Membrane: feeds ambient sensory + executes brain's actions in world.
  * Brain ticks autonomously (ASYNC MAXDEPTH 16, re-kicked by membrane every 200ms).
  */
-import Surreal from 'surrealdb';
+import { Surreal } from 'surrealdb';
 import { PhysicsWorld } from './physics-world';
 
 const MAX_SECONDS = parseInt(process.argv[2] || '300', 10);
@@ -10,7 +10,7 @@ const TARGET_MATURITY = parseFloat(process.argv[3] || '0.95');
 
 async function main() {
   const db = new Surreal();
-  await db.connect('ws://127.0.0.1:8000/rpc', { versionCheck: false } as any);
+  await db.connect('ws://127.0.0.1:8000/rpc');
   await db.signin({ username: 'root', password: 'root' });
   await db.use({ namespace: 'deus', database: 'runtime' });
 

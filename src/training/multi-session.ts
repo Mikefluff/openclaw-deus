@@ -10,7 +10,7 @@
  * Between sessions: measure clustering, edges, hormones, reactivation patterns.
  */
 
-import Surreal from 'surrealdb';
+import { Surreal } from 'surrealdb';
 import { PhysicsWorld, SensoryTransition } from './physics-world';
 
 const TICKS_PER_SESSION = parseInt(process.argv[2] || '40000', 10);
@@ -19,7 +19,7 @@ const NUM_SESSIONS = 3;
 
 async function main() {
   const db = new Surreal();
-  await db.connect('http://127.0.0.1:8000/rpc', { versionCheck: false } as any);
+  await db.connect('ws://127.0.0.1:8000/rpc');
   await db.signin({ username: 'root', password: 'root' });
   await db.use({ namespace: 'deus', database: 'runtime' });
 

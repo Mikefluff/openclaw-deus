@@ -1,14 +1,16 @@
 # DEUS Roadmap
 
-## Current State (v3.0)
+## Current State (v3.1)
 
-- **47 migrations** — full cognitive engine in SurrealDB
-- **60+ stored procedures** — brain_tick, cognitive_cycle, process_sensory, etc.
-- **159 config parameters** — ALL self-tunable via affect model
+- **53 migrations** — full cognitive engine + AtomSpace-inspired features in SurrealDB
+- **80+ stored procedures** — brain_tick, cognitive_cycle, ECAN, PLN, DualLink, frames, etc.
+- **170+ config parameters** — ALL self-tunable via affect model
 - **Pointer Architecture** — immutable traces + append-only state/history
 - **12 objects**, 6 actions, weather events, boredom penalty
 - **Cognitive cycle**: perceive → appraise → predict → deliberate → commit → learn
-- **Structural plasticity**: Gaussian growth, distance-weighted sprouting, competitive pruning
+- **Structural plasticity**: Gaussian growth, HNSW-accelerated sprouting, competitive pruning
+- **AtomSpace features**: HNSW vectors, meta-edges, patterns, DualLink, FormulaStream, frames, ECAN, PLN
+- **SurrealDB SDK 2.0.3** — WebSocket connections, sessions, transactions
 
 ## Completed Phases
 
@@ -31,36 +33,37 @@
 | 15 | Single-tick architecture | 8→2 roundtrips (55% speedup) |
 | 16 | Pointer architecture | Immutable traces, trace_state, trace_history, learning_event |
 | 17 | Structural plasticity | Gaussian growth, distance sprouting, competitive pruning, Tononi SHY |
+| 18 | AtomSpace core (052) | HNSW vector index, recursive spreading, meta-edges (modulates/gates/context_of), queries-as-data (graph_pattern), SDK 2.0.3 + WebSocket |
+| 19 | AtomSpace advanced (053) | DualLink (inverted search), FormulaStream (reactive activation), term unification, graph frames, ECAN (HebbianLinks + rent + forgetting), PLN (deduction + modus ponens) |
+| 20 | Membrane WebSocket | sensory_input table, fn::brain_tick_auto(), ws:// everywhere |
 
 ## Next Priorities
 
 ### Near-term
-1. **SurrealMX time-travel** — Docker with `mem://?versioned=true&aol=async&snapshot=60s` for cognitive state replay via VERSION queries
-2. **Reasoning graphs** — store chain-of-thought as graph edges (evaluated/decided pattern from SurrealDB blog)
+1. **Sheaves** — section extraction from trace graph for grammar/structure learning (bridge to language emergence)
+2. **Sensorimotor predictor** — brain predicts next sensory state, RPE from prediction error (not just valence)
 3. **Long training runs** — 50K+ ticks, persistent storage, overnight training
-4. **Sensorimotor predictor** — brain predicts next sensory state, RPE from prediction error (not just valence)
+4. **PLN rule engine** — automated rule selection (which PLN rule to fire when), URE-style
 
 ### Medium-term
-5. **Language emergence** — speech channel → symbol grounding → naming games (5-phase plan in SENSORIMOTOR-INTERFACE.md)
+5. **Language emergence** — speech channel → symbol grounding → naming games (5-phase plan)
 6. **Self-model** — introspection creates traces about own cognitive state
 7. **Causal reasoning** — traverse cognitive_event graph to learn causal chains
 8. **Multi-world transfer** — train on different PhysicsWorld instances, test generalization
 
 ### Long-term
-9. **NestJS membrane** — connect brain to HTTP API, LLM agents, real-world interaction
-10. **Personality as scheduler policy** — different budget ratios = different "personalities"
-11. **Formal verification** — σ_F consistency filter, energy accounting, identity preservation proofs
+9. **Personality as scheduler policy** — different budget ratios = different "personalities"
+10. **Formal verification** — σ_F consistency filter, energy accounting, identity preservation proofs
 
 ## Success Metrics
 
 | Metric | Current | Target |
 |--------|---------|--------|
-| Migrations | 47 | 55+ |
-| Stored procs | 60+ | 80+ |
-| Config params | 159 | 200+ |
-| RPE (1K ticks) | 0.046 | < 0.02 |
-| Q-values learned | 177 | 500+ |
-| Edges (structural) | 631 | 2000+ |
-| Auto level-ups | 4 per 5K | stable development |
-| Speed | 85s/1K ticks | < 50s/1K |
-| Boot time | 12ms (NestJS) | < 10ms |
+| Migrations | 53 | 60+ |
+| Stored procs | 80+ | 100+ |
+| Config params | 170+ | 200+ |
+| AtomSpace features | 13 | 20+ |
+| HebbianLinks | 5+ | 100+ |
+| PLN inferred edges | 0 (needs beliefs) | 50+ |
+| Edges (structural) | 95+ | 2000+ |
+| Speed | ~1.8s/world tick | < 0.5s/world tick |

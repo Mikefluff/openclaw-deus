@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { SurrealService } from '../database/surreal.service';
-import Surreal from 'surrealdb';
+import { Surreal } from 'surrealdb';
 
 /**
  * KernelLoopService: Parallel circuit runner for autonomous SurrealDB brain.
@@ -73,7 +73,7 @@ export class KernelLoopService implements OnModuleInit, OnModuleDestroy {
     for (let i = 0; i < 4; i++) {
       const c = new Surreal();
       try {
-        await c.connect(config.url, { versionCheck: false } as any);
+        await c.connect(config.url);
         await c.signin({ username: config.username, password: config.password });
         try {
           await c.query(`DEFINE NAMESPACE IF NOT EXISTS ${config.namespace}`);

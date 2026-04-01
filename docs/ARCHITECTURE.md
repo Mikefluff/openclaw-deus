@@ -61,7 +61,7 @@ DEUS is a pre-linguistic cognitive engine. Not a pipeline. Not a chatbot wrapper
 │  │                                                          │ │
 │  │  7 acc → 4 hormones → 8 config + 4 mode outputs         │ │
 │  │  Hormones: DA τ=30, NE τ=20, sero τ=200, cort τ=500    │ │
-│  │  Config: log-space self-modulation (159 params)          │ │
+│  │  Config: log-space self-modulation (170+ params)         │ │
 │  │  Mode: explore/exploit/defensive/resting (REINFORCE)     │ │
 │  └─────────────────────────────────────────────────────────┘ │
 │                         ↕                                      │
@@ -92,12 +92,12 @@ One stored procedure = all cognitive circuits at their natural frequencies:
 ```
 fn::brain_tick($n) — FOR loop, all circuits:
   CRITICAL (×100):  energy drain + sleep detection → fn::sleep_consolidation
-  HIGH     (×100):  hormone phasic decay + affect forward/backward + config deltas
+  HIGH     (×100):  hormone decay + affect fwd/bwd + config deltas + ECAN rent
   TRACE    (×50):   trace_state weight/freshness decay (lightweight, no position)
   AGENCY   (×200):  value-based action selection (Q-values + UCB1 exploration)
-  MEDIUM   (×500):  cosine-weighted spreading + forgetting + eligibility decay
-  LOW      (×2000): consolidation + structural plasticity (sprout/prune/grow)
-  DEEP     (×5000): world model + introspection + config snapshot
+  MEDIUM   (×500):  spreading + forgetting + meta-modulation + ECAN hebbian update
+  LOW      (×2000): consolidation + plasticity + patterns + ECAN create/forget
+  DEEP     (×5000): world model + introspection + PLN inference chains
 ```
 
 ## fn::world_tick + fn::action_consequence — Single-Tick Architecture

@@ -2,7 +2,7 @@ import { Injectable, Logger, OnModuleInit, OnModuleDestroy, Optional } from '@ne
 import { ConfigService } from '@nestjs/config';
 import { Result, ok, err } from 'neverthrow';
 import { DatabaseError } from '../common/types/result.types';
-import Surreal from 'surrealdb';
+import { Surreal, Table, StringRecordId } from 'surrealdb';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -20,7 +20,7 @@ export class SurrealService implements OnModuleInit, OnModuleDestroy {
     this.db = new Surreal();
     const surealConf = this.configService?.get('surreal');
     this.config = {
-      url: surealConf?.url || process.env.SURREAL_URL || 'http://127.0.0.1:8000/rpc',
+      url: surealConf?.url || process.env.SURREAL_URL || 'ws://127.0.0.1:8000/rpc',
       namespace: surealConf?.namespace || process.env.SURREAL_NS || 'deus',
       database: surealConf?.database || process.env.SURREAL_DB || 'runtime',
       username: surealConf?.username || process.env.SURREAL_USER || 'root',
@@ -43,9 +43,8 @@ export class SurrealService implements OnModuleInit, OnModuleDestroy {
   async connect(config?: Partial<SurrealConfig>): Promise<void> {
     if (config) this.config = { ...this.config, ...config };
     try {
-      // SurrealDB SDK connect options are loosely typed; versionCheck is a valid but untyped option
       this.logger.log(`Connecting to SurrealDB at ${this.config.url}...`);
-      await this.db.connect(this.config.url, { versionCheck: false } as Record<string, unknown>);
+      await this.db.connect(this.config.url);
       this.logger.log('SurrealDB: signing in...');
       await this.db.signin({ username: this.config.username, password: this.config.password });
       this.logger.log('SurrealDB: ensuring namespace/database...');
@@ -127,7 +126,7 @@ export class SurrealService implements OnModuleInit, OnModuleDestroy {
   async select<T>(table: string): Promise<Result<T[], DatabaseError>> {
     try { await this.ensureConnected(); } catch { return err(new DatabaseError('Not connected')); }
     try {
-      const results = await this.db.select(table) as unknown as T[];
+      const results = await this.db.select(new Table(table)) as unknown as T[];
       return ok(Array.isArray(results) ? results : [results]);
     } catch (error) {
       return err(new DatabaseError(`Select from ${table} failed: ${error}`, error));
@@ -137,8 +136,8 @@ export class SurrealService implements OnModuleInit, OnModuleDestroy {
   async create<T>(table: string, data: T): Promise<Result<T, DatabaseError>> {
     try { await this.ensureConnected(); } catch { return err(new DatabaseError('Not connected')); }
     try {
-      // SurrealDB SDK expects loosely typed data for create/merge operations
-      const result = await this.db.create(table, this.coerceDatetimes(data) as Record<string, unknown>);
+      const coerced = this.coerceDatetimes(data);
+      const result = await (this.db.create as any)(new Table(table), coerced);
       const record = Array.isArray(result) ? result[0] : result;
       return ok(record as unknown as T);
     } catch (error) {
@@ -148,7 +147,8 @@ export class SurrealService implements OnModuleInit, OnModuleDestroy {
 
   async update<T>(id: string, data: Partial<T>): Promise<Result<T, DatabaseError>> {
     try {
-      const result = await this.db.merge(id, this.coerceDatetimes(data) as Record<string, unknown>);
+      const coerced = this.coerceDatetimes(data);
+      const result = await (this.db.update as any)(new StringRecordId(id), coerced);
       return ok(result as unknown as T);
     } catch (error) {
       return err(new DatabaseError(`Update ${id} failed: ${error}`, error));
@@ -167,7 +167,7 @@ export class SurrealService implements OnModuleInit, OnModuleDestroy {
 
   async remove(id: string): Promise<Result<void, DatabaseError>> {
     try {
-      await this.db.delete(id);
+      await this.db.delete(new StringRecordId(id) as any);
       return ok(undefined);
     } catch (error) {
       return err(new DatabaseError(`Delete ${id} failed: ${error}`, error));
@@ -191,11 +191,13 @@ export class SurrealService implements OnModuleInit, OnModuleDestroy {
 
   async live(table: string, callback: (data: any) => void): Promise<Result<string, DatabaseError>> {
     try {
-      const queryUuid = await this.db.live(table, (action, result) => {
-        callback({ action, result, table, timestamp: new Date().toISOString() });
-      });
-      const id = String(queryUuid);
+      const subscription = await this.db.live(new Table(table) as any);
+      const id = String(subscription);
       this.liveQueries.push(id);
+      // Subscribe to events
+      subscription.subscribe((notification: any) => {
+        callback({ action: notification.action, result: notification.result, table, timestamp: new Date().toISOString() });
+      });
       this.logger.log(`LIVE SELECT on ${table} started (${id})`);
       return ok(id);
     } catch (error) {

@@ -9,14 +9,14 @@
  * Brain sees ONLY numbers. Never text. Never object names.
  */
 
-import Surreal from 'surrealdb';
+import { Surreal } from 'surrealdb';
 import { PhysicsWorld, SensoryTransition } from './physics-world';
 
 const TOTAL_TICKS = parseInt(process.argv[2] || '5000', 10);
 
 async function main() {
   const db = new Surreal();
-  await db.connect('http://127.0.0.1:8000/rpc', { versionCheck: false } as any);
+  await db.connect('ws://127.0.0.1:8000/rpc');
   await db.signin({ username: 'root', password: 'root' });
   await db.use({ namespace: 'deus', database: 'runtime' });
   console.log('Membrane connected');
@@ -58,15 +58,26 @@ async function main() {
     );
   }
 
+  // Sensory input sequence counter
+  let seqCounter = 0;
+
   for (let tick = 0; tick < TOTAL_TICKS; tick++) {
-    // 1. World ambient events → brain (numbers only)
+    // 1. World ambient events → brain via sensory_input table (batch insert)
     const ambient = world.tick();
     for (const t of ambient) {
-      await feedTransition(t);
+      seqCounter++;
+      await db.query(
+        `CREATE sensory_input CONTENT {
+          seq: $seq, action_id: $action_id, channels: $channels,
+          speech: $speech, valence: $valence, object_idx: $object_idx,
+          is_consequence: false
+        }`,
+        { seq: seqCounter, action_id: t.action_id, channels: t.channels, speech: t.speech, valence: t.valence, object_idx: t.object_idx },
+      );
     }
 
-    // 2. Brain thinks (1000 internal ticks)
-    await db.query('RETURN fn::brain_tick(1000)');
+    // 2. Brain processes sensory + ticks (single call)
+    await db.query('RETURN fn::brain_tick_auto()');
 
     // 3. Brain's action requests → execute in world → feed consequence
     const requests = await db.query(
@@ -85,24 +96,20 @@ async function main() {
       const consequence = world.act(action_id);
       actionCount++;
 
-      // Feed numerical consequence to brain
-      await feedTransition(consequence);
-
-      // Three-factor Hebbian: edges learn from dopamine × TD_error × eligibility
-      const consKey = `${consequence.action_id}:${consequence.object_idx}`;
-      const predError = 0.3; // TODO: compute from sensorimotor predictor
-      try {
-        await db.query(
-          `LET $to = (SELECT id FROM trace WHERE content = $key AND archived = false LIMIT 1)[0].id;
-           IF $to != NONE {
-             LET $recent = (SELECT id FROM trace WHERE archived = false AND id != $to LIMIT 3);
-             FOR $r IN $recent {
-               fn::learn_edge($r.id, $to, $valence, $pred_error);
-             };
-           }`,
-          { key: consKey, valence: consequence.valence, pred_error: predError },
-        );
-      } catch {}
+      // Feed consequence via sensory_input (brain picks up next tick)
+      seqCounter++;
+      await db.query(
+        `CREATE sensory_input CONTENT {
+          seq: $seq, action_id: $action_id, channels: $channels,
+          speech: $speech, valence: $valence, object_idx: $object_idx,
+          is_consequence: true, action_method: $method, target_content: $target
+        }`,
+        {
+          seq: seqCounter, action_id: consequence.action_id, channels: consequence.channels,
+          speech: consequence.speech, valence: consequence.valence, object_idx: consequence.object_idx,
+          method: payload.method ?? 'touch', target: payload.target_content ?? '',
+        },
+      );
 
       // Mark processed
       if (req.id) await db.query('UPDATE $id SET status = \'completed\'', { id: req.id });
@@ -146,8 +153,18 @@ async function main() {
   console.log(`Energy: ${(s?.energy ?? 0).toFixed?.(3)} | Fatigue: ${(s?.fatigue ?? 0).toFixed?.(3)}`);
   console.log(`Actions: ${actionCount} | World: ${JSON.stringify(world.getDebugInfo())}`);
 
+  // AtomSpace-inspired metrics
+  const metaMods = await db.query('SELECT count() AS c FROM modulates GROUP ALL') as any;
+  const metaGates = await db.query('SELECT count() AS c FROM gates GROUP ALL') as any;
+  const patternStats = await db.query('SELECT name, match_count FROM graph_pattern WHERE match_count > 0') as any;
+
   console.log('\n--- TRACES ---');
   console.log(`Active: ${traces[0]?.[0]?.c ?? traces[0]?.c ?? '?'} | Archived: ${archived[0]?.[0]?.c ?? archived[0]?.c ?? 0} | Edges: ${edges[0]?.[0]?.c ?? edges[0]?.c ?? 0}`);
+  console.log(`Meta-edges: modulates=${metaMods[0]?.[0]?.c ?? 0} gates=${metaGates[0]?.[0]?.c ?? 0}`);
+  const patList = Array.isArray(patternStats[0]) ? patternStats[0] : [];
+  if (patList.length > 0) {
+    console.log(`Patterns fired: ${patList.map((p: any) => `${p.name}(${p.match_count})`).join(', ')}`);
+  }
 
   console.log('\n--- TOP TRACES (action:object patterns) ---');
   const tops = Array.isArray(topTraces[0]) ? topTraces[0] : topTraces;

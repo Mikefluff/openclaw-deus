@@ -2,7 +2,7 @@
  * Minimal test: just SurrealDB connection + raw migration.
  * No NestJS, no DI, no onModuleInit.
  */
-import Surreal from 'surrealdb';
+import { Surreal } from 'surrealdb';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -12,7 +12,7 @@ setTimeout(() => { console.error('TIMEOUT'); process.exit(1); }, TIMEOUT);
 async function main() {
   const db = new Surreal();
   console.log('[1] Connecting...');
-  await db.connect('http://127.0.0.1:8000/rpc', { versionCheck: false } as any);
+  await db.connect('ws://127.0.0.1:8000/rpc');
   await db.signin({ username: 'root', password: 'root' });
   await db.use({ namespace: 'deus', database: 'runtime' });
   console.log('[2] Connected');
@@ -55,7 +55,7 @@ async function main() {
     },
     create: async (table: string, data: any) => {
       try {
-        const r = await db.create(table, data);
+        const r = await (db.create as any)(table, data);
         return { isOk: () => true, isErr: () => false, value: r };
       } catch (e: any) {
         return { isOk: () => false, isErr: () => true, value: null, error: { message: e.message } };
