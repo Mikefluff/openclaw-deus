@@ -54,3 +54,4 @@ projects/tech-news-digest/data/editorial-memory.json
 projects/tech-news-digest/data/fetched.json
 projects/tech-news-digest/data/used-sources.json
 projects/tech-news-digest/logs/alerts.ndjson
+dist/
