@@ -127,7 +127,7 @@ DEFINE FUNCTION OVERWRITE fn::pln_engine_tick() {
           LET $exists = (SELECT count() AS c FROM activates
             WHERE in = $ab.a AND out = $bc.c GROUP ALL)[0].c ?? 0;
 
-          IF $exists = 0 {
+          IF $exists = 0 AND $ab.a IS NOT NONE AND $bc.c IS NOT NONE {
             LET $ts_b = (SELECT weight FROM trace_state WHERE trace = $ab.b AND archived = false LIMIT 1)[0].weight ?? 0.5;
             LET $ts_c = (SELECT weight FROM trace_state WHERE trace = $bc.c AND archived = false LIMIT 1)[0].weight ?? 0.5;
 
@@ -157,7 +157,7 @@ DEFINE FUNCTION OVERWRITE fn::pln_engine_tick() {
         LET $reverse_exists = (SELECT count() AS c FROM activates
           WHERE in = $e.b AND out = $e.a GROUP ALL)[0].c ?? 0;
 
-        IF $reverse_exists = 0 {
+        IF $reverse_exists = 0 AND $e.b IS NOT NONE AND $e.a IS NOT NONE {
           LET $ts_a = (SELECT weight FROM trace_state WHERE trace = $e.a AND archived = false LIMIT 1)[0].weight ?? 0.5;
           LET $ts_b = (SELECT weight FROM trace_state WHERE trace = $e.b AND archived = false LIMIT 1)[0].weight ?? 0.5;
 
@@ -194,7 +194,7 @@ DEFINE FUNCTION OVERWRITE fn::pln_engine_tick() {
           LET $ac_exists = (SELECT count() AS cnt FROM activates
             WHERE in = $a.source AND out = $c.source GROUP ALL)[0].cnt ?? 0;
 
-          IF $ac_exists = 0 AND $a.source != $c.source {
+          IF $ac_exists = 0 AND $a.source != $c.source AND $a.source IS NOT NONE AND $c.source IS NOT NONE {
             LET $result = fn::pln_abduction($a.weight, 0.7, $c.weight, 0.7);
             IF ($result.confidence ?? 0) > $min_conf {
               RELATE ($a.source)->activates->($c.source) SET
@@ -465,8 +465,6 @@ DEFINE FUNCTION OVERWRITE fn::brain_tick($n: int) {
     IF $x % $freq_deep = 0 {
       fn::build_world_model();
       fn::introspect();
-      -- PLN unified rule engine (replaces simple pln_infer_chain)
-      fn::pln_engine_tick();
       fn::extract_all_sections();
       CREATE config_snapshot SET config = $cfg, cycle = (SELECT * FROM kernel_state LIMIT 1)[0].cycle ?? 0;
     };

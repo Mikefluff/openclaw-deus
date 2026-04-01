@@ -21,10 +21,9 @@ async function main() {
   await db.use({ namespace: 'deus', database: 'runtime' });
   console.log('Membrane connected');
 
-  // Fix tables
-  await db.query('DEFINE TABLE OVERWRITE kernel_request SCHEMALESS');
-  await db.query('DEFINE TABLE OVERWRITE brain_action SCHEMALESS');
-  await db.query('DEFINE TABLE OVERWRITE activates SCHEMALESS TYPE RELATION FROM trace TO trace');
+  // Ensure tables exist (no OVERWRITE — don't drop existing schema)
+  await db.query('DEFINE TABLE IF NOT EXISTS kernel_request SCHEMALESS');
+  await db.query('DEFINE TABLE IF NOT EXISTS brain_action SCHEMALESS');
 
   // Kill conflicting events
   await db.query('UPDATE kernel_state SET running = false');
@@ -76,8 +75,12 @@ async function main() {
       );
     }
 
-    // 2. Brain processes sensory + ticks (single call)
-    await db.query('RETURN fn::brain_tick_auto()');
+    // 2. Brain processes sensory + ticks
+    try {
+      await db.query('RETURN fn::brain_tick_auto()');
+    } catch (e: any) {
+      if (tick % 100 === 0) console.warn(`  brain_tick_auto error: ${e.message?.slice(0, 80)}`);
+    }
 
     // 3. Brain's action requests → execute in world → feed consequence
     const requests = await db.query(
