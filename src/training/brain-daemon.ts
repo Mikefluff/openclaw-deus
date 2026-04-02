@@ -75,24 +75,22 @@ async function main() {
         };
       `);
 
-      // Hormones + affect (every 5th tick)
-      if (cycle % 5 === 0) {
+      // Hormones + affect forward (every 10th tick)
+      if (cycle % 10 === 0) {
         await db.query(`
           fn::hormone_decay_tick();
           fn::hormone_drive();
           fn::affect_forward_output();
           fn::apply_config_deltas();
-          UPDATE nn_node SET value = value * 0.9995 WHERE model = 'affect' AND layer = 'input' AND value > 0.01;
           fn::ecan_collect_rent();
         `);
+        // Accumulator decay separately (lightweight)
+        await db.query("UPDATE nn_node SET value = value * 0.9995 WHERE model = 'affect' AND layer = 'input' AND value > 0.01");
       }
 
-      // Affect backward (every 20th tick — heavy)
-      if (cycle % 20 === 0) {
-        await db.query(`
-          LET $cfg = (SELECT * FROM _cfg_cache LIMIT 1)[0].cfg ?? {};
-          fn::affect_backward_targeted($cfg.affect_lr ?? 0.05);
-        `);
+      // Affect backward (every 50th tick — heaviest single call)
+      if (cycle % 50 === 0) {
+        await db.query("fn::affect_backward_targeted(0.05)");
       }
 
       // Agency (every 2nd tick)
@@ -117,31 +115,30 @@ async function main() {
           WHERE archived = false AND freshness > 0.01;
       `);
 
-      // Low frequency (every 20th tick)
-      if (cycle % 20 === 0) {
+      // Low frequency (every 30th tick)
+      if (cycle % 30 === 0) {
         await db.query(`
-          LET $cfg = (SELECT * FROM _cfg_cache LIMIT 1)[0].cfg ?? {};
-          fn::consolidate_episodic($cfg.consolidation_min_count ?? 3);
           fn::consolidation_replay();
           fn::edge_sprout();
           fn::edge_death();
           fn::match_all_patterns();
           fn::ecan_create_hebbian();
           fn::ecan_forget();
-          fn::predictor_replay($cfg.predictor_replay_batch ?? 10);
         `);
+        // Predictor replay: 1 transition at a time (322ms each, not 1.8s for 10)
+        await db.query('fn::predictor_replay(1)').catch(() => {});
       }
 
-      // Deep (every 100th tick)
-      if (cycle % 100 === 0) {
-        await db.query(`
-          fn::build_world_model();
-          fn::introspect();
-          fn::introspect_self();
-          fn::extract_all_sections();
-          fn::extract_causal_patterns();
-          fn::pln_infer_chain();
-        `);
+      // Deep (every 200th tick — heavy ops spread across ticks)
+      if (cycle % 200 === 0) {
+        await db.query('fn::introspect_self()');
+        await db.query('fn::extract_causal_patterns()');
+        await db.query('fn::pln_infer_chain()');
+      }
+      if (cycle % 500 === 0) {
+        await db.query('fn::extract_all_sections()').catch(() => {});
+        await db.query('fn::build_world_model()').catch(() => {});
+        await db.query('fn::introspect()').catch(() => {});
       }
 
       cycle++;
