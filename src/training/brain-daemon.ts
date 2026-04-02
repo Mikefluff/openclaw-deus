@@ -9,6 +9,7 @@
  */
 
 import { Surreal } from 'surrealdb';
+import { PhysicsWorld } from './physics-world';
 import * as fs from 'fs';
 
 const STATUS_FILE = 'brain-status.json';
@@ -32,9 +33,14 @@ async function main() {
   db.subscribe('reconnecting', () => console.log('[reconnecting]'));
   db.subscribe('connected', () => console.log('[connected]'));
 
+  // World simulation
+  const world = new PhysicsWorld();
+  let seqCounter = 0;
+  let actionCount = 0;
+
   // Start brain
   await db.query('UPDATE kernel_state SET running = true');
-  console.log('Brain daemon started. Status → ' + STATUS_FILE);
+  console.log(`Brain daemon started. World: ${world.getObjectCount()} objects. Status → ${STATUS_FILE}`);
   console.log('Press Ctrl+C to stop.\n');
 
   let tickCount = 0;
@@ -46,6 +52,20 @@ async function main() {
 
   while (running) {
     try {
+      // World tick → feed ambient sensory events
+      const ambient = world.tick();
+      for (const t of ambient) {
+        seqCounter++;
+        await db.query(
+          `CREATE sensory_input CONTENT {
+            seq: $seq, action_id: $action_id, channels: $channels,
+            speech: $speech, valence: $valence, object_idx: $object_idx,
+            is_consequence: false
+          }`,
+          { seq: seqCounter, action_id: t.action_id, channels: t.channels, speech: t.speech, valence: t.valence, object_idx: t.object_idx },
+        );
+      }
+
       // Process sensory inputs
       await db.query(`
         LET $state = (SELECT * FROM kernel_state LIMIT 1)[0];
@@ -93,9 +113,35 @@ async function main() {
         await db.query("fn::affect_backward_targeted(0.05)");
       }
 
-      // Agency (every 2nd tick)
+      // Agency (every 2nd tick) + execute actions in world
       if (cycle % 2 === 0) {
         await db.query('fn::agency_tick($c)', { c: cycle });
+
+        // Read pending action requests → execute in world → feed consequence
+        const requests = await db.query(
+          "SELECT * FROM kernel_request WHERE type = 'action' AND status = 'pending' LIMIT 5",
+        ) as any;
+        const reqs = Array.isArray(requests?.[0]) ? requests[0] : [];
+        for (const req of reqs) {
+          const payload = req.payload || {};
+          const action_id = typeof payload.action_id === 'number' ? payload.action_id % 6 : Math.floor(Math.random() * 6);
+          const consequence = world.act(action_id);
+          actionCount++;
+          seqCounter++;
+          await db.query(
+            `CREATE sensory_input CONTENT {
+              seq: $seq, action_id: $action_id, channels: $channels,
+              speech: $speech, valence: $valence, object_idx: $object_idx,
+              is_consequence: true, target_content: $target
+            }`,
+            {
+              seq: seqCounter, action_id: consequence.action_id, channels: consequence.channels,
+              speech: consequence.speech, valence: consequence.valence, object_idx: consequence.object_idx,
+              target: payload.target_content ?? '',
+            },
+          );
+          if (req.id) await db.query("UPDATE $id SET status = 'completed'", { id: req.id });
+        }
       }
 
       // Medium frequency (every 5th tick)
@@ -156,6 +202,9 @@ async function main() {
           uptime_s: Math.floor((Date.now() - t0) / 1000),
           ticks: tickCount,
           ticks_per_sec: (tickCount / ((Date.now() - t0) / 1000)).toFixed(1),
+          actions: actionCount,
+          world_level: world.getLevel(),
+          world_objects: world.getObjectCount(),
           ...report,
         };
         fs.writeFileSync(STATUS_FILE, JSON.stringify(status, null, 2));
@@ -168,6 +217,7 @@ async function main() {
           ` Q=${report.q_learning?.pairs ?? 0}` +
           ` CE=${report.cognitive_events ?? 0}` +
           ` grounded=${lang.grounded_symbols ?? 0}` +
+          ` actions=${actionCount}` +
           ` tps=${status.ticks_per_sec}`,
         );
       } catch {}
