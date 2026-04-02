@@ -10,9 +10,12 @@
 
 import { Surreal } from 'surrealdb';
 import { PhysicsWorld } from './physics-world';
+import { PhysicsWorld3D } from './physics-world-3d';
 import * as fs from 'fs';
 import * as http from 'http';
 import * as path from 'path';
+
+const USE_3D = process.argv.includes('--3d');
 
 const STATUS_FILE = 'brain-status.json';
 const STATUS_INTERVAL = 10_000; // 10s
@@ -35,8 +38,8 @@ async function main() {
   db.subscribe('reconnecting', () => console.log('[reconnecting]'));
   db.subscribe('connected', () => console.log('[connected]'));
 
-  // World simulation
-  const world = new PhysicsWorld();
+  // World simulation (--3d flag for 3D physics)
+  const world: any = USE_3D ? new PhysicsWorld3D() : new PhysicsWorld();
   let seqCounter = 0;
   let actionCount = 0;
 
@@ -256,6 +259,7 @@ async function main() {
       try {
         const r = await db.query('RETURN fn::training_report()') as any;
         const report = r?.[0] ?? {};
+        const positions = USE_3D ? (world as PhysicsWorld3D).getAllPositions() : [];
         const status = {
           timestamp: new Date().toISOString(),
           uptime_s: Math.floor((Date.now() - t0) / 1000),
@@ -264,6 +268,8 @@ async function main() {
           actions: actionCount,
           world_level: world.getLevel(),
           world_objects: world.getObjectCount(),
+          world_3d: USE_3D,
+          object_positions: positions,
           ...report,
         };
         latestStatus = status;
