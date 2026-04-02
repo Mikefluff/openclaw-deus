@@ -43,12 +43,22 @@ DEFINE FUNCTION OVERWRITE fn::brain_fast() {
     energy = IF $slept THEN math::min([1.5, $new_energy + ($cfg.sleep_energy_restore ?? 0.5)]) ELSE $new_energy END,
     fatigue = IF $slept THEN math::max([0.0, ($state.fatigue ?? 0.0) * 0.5]) ELSE math::min([1.0, ($state.fatigue ?? 0.0) + ($cfg.fatigue_rate ?? 0.005)]) END;
 
-  -- Attention
+  -- Attention (writes trace_state — only fast pump touches it)
   fn::sti_rent();
   fn::hebbian_bind_af();
 
-  -- Agency (every 2nd)
+  -- Agency (every 2nd — writes kernel_request)
   IF ($state.cycle ?? 0) % 200 = 0 { fn::agency_tick($state.cycle ?? 0); };
+
+  -- Trace maintenance (trace_state owned by fast pump)
+  UPDATE trace_state SET freshness = freshness * 0.9995
+    WHERE archived = false AND freshness > 0.01;
+
+  -- Learning ops that touch trace_state (every 5th tick)
+  IF ($state.cycle ?? 0) % 500 = 0 {
+    fn::active_inference($cfg.active_inference_threshold ?? 0.3, $cfg.active_inference_limit ?? 10);
+    fn::forget_traces($cfg.forget_weight_threshold ?? 0.02, $cfg.forget_freshness_threshold ?? 0.03);
+  };
 
   RETURN true;
 };
@@ -60,6 +70,7 @@ DEFINE FUNCTION OVERWRITE fn::brain_medium() {
   IF ($state.running ?? false) = false { RETURN false; };
   LET $cfg = $state.config ?? {};
 
+  -- Writes ONLY to: nn_node, activates, hebbian (NOT kernel_state, NOT trace_state)
   fn::hormone_decay_tick();
   fn::hormone_drive();
   fn::affect_forward_output();
@@ -69,11 +80,7 @@ DEFINE FUNCTION OVERWRITE fn::brain_medium() {
 
   UPDATE nn_node SET value = value * 0.9995
     WHERE model = 'affect' AND layer = 'input' AND value > 0.01;
-  UPDATE trace_state SET freshness = freshness * 0.9995
-    WHERE archived = false AND freshness > 0.01;
 
-  fn::active_inference($cfg.active_inference_threshold ?? 0.3, $cfg.active_inference_limit ?? 10);
-  fn::forget_traces($cfg.forget_weight_threshold ?? 0.02, $cfg.forget_freshness_threshold ?? 0.03);
   fn::ecan_update_hebbian();
 
   -- Sleep consolidation (only the learning part, NOT energy restore)
