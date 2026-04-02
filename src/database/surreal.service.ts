@@ -44,16 +44,18 @@ export class SurrealService implements OnModuleInit, OnModuleDestroy {
     if (config) this.config = { ...this.config, ...config };
     try {
       this.logger.log(`Connecting to SurrealDB at ${this.config.url}...`);
-      await this.db.connect(this.config.url);
+      await this.db.connect(this.config.url, {
+        namespace: this.config.namespace,
+        database: this.config.database,
+        reconnect: { enabled: true, attempts: -1, retryDelay: 1000, retryDelayMax: 10000 },
+      });
       this.logger.log('SurrealDB: signing in...');
       await this.db.signin({ username: this.config.username, password: this.config.password });
       this.logger.log('SurrealDB: ensuring namespace/database...');
-      // Ensure namespace and database exist (SurrealDB 3.0 doesn't auto-create)
       try {
         await this.db.query(`DEFINE NAMESPACE IF NOT EXISTS ${this.config.namespace}`);
         await this.db.query(`USE NS ${this.config.namespace}; DEFINE DATABASE IF NOT EXISTS ${this.config.database}`);
       } catch {}
-      await this.db.use({ namespace: this.config.namespace, database: this.config.database });
       this.connected = true;
       this.logger.log(`Connected to SurrealDB (${this.config.namespace}/${this.config.database})`);
     } catch (error) {
