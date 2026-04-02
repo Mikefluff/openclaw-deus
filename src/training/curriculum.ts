@@ -200,9 +200,9 @@ async function main() {
       console.log(`  Level up → ${world.getLevel()} (${world.getObjectCount()} objects)`);
     }
 
-    // Clear queues
+    // Clear input queue (brain keeps ticking, just new sensory data)
     await db.query('DELETE sensory_input; DELETE kernel_request');
-    await db.query('UPDATE kernel_state SET sensory_seq = 0, running = true, energy = 1.0, fatigue = 0.0');
+    await db.query('UPDATE kernel_state SET sensory_seq = 0, running = true');
 
     if (phase.worldTicks > 0) {
       // World training phase
@@ -233,7 +233,7 @@ async function main() {
       console.log('  Continuing anyway — brain needs more time, not a restart.\n');
     }
 
-    await db.query('UPDATE kernel_state SET running = false');
+    // Brain keeps ticking between phases — no stop/start
   }
 
   // Final report
@@ -275,10 +275,10 @@ async function runWorldPhase(db: Surreal, world: PhysicsWorld, phase: PhaseConfi
       );
     }
 
-    // Brain tick
+    // Brain tick (processes sensory, creates action requests)
     await db.query('RETURN fn::brain_tick_auto()').catch(() => {});
 
-    // Action requests → world → consequence
+    // Read pending actions
     const requests = await db.query(
       "SELECT * FROM kernel_request WHERE type = 'action' AND status = 'pending' LIMIT 5",
     ) as any;
