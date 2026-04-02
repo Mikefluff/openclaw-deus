@@ -1,12 +1,17 @@
 /**
- * Brain Daemon v2: event-driven, non-blocking.
+ * Brain Daemon v3: THIN MEMBRANE.
  *
- * Brain circuits fire independently at their own frequencies.
- * No await chains. Fire and forget. Like a real brain.
+ * Brain ticks INSIDE SurrealDB via ASYNC events on clock tables.
+ * This daemon only:
+ *   1. Feeds world events → sensory_input table
+ *   2. Reads kernel_request → executes in world → feeds consequence
+ *   3. Kicks clock tables periodically (re-trigger ASYNC events)
+ *   4. Serves dashboard
+ *
+ * Brain logic: ZERO. All in stored procedures.
  *
  * Start: npx tsx src/training/brain-daemon.ts [--eden|--3d]
  * Dashboard: http://localhost:3333
- * Status: cat brain-status.json
  */
 
 import { Surreal } from 'surrealdb';
@@ -39,7 +44,6 @@ async function main() {
   let latestStatus: any = {};
   let seqCounter = 0;
   let actionCount = 0;
-  let tickCount = 0;
 
   function log(msg: string) {
     activityLog.unshift(`[${new Date().toLocaleTimeString()}] ${msg}`);
@@ -59,19 +63,21 @@ async function main() {
   });
   server.listen(3333, () => console.log('Dashboard → http://localhost:3333'));
 
-  await db.query('UPDATE kernel_state SET running = true');
-  console.log(`Brain daemon v2. World: ${USE_EDEN ? 'Eden' : USE_3D ? '3D' : 'flat'} (${world.getObjectCount()} objects)`);
-  console.log('Parallel circuits. Fire and forget.\n');
+  // Start brain (ASYNC events inside SurrealDB)
+  await db.query('RETURN fn::start_brain()');
+  console.log(`Membrane v3. Brain ticks INSIDE SurrealDB.`);
+  console.log(`World: ${USE_EDEN ? 'Eden' : USE_3D ? '3D' : 'flat'} (${world.getObjectCount()} objects)\n`);
 
   const t0 = Date.now();
 
   // ═══════════════════════════════════════════
-  // CIRCUIT: Sensory — world tick + feed inputs (50ms interval)
-  // Only this circuit is synchronous with the world.
+  // WORLD LOOP: feed sensory + execute actions (50ms)
+  // This is the ONLY thing membrane does to the brain.
   // ═══════════════════════════════════════════
-  const sensoryLoop = setInterval(async () => {
+  const worldLoop = setInterval(async () => {
     if (!running) return;
     try {
+      // World tick → ambient events
       const ambient = world.tick();
       for (const t of ambient) {
         if (t.action_id === -1) log(`mama: ${t.debug_label ?? 'speech'}`);
@@ -83,87 +89,10 @@ async function main() {
         }`, { seq: seqCounter, action_id: t.action_id, channels: t.channels, speech: t.speech, valence: t.valence, object_idx: t.object_idx }).catch(() => {});
       }
 
-      // Process pending inputs
-      db.query(`
-        LET $state = (SELECT * FROM kernel_state LIMIT 1)[0];
-        IF $state.running ?? false = true {
-          LET $cursor = $state.sensory_seq ?? 0;
-          LET $inputs = (SELECT * FROM sensory_input WHERE seq > $cursor LIMIT 20);
-          FOR $inp IN $inputs { fn::process_one_input($inp); };
-          IF array::len($inputs) > 0 {
-            LET $seqs = $inputs.map(|$i| $i.seq ?? 0);
-            UPDATE kernel_state SET sensory_seq = math::max($seqs) ?? $cursor;
-          };
-        };
-      `).catch(() => {});
-    } catch {}
-  }, 50);
-
-  // ═══════════════════════════════════════════
-  // CIRCUIT: Vitals — energy, fatigue, sleep (200ms)
-  // ═══════════════════════════════════════════
-  const vitalsLoop = setInterval(() => {
-    if (!running) return;
-    db.query(`
-      LET $cfg = (SELECT * FROM kernel_state LIMIT 1)[0].config ?? {};
-      UPDATE _cfg_cache SET cfg = $cfg;
-      UPDATE kernel_state SET
-        cycle = (cycle ?? 0) + 100,
-        energy = math::max([0.0, (energy ?? 1.0) - ($cfg.energy_drain_rate ?? 0.002) * (1.0 + (fatigue ?? 0.0))]),
-        fatigue = math::min([1.0, (fatigue ?? 0.0) + ($cfg.fatigue_rate ?? 0.005)]);
-      LET $e = (SELECT energy FROM kernel_state LIMIT 1)[0].energy ?? 0;
-      IF $e < ($cfg.sleep_threshold ?? 0.15) {
-        fn::sleep_consolidation($cfg.nn_decay_rate ?? 0.001);
-        UPDATE kernel_state SET
-          energy = math::min([1.5, energy + ($cfg.sleep_energy_restore ?? 0.5)]),
-          fatigue = math::max([0.0, fatigue * 0.5]);
-      };
-    `).catch(() => {});
-    tickCount++;
-  }, 200);
-
-  // ═══════════════════════════════════════════
-  // CIRCUIT: Attention — STI rent + Hebbian bind + diffusion (100ms)
-  // ═══════════════════════════════════════════
-  const attentionLoop = setInterval(() => {
-    if (!running) return;
-    db.query("UPDATE trace_state SET freshness = freshness * 0.9995 WHERE archived = false AND freshness > 0.01").catch(() => {});
-    db.query('fn::sti_rent()').catch(() => {});
-    db.query('fn::hebbian_bind_af()').catch(() => {});
-  }, 100);
-
-  // STI diffusion (300ms)
-  const diffuseLoop = setInterval(() => {
-    if (!running) return;
-    db.query('fn::sti_diffuse()').catch(() => {});
-  }, 300);
-
-  // ═══════════════════════════════════════════
-  // CIRCUIT: Affect — hormones + forward/backward (1s / 5s)
-  // ═══════════════════════════════════════════
-  const hormoneLoop = setInterval(() => {
-    if (!running) return;
-    db.query(`
-      fn::hormone_decay_tick(); fn::hormone_drive();
-      fn::affect_forward_output(); fn::apply_config_deltas();
-      fn::ecan_collect_rent();
-    `).catch(() => {});
-    db.query("UPDATE nn_node SET value = value * 0.9995 WHERE model = 'affect' AND layer = 'input' AND value > 0.01").catch(() => {});
-  }, 1000);
-
-  const backwardLoop = setInterval(() => {
-    if (!running) return;
-    db.query("fn::affect_backward_targeted(0.05)").catch(() => {});
-  }, 5000);
-
-  // ═══════════════════════════════════════════
-  // CIRCUIT: Agency — action selection + world execution (500ms)
-  // ═══════════════════════════════════════════
-  const agencyLoop = setInterval(async () => {
-    if (!running) return;
-    try {
-      await db.query('fn::agency_tick(0)');
-      const requests = await db.query("SELECT * FROM kernel_request WHERE type = 'action' AND status = 'pending' LIMIT 5") as any;
+      // Read brain's action requests → execute in world → feed consequence
+      const requests = await db.query(
+        "SELECT * FROM kernel_request WHERE type = 'action' AND status = 'pending' LIMIT 5",
+      ) as any;
       const reqs = Array.isArray(requests?.[0]) ? requests[0] : [];
       for (const req of reqs) {
         const payload = req.payload || {};
@@ -182,6 +111,7 @@ async function main() {
           target: payload.target_content ?? '',
         }).catch(() => {});
         if (req.id) db.query("UPDATE $id SET status = 'completed'", { id: req.id }).catch(() => {});
+
         for (const fb of world.drainFeedback()) {
           log(`mama: ${fb.debug_label ?? 'feedback'}`);
           seqCounter++;
@@ -193,54 +123,22 @@ async function main() {
         }
       }
     } catch {}
-  }, 500);
+  }, 50);
 
   // ═══════════════════════════════════════════
-  // CIRCUIT: Learning — spreading, forgetting, edges (2s)
+  // CLOCK KICKER: re-trigger ASYNC events at different rates
+  // Brain circuits run inside SurrealDB, we just kick the clocks.
   // ═══════════════════════════════════════════
-  const learningLoop = setInterval(() => {
-    if (!running) return;
-    db.query(`
-      LET $cfg = (SELECT * FROM _cfg_cache LIMIT 1)[0].cfg ?? {};
-      fn::active_inference($cfg.active_inference_threshold ?? 0.3, $cfg.active_inference_limit ?? 10);
-      fn::forget_traces($cfg.forget_weight_threshold ?? 0.02, $cfg.forget_freshness_threshold ?? 0.03);
-      fn::apply_meta_modulation();
-      fn::ecan_update_hebbian();
-    `).catch(() => {});
-  }, 2000);
+  const kick = (table: string) => db.query(`UPDATE ${table} SET t = time::now()`).catch(() => {});
 
-  // ═══════════════════════════════════════════
-  // CIRCUIT: Plasticity — edges, consolidation, predictor (5s)
-  // ═══════════════════════════════════════════
-  const plasticityLoop = setInterval(() => {
-    if (!running) return;
-    db.query('fn::consolidation_replay()').catch(() => {});
-    db.query('fn::edge_sprout()').catch(() => {});
-    db.query('fn::edge_death()').catch(() => {});
-    db.query('fn::ecan_create_hebbian()').catch(() => {});
-    db.query('fn::predictor_replay(1)').catch(() => {});
-  }, 5000);
-
-  // ═══════════════════════════════════════════
-  // CIRCUIT: Deep — introspection, PLN, sheaves, level-up (30s)
-  // ═══════════════════════════════════════════
-  const deepLoop = setInterval(async () => {
-    if (!running) return;
-    db.query('fn::introspect_self()').catch(() => {});
-    db.query('fn::extract_causal_patterns()').catch(() => {});
-    db.query('fn::pln_infer_chain()').catch(() => {});
-    db.query('fn::extract_all_sections()').catch(() => {});
-    db.query('fn::build_world_model()').catch(() => {});
-    // Level-up
-    try {
-      const mat = await db.query('RETURN fn::compute_maturity()') as any;
-      const maturity = mat?.[0]?.maturity ?? 0;
-      if (maturity > 0.55 && world.getLevel() < 2) {
-        (world as any).advanceStage?.() || (world as any).levelUp?.();
-        log(`LEVEL UP → stage ${world.getLevel()} (${world.getObjectCount()} objects, maturity=${maturity.toFixed(2)})`);
-      }
-    } catch {}
-  }, 30000);
+  const kickSensory    = setInterval(() => kick('_clock_sensory'), 100);
+  const kickVitals     = setInterval(() => kick('_clock_vitals'), 200);
+  const kickAttention  = setInterval(() => kick('_clock_attention'), 150);
+  const kickAffect     = setInterval(() => kick('_clock_affect'), 1000);
+  const kickAgency     = setInterval(() => kick('_clock_agency'), 500);
+  const kickLearning   = setInterval(() => kick('_clock_learning'), 2000);
+  const kickPlasticity = setInterval(() => kick('_clock_plasticity'), 5000);
+  const kickDeep       = setInterval(() => kick('_clock_deep'), 30000);
 
   // ═══════════════════════════════════════════
   // STATUS: periodic report (10s)
@@ -254,18 +152,16 @@ async function main() {
         ? (world as EdenGarden).getSnapshot().objects.map((o: any) => ({ idx: o.idx, x: o.x, y: o.y, z: o.z, name: o.name, color: o.color }))
         : USE_3D ? (world as PhysicsWorld3D).getAllPositions() : [];
 
+      const uptime = Math.floor((Date.now() - t0) / 1000);
       const status = {
         timestamp: new Date().toISOString(),
-        uptime_s: Math.floor((Date.now() - t0) / 1000),
-        ticks: tickCount,
-        ticks_per_sec: (tickCount / Math.max(1, (Date.now() - t0) / 1000)).toFixed(1),
+        uptime_s: uptime,
         actions: actionCount,
         world_level: world.getLevel(),
         world_objects: world.getObjectCount(),
         world_3d: USE_3D || USE_EDEN,
         world_eden: USE_EDEN,
         eden_stage: USE_EDEN ? (world as EdenGarden).getStage() : undefined,
-        eden_relations: USE_EDEN ? (world as EdenGarden).getSnapshot().relations : undefined,
         object_positions: positions,
         ...report,
       };
@@ -274,41 +170,41 @@ async function main() {
 
       const lang = report.language ?? {};
       console.log(
-        `[${status.uptime_s}s] cycle=${report.cycle}` +
+        `[${uptime}s] cycle=${report.cycle}` +
         ` traces=${report.traces?.active ?? 0}` +
         ` Q=${report.q_learning?.pairs ?? 0}` +
         ` edges=${report.edges ?? 0}` +
         ` grounded=${lang.grounded_symbols ?? 0}` +
-        ` actions=${actionCount}` +
-        ` tps=${status.ticks_per_sec}`,
+        ` actions=${actionCount}`,
       );
+
+      // Auto level-up
+      if (report.maturity?.maturity > 0.55 && world.getLevel() < 2) {
+        (world as any).advanceStage?.() || (world as any).levelUp?.();
+        log(`LEVEL UP → stage ${world.getLevel()} (${world.getObjectCount()} objects)`);
+      }
     } catch {}
   }, 10000);
 
   // ═══════════════════════════════════════════
   // SHUTDOWN
   // ═══════════════════════════════════════════
-  const shutdown = async () => {
-    clearInterval(sensoryLoop);
-    clearInterval(vitalsLoop);
-    clearInterval(attentionLoop);
-    clearInterval(diffuseLoop);
-    clearInterval(hormoneLoop);
-    clearInterval(backwardLoop);
-    clearInterval(agencyLoop);
-    clearInterval(learningLoop);
-    clearInterval(plasticityLoop);
-    clearInterval(deepLoop);
-    clearInterval(statusLoop);
-    await db.query('UPDATE kernel_state SET running = false').catch(() => {});
-    server.close();
-    console.log('Brain stopped.');
-    await db.close();
-    process.exit(0);
-  };
-
-  // Wait for shutdown signal
-  const check = setInterval(() => { if (!running) { clearInterval(check); shutdown(); } }, 500);
+  const check = setInterval(async () => {
+    if (!running) {
+      clearInterval(check);
+      clearInterval(worldLoop);
+      clearInterval(kickSensory); clearInterval(kickVitals);
+      clearInterval(kickAttention); clearInterval(kickAffect);
+      clearInterval(kickAgency); clearInterval(kickLearning);
+      clearInterval(kickPlasticity); clearInterval(kickDeep);
+      clearInterval(statusLoop);
+      await db.query('RETURN fn::stop_brain()').catch(() => {});
+      server.close();
+      console.log('Brain stopped.');
+      await db.close();
+      process.exit(0);
+    }
+  }, 500);
 }
 
 main().catch(e => { console.error('FATAL:', e.message); process.exit(1); });
