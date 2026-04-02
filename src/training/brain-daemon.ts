@@ -11,11 +11,13 @@
 import { Surreal } from 'surrealdb';
 import { PhysicsWorld } from './physics-world';
 import { PhysicsWorld3D } from './physics-world-3d';
+import { EdenGarden } from './eden';
 import * as fs from 'fs';
 import * as http from 'http';
 import * as path from 'path';
 
 const USE_3D = process.argv.includes('--3d');
+const USE_EDEN = process.argv.includes('--eden');
 
 const STATUS_FILE = 'brain-status.json';
 const STATUS_INTERVAL = 10_000; // 10s
@@ -38,8 +40,8 @@ async function main() {
   db.subscribe('reconnecting', () => console.log('[reconnecting]'));
   db.subscribe('connected', () => console.log('[connected]'));
 
-  // World simulation (--3d flag for 3D physics)
-  const world: any = USE_3D ? new PhysicsWorld3D() : new PhysicsWorld();
+  // World simulation
+  const world: any = USE_EDEN ? new EdenGarden() : USE_3D ? new PhysicsWorld3D() : new PhysicsWorld();
   let seqCounter = 0;
   let actionCount = 0;
 
@@ -269,7 +271,8 @@ async function main() {
       try {
         const r = await db.query('RETURN fn::training_report()') as any;
         const report = r?.[0] ?? {};
-        const positions = USE_3D ? (world as PhysicsWorld3D).getAllPositions() : [];
+        const positions = USE_EDEN ? (world as EdenGarden).getSnapshot().objects.map(o => ({ idx: o.idx, x: o.x, y: o.y, z: o.z, name: o.name, color: o.color }))
+          : USE_3D ? (world as PhysicsWorld3D).getAllPositions() : [];
         const status = {
           timestamp: new Date().toISOString(),
           uptime_s: Math.floor((Date.now() - t0) / 1000),
@@ -278,7 +281,10 @@ async function main() {
           actions: actionCount,
           world_level: world.getLevel(),
           world_objects: world.getObjectCount(),
-          world_3d: USE_3D,
+          world_3d: USE_3D || USE_EDEN,
+          world_eden: USE_EDEN,
+          eden_stage: USE_EDEN ? (world as EdenGarden).getStage() : undefined,
+          eden_relations: USE_EDEN ? (world as EdenGarden).getSnapshot().relations : undefined,
           object_positions: positions,
           ...report,
         };
