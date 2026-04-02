@@ -217,11 +217,21 @@ async function main() {
         `);
       }
 
-      // Freshness decay (every tick)
+      // Freshness decay + STI rent (every tick)
       await db.query(`
         UPDATE trace_state SET freshness = freshness * 0.9995
           WHERE archived = false AND freshness > 0.01;
       `);
+      await db.query('fn::sti_rent()');
+
+      // Hebbian bind: whatever is in AF together gets linked
+      // This is where language binding ACTUALLY happens — via co-activation
+      await db.query('fn::hebbian_bind_af()').catch(() => {});
+
+      // STI diffusion: activation spreads along learned links
+      if (cycle % 3 === 0) {
+        await db.query('fn::sti_diffuse()').catch(() => {});
+      }
 
       // Low frequency (every 30th tick)
       if (cycle % 30 === 0) {

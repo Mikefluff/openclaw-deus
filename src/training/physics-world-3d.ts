@@ -100,6 +100,7 @@ export class PhysicsWorld3D {
   private mama_present = true;
   private level = 0;
   private available: number[] = [];
+  private lastInteractedObject = -1; // mama names what baby just touched
   pendingFeedback: SensoryTransition3D[] = [];
 
   constructor() {
@@ -214,6 +215,7 @@ export class PhysicsWorld3D {
       ? object_idx : avail[Math.floor(Math.random() * avail.length)];
 
     const act = Math.max(0, Math.min(5, action_id));
+    this.lastInteractedObject = idx; // mama will name this
     const body = this.bodies[idx];
     const obj = OBJECTS_3D[idx];
     if (!body) return { action_id: act, object_idx: idx, channels: new Array(13).fill(0), speech: SILENCE, valence: 0 };
@@ -315,11 +317,14 @@ export class PhysicsWorld3D {
       }
     }
 
-    // Mama speech
+    // Mama speech — preferentially names what baby is interacting with
     if (this.mama_present && Math.random() < 0.15) {
       const avail = this.available.filter(i => !this.broken.has(i));
       if (avail.length > 0) {
-        const i = avail[Math.floor(Math.random() * avail.length)];
+        // 70% chance: name the object baby last touched. 30%: random.
+        const i = (this.lastInteractedObject >= 0 && avail.includes(this.lastInteractedObject) && Math.random() < 0.7)
+          ? this.lastInteractedObject
+          : avail[Math.floor(Math.random() * avail.length)];
         transitions.push({
           action_id: -1, object_idx: i,
           channels: new Array(13).fill(0), speech: encodeSpeech(OBJECTS_3D[i].name),
