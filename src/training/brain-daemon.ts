@@ -11,6 +11,8 @@
 import { Surreal } from 'surrealdb';
 import { PhysicsWorld } from './physics-world';
 import * as fs from 'fs';
+import * as http from 'http';
+import * as path from 'path';
 
 const STATUS_FILE = 'brain-status.json';
 const STATUS_INTERVAL = 10_000; // 10s
@@ -38,6 +40,33 @@ async function main() {
   let seqCounter = 0;
   let actionCount = 0;
 
+  // Activity log for dashboard
+  const activityLog: string[] = [];
+  function log(msg: string) {
+    activityLog.unshift(`[${new Date().toLocaleTimeString()}] ${msg}`);
+    if (activityLog.length > 100) activityLog.length = 100;
+  }
+
+  // Latest status for API
+  let latestStatus: any = {};
+
+  // HTTP dashboard server
+  const DASH_PORT = 3333;
+  const dashHtml = fs.readFileSync(path.join(__dirname, 'dashboard.html'), 'utf-8');
+
+  const server = http.createServer((req, res) => {
+    if (req.url === '/api/status') {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ ...latestStatus, _log: activityLog.slice(0, 30) }));
+    } else {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(dashHtml);
+    }
+  });
+  server.listen(DASH_PORT, () => {
+    console.log(`Dashboard → http://localhost:${DASH_PORT}`);
+  });
+
   // Start brain
   await db.query('UPDATE kernel_state SET running = true');
   console.log(`Brain daemon started. World: ${world.getObjectCount()} objects. Status → ${STATUS_FILE}`);
@@ -55,6 +84,7 @@ async function main() {
       // World tick → feed ambient sensory events
       const ambient = world.tick();
       for (const t of ambient) {
+        if (t.action_id === -1) log(`mama: names obj ${t.object_idx} ${t.debug_label ?? ''}`);
         seqCounter++;
         await db.query(
           `CREATE sensory_input CONTENT {
@@ -127,6 +157,7 @@ async function main() {
           const action_id = typeof payload.action_id === 'number' ? payload.action_id % 6 : Math.floor(Math.random() * 6);
           const consequence = world.act(action_id);
           actionCount++;
+          log(`action ${action_id} on obj ${consequence.object_idx} → v=${consequence.valence.toFixed(2)} ${consequence.debug_label ?? ''}`);
           seqCounter++;
           await db.query(
             `CREATE sensory_input CONTENT {
@@ -142,8 +173,9 @@ async function main() {
           );
           if (req.id) await db.query("UPDATE $id SET status = 'completed'", { id: req.id });
 
-          // Mama feedback from action (social learning)
+          // Mama feedback (social learning)
           for (const fb of world.drainFeedback()) {
+            log(`mama: ${fb.debug_label ?? 'speech'} v=${fb.valence.toFixed(2)}`);
             seqCounter++;
             await db.query(
               `CREATE sensory_input CONTENT {
@@ -232,6 +264,7 @@ async function main() {
           world_objects: world.getObjectCount(),
           ...report,
         };
+        latestStatus = status;
         fs.writeFileSync(STATUS_FILE, JSON.stringify(status, null, 2));
 
         // Console summary

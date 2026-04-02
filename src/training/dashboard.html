@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>DEUS Brain — Live</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0a0f; color: #e0e0e0; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 13px; overflow-x: hidden; }
+.grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; padding: 8px; height: 100vh; }
+.panel { background: #12121a; border: 1px solid #2a2a3a; border-radius: 6px; padding: 10px; overflow: hidden; }
+.panel h2 { font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; border-bottom: 1px solid #2a2a3a; padding-bottom: 4px; }
+.bar { height: 16px; background: #1a1a2a; border-radius: 3px; margin: 3px 0; position: relative; overflow: hidden; }
+.bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease; }
+.bar-label { position: absolute; top: 0; left: 4px; line-height: 16px; font-size: 10px; color: #ccc; z-index: 1; }
+.bar-val { position: absolute; top: 0; right: 4px; line-height: 16px; font-size: 10px; color: #aaa; z-index: 1; }
+.stat { display: flex; justify-content: space-between; padding: 2px 0; }
+.stat-val { color: #4fc3f7; }
+.obj { display: inline-flex; flex-direction: column; align-items: center; margin: 4px; padding: 6px; background: #1a1a2a; border-radius: 6px; min-width: 60px; }
+.obj-icon { font-size: 24px; }
+.obj-name { font-size: 9px; color: #888; margin-top: 2px; }
+.obj-broken { opacity: 0.3; text-decoration: line-through; }
+.action-log { font-size: 10px; color: #aaa; max-height: 200px; overflow-y: auto; }
+.action-log div { padding: 1px 0; border-bottom: 1px solid #1a1a2a; }
+.action-log .speech { color: #ff9800; }
+.action-log .action { color: #4caf50; }
+.action-log .feedback { color: #f44336; }
+.binding { font-size: 10px; padding: 2px 0; }
+.binding-strong { color: #4caf50; }
+.binding-weak { color: #666; }
+.tps { font-size: 20px; color: #4fc3f7; font-weight: bold; }
+.uptime { color: #888; }
+canvas { width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<div class="grid">
+  <!-- Column 1: World -->
+  <div style="display:flex;flex-direction:column;gap:8px;">
+    <div class="panel" style="flex:0 0 auto;">
+      <h2>World</h2>
+      <div id="objects"></div>
+    </div>
+    <div class="panel" style="flex:1;">
+      <h2>Activity Log</h2>
+      <div id="log" class="action-log"></div>
+    </div>
+  </div>
+
+  <!-- Column 2: Brain -->
+  <div style="display:flex;flex-direction:column;gap:8px;">
+    <div class="panel" style="flex:0 0 auto;">
+      <h2>Brain State</h2>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <span class="tps" id="tps">0</span><span style="color:#888;"> tps</span>
+        <span class="uptime" id="uptime">0s</span>
+      </div>
+      <div id="brain-stats"></div>
+    </div>
+    <div class="panel" style="flex:1;">
+      <h2>Hormones</h2>
+      <div id="hormones"></div>
+      <h2 style="margin-top:10px;">Accumulators</h2>
+      <div id="accumulators"></div>
+    </div>
+    <div class="panel" style="flex:0 0 auto;">
+      <h2>Energy</h2>
+      <div id="energy-bar"></div>
+    </div>
+  </div>
+
+  <!-- Column 3: Language + Learning -->
+  <div style="display:flex;flex-direction:column;gap:8px;">
+    <div class="panel" style="flex:0 0 auto;">
+      <h2>Language</h2>
+      <div id="language"></div>
+    </div>
+    <div class="panel" style="flex:0 0 auto;">
+      <h2>Lexical Bindings</h2>
+      <div id="bindings"></div>
+    </div>
+    <div class="panel" style="flex:1;">
+      <h2>Learning</h2>
+      <div id="learning"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const OBJ_ICONS = ['⚽','🧊','📖','🛏️','🧸','🚗','🍽️','🥛','🍎','🪨','🔺','🥄'];
+const OBJ_NAMES = ['мячик','кубик','книжка','подушка','кукла','машинка','тарелка','стакан','яблоко','камень','пирамидка','ложка'];
+const HORMONE_COLORS = { dopamine: '#ff5722', cortisol: '#f44336', norepinephrine: '#2196f3', serotonin: '#4caf50' };
+const ACC_COLORS = { pred_error: '#ff9800', convergence: '#4caf50', stability: '#2196f3', reward: '#ffeb3b', novelty: '#9c27b0', pain: '#f44336', tension: '#ff5722' };
+
+let logEntries = [];
+
+function makeBar(label, value, max, color) {
+  const pct = Math.min(100, (value / max) * 100);
+  return `<div class="bar"><div class="bar-fill" style="width:${pct}%;background:${color}"></div><span class="bar-label">${label}</span><span class="bar-val">${value.toFixed(2)}</span></div>`;
+}
+
+function update(data) {
+  // TPS + uptime
+  document.getElementById('tps').textContent = data.ticks_per_sec || '0';
+  document.getElementById('uptime').textContent = `${data.uptime_s || 0}s | cycle ${data.cycle || 0}`;
+
+  // Objects
+  const nObj = data.world_objects || 5;
+  let objHtml = '';
+  for (let i = 0; i < nObj; i++) {
+    objHtml += `<span class="obj"><span class="obj-icon">${OBJ_ICONS[i] || '?'}</span><span class="obj-name">${OBJ_NAMES[i] || i}</span></span>`;
+  }
+  document.getElementById('objects').innerHTML = objHtml;
+
+  // Brain stats
+  const t = data.traces || {};
+  const q = data.q_learning || {};
+  const lang = data.language || {};
+  document.getElementById('brain-stats').innerHTML = [
+    stat('Traces', t.active || 0),
+    stat('Edges', data.edges || 0),
+    stat('Hebbian', data.hebbian || 0),
+    stat('Q-values', `${q.pairs || 0} (${q.total_updates || 0} upd)`),
+    stat('Cog Events', data.cognitive_events || 0),
+    stat('Mean RPE', (data.mean_rpe ?? 0).toFixed(4)),
+    stat('Actions', data.actions || 0),
+    stat('Predictor', data.predictor_transitions || 0),
+    stat('Causal', data.causal_links || 0),
+    stat('Self-traces', data.self_traces || 0),
+    stat('Maturity', (data.maturity?.maturity ?? 0).toFixed(3)),
+  ].join('');
+
+  // Hormones
+  const horms = data.hormones || [];
+  let hormHtml = '';
+  for (const h of horms) {
+    const name = (h.node_id || '').replace('hormone:', '');
+    hormHtml += makeBar(name, h.val || 0, 1.5, HORMONE_COLORS[name] || '#666');
+  }
+  document.getElementById('hormones').innerHTML = hormHtml;
+
+  // Accumulators
+  const accs = data.accumulators || [];
+  let accHtml = '';
+  for (const a of accs) {
+    const name = (a.node_id || '').replace('acc:', '');
+    accHtml += makeBar(name, a.val || 0, 5, ACC_COLORS[name] || '#666');
+  }
+  document.getElementById('accumulators').innerHTML = accHtml;
+
+  // Energy
+  const energy = data.energy || 0;
+  const fatigue = data.fatigue || 0;
+  document.getElementById('energy-bar').innerHTML =
+    makeBar('energy', energy, 1.5, '#4caf50') +
+    makeBar('fatigue', fatigue, 1, '#ff9800');
+
+  // Language
+  document.getElementById('language').innerHTML = [
+    stat('Words known', lang.lexical_traces || 0),
+    stat('Bindings', lang.total_bindings || 0),
+    stat('Grounded', lang.grounded_symbols || 0),
+    stat('Produced', lang.words_produced || 0),
+  ].join('');
+
+  // Top bindings
+  const bindings = lang.top_bindings || [];
+  let bindHtml = '';
+  for (const b of bindings.slice(0, 8)) {
+    const cls = (b.weight || 0) > 0.5 ? 'binding-strong' : 'binding-weak';
+    const concept = b.concept || '?';
+    const w = (b.weight || 0).toFixed(2);
+    const co = b.co_occurrence_count || 0;
+    bindHtml += `<div class="binding ${cls}">${concept} → w=${w} co=${co}</div>`;
+  }
+  document.getElementById('bindings').innerHTML = bindHtml || '<div style="color:#555">no bindings yet</div>';
+
+  // Learning
+  document.getElementById('learning').innerHTML = [
+    stat('Level', data.world_level || 0),
+    stat('Objects', data.world_objects || 0),
+    stat('Sheaf sections', data.sheaf_sections || 0),
+    stat('Speech outputs', data.speech_outputs || 0),
+  ].join('');
+
+  // Log
+  if (data._log) {
+    for (const entry of data._log) {
+      logEntries.unshift(entry);
+    }
+    if (logEntries.length > 100) logEntries = logEntries.slice(0, 100);
+    const logEl = document.getElementById('log');
+    logEl.innerHTML = logEntries.map(e => {
+      const cls = e.includes('mama:') ? 'speech' : e.includes('action') ? 'action' : 'feedback';
+      return `<div class="${cls}">${e}</div>`;
+    }).join('');
+  }
+}
+
+function stat(label, val) {
+  return `<div class="stat"><span>${label}</span><span class="stat-val">${val}</span></div>`;
+}
+
+// Poll status
+async function poll() {
+  try {
+    const r = await fetch('/api/status');
+    const data = await r.json();
+    update(data);
+  } catch {}
+  setTimeout(poll, 2000);
+}
+poll();
+</script>
+</body>
+</html>
