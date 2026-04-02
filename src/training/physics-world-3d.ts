@@ -1,18 +1,20 @@
 /**
- * 3D Physics World: rigid body simulation with cannon-es.
+ * 3D Physics World: rigid body sandbox with cannon-es.
  *
- * Brain receives 3D sensory channels:
- *   [0-2]  target position (x, y, z) relative to agent
- *   [3-5]  target velocity (dx, dy, dz) after action
- *   [6]    collision force (impact strength)
- *   [7]    distance to nearest other object
- *   [8]    surface hardness (from material)
+ * A 1m × 1m playpen with walls, floor, gravity.
+ * Objects have real mass, shape, friction, elasticity.
+ * Brain receives 13 channels per interaction — all spatially meaningful.
+ *
+ * Sensory channels:
+ *   [0-2]  target relative position (x, y, z) normalized to [-1,1]
+ *   [3-5]  target velocity after action (dx, dy, dz) normalized
+ *   [6]    impact force (0-1)
+ *   [7]    distance to nearest other object (0-1)
+ *   [8]    surface hardness (material property)
  *   [9]    surface smoothness (1 - friction)
- *   [10]   sound amplitude (from impact)
- *   [11]   deformation (soft objects)
- *   [12]   breakage (fragile objects)
- *
- * 13 channels — same count as flat world, but spatially meaningful.
+ *   [10]   sound amplitude (from impact/action)
+ *   [11]   deformation (soft objects under force)
+ *   [12]   breakage (fragile objects on hard impact)
  */
 
 import * as CANNON from 'cannon-es';
@@ -24,65 +26,75 @@ import * as CANNON from 'cannon-es';
 export interface Object3D {
   name: string;
   mass: number;
-  size: [number, number, number]; // x, y, z dimensions
-  shape: 'sphere' | 'box' | 'cylinder';
-  hardness: number;    // 0-1
-  friction: number;    // 0-1
-  fragility: number;   // 0-1
-  elasticity: number;  // 0-1 (bounciness)
+  radius: number;          // bounding sphere for simple collision
+  shape: 'sphere' | 'box';
+  halfExtents?: [number, number, number]; // for box shape
+  hardness: number;
+  friction: number;
+  fragility: number;
+  elasticity: number;
   sound_base: number;
-  color: string;       // for visualization
+  color: string;
 }
 
 export interface SensoryTransition3D {
   action_id: number;
   object_idx: number;
-  channels: number[];   // 13 sensory channels
-  speech: number[];     // 16 speech channels
+  channels: number[];
+  speech: number[];
   valence: number;
   debug_label?: string;
-  // 3D state for visualization
-  positions?: { idx: number; x: number; y: number; z: number }[];
+  positions?: { idx: number; x: number; y: number; z: number; name: string; color: string }[];
 }
 
 // ═══════════════════════════════════════════
-// OBJECTS
+// OBJECTS — designed for meaningful physics differences
 // ═══════════════════════════════════════════
 
 const OBJECTS_3D: Object3D[] = [
-  { name: 'мячик',    mass: 0.3,  size: [0.15, 0.15, 0.15], shape: 'sphere',   hardness: 0.3, friction: 0.3,  fragility: 0.05, elasticity: 0.9,  sound_base: 0.6, color: '#f44336' },
-  { name: 'кубик',    mass: 0.4,  size: [0.12, 0.12, 0.12], shape: 'box',      hardness: 0.9, friction: 0.5,  fragility: 0.1,  elasticity: 0.1,  sound_base: 0.3, color: '#2196f3' },
-  { name: 'книжка',   mass: 0.5,  size: [0.2, 0.03, 0.15],  shape: 'box',      hardness: 0.4, friction: 0.6,  fragility: 0.3,  elasticity: 0.05, sound_base: 0.2, color: '#795548' },
-  { name: 'подушка',  mass: 0.2,  size: [0.2, 0.1, 0.2],    shape: 'box',      hardness: 0.05,friction: 0.7,  fragility: 0.0,  elasticity: 0.3,  sound_base: 0.1, color: '#e0e0e0' },
-  { name: 'кукла',    mass: 0.3,  size: [0.08, 0.2, 0.08],   shape: 'cylinder', hardness: 0.2, friction: 0.5,  fragility: 0.2,  elasticity: 0.1,  sound_base: 0.1, color: '#ff9800' },
-  { name: 'машинка',  mass: 0.5,  size: [0.15, 0.08, 0.08],  shape: 'box',      hardness: 0.7, friction: 0.15, fragility: 0.15, elasticity: 0.05, sound_base: 0.4, color: '#4caf50' },
-  { name: 'тарелка',  mass: 0.3,  size: [0.2, 0.02, 0.2],    shape: 'cylinder', hardness: 0.8, friction: 0.2,  fragility: 0.85, elasticity: 0.0,  sound_base: 0.5, color: '#ffffff' },
-  { name: 'стакан',   mass: 0.25, size: [0.06, 0.12, 0.06],   shape: 'cylinder', hardness: 0.85,friction: 0.15, fragility: 0.9,  elasticity: 0.0,  sound_base: 0.5, color: '#b2ebf2' },
+  // Мячик: light, bouncy, rolls far
+  { name: 'мячик',   mass: 0.2,  radius: 0.06, shape: 'sphere', hardness: 0.3, friction: 0.2, fragility: 0.0,  elasticity: 0.85, sound_base: 0.5, color: '#f44336' },
+  // Кубик: medium, doesn't roll, slides
+  { name: 'кубик',   mass: 0.3,  radius: 0.05, shape: 'box', halfExtents: [0.05, 0.05, 0.05], hardness: 0.9, friction: 0.4, fragility: 0.1, elasticity: 0.1, sound_base: 0.3, color: '#2196f3' },
+  // Книжка: flat, heavy, doesn't bounce
+  { name: 'книжка',  mass: 0.5,  radius: 0.08, shape: 'box', halfExtents: [0.08, 0.015, 0.06], hardness: 0.5, friction: 0.6, fragility: 0.2, elasticity: 0.02, sound_base: 0.2, color: '#795548' },
+  // Подушка: soft, light, absorbs impact
+  { name: 'подушка', mass: 0.15, radius: 0.08, shape: 'box', halfExtents: [0.08, 0.04, 0.08], hardness: 0.05, friction: 0.7, fragility: 0.0, elasticity: 0.2, sound_base: 0.05, color: '#e8e8e8' },
+  // Кукла: tall, tippy, medium weight
+  { name: 'кукла',   mass: 0.25, radius: 0.04, shape: 'box', halfExtents: [0.03, 0.08, 0.03], hardness: 0.2, friction: 0.5, fragility: 0.15, elasticity: 0.1, sound_base: 0.1, color: '#ff9800' },
+  // Машинка: heavy bottom, low friction → rolls on push
+  { name: 'машинка', mass: 0.4,  radius: 0.06, shape: 'box', halfExtents: [0.06, 0.03, 0.035], hardness: 0.7, friction: 0.1, fragility: 0.1, elasticity: 0.05, sound_base: 0.4, color: '#4caf50' },
+  // Тарелка: flat, fragile, breaks on drop
+  { name: 'тарелка', mass: 0.2,  radius: 0.08, shape: 'box', halfExtents: [0.08, 0.01, 0.08], hardness: 0.8, friction: 0.2, fragility: 0.85, elasticity: 0.0, sound_base: 0.6, color: '#f5f5f5' },
+  // Стакан: fragile, hollow feel, breaks easily
+  { name: 'стакан',  mass: 0.15, radius: 0.03, shape: 'box', halfExtents: [0.03, 0.05, 0.03], hardness: 0.85, friction: 0.15, fragility: 0.9, elasticity: 0.0, sound_base: 0.5, color: '#b2ebf2' },
 ];
 
-// Speech encoding (same as flat world)
+// Speech
 const SILENCE = new Array(16).fill(0);
 function encodeSpeech(text: string): number[] {
   const codes: number[] = [];
   for (const ch of text.toLowerCase()) {
     const cp = ch.charCodeAt(0);
     if (cp >= 0x430 && cp <= 0x44f) codes.push((cp - 0x430 + 1) / 32);
-    else if (ch === ' ') codes.push(0);
     else codes.push(0);
   }
   while (codes.length < 16) codes.push(0);
   return codes.slice(0, 16);
 }
 
+function clamp(v: number, lo = -1, hi = 1): number { return Math.max(lo, Math.min(hi, v)); }
+
 // ═══════════════════════════════════════════
-// 3D PHYSICS WORLD
+// WORLD
 // ═══════════════════════════════════════════
+
+const ROOM_SIZE = 0.5; // half-size: room is 1m × 1m
+const WALL_HEIGHT = 0.5;
 
 export class PhysicsWorld3D {
   private world: CANNON.World;
   private bodies: CANNON.Body[] = [];
-  private objects: Object3D[] = [];
-  private ground!: CANNON.Body;
   private broken = new Set<number>();
   private tick_count = 0;
   private mama_present = true;
@@ -92,216 +104,105 @@ export class PhysicsWorld3D {
 
   constructor() {
     this.world = new CANNON.World({ gravity: new CANNON.Vec3(0, -9.82, 0) });
+    this.world.defaultContactMaterial.friction = 0.3;
+    this.world.defaultContactMaterial.restitution = 0.2;
 
-    // Ground plane
-    this.ground = new CANNON.Body({
+    // Floor
+    const floor = new CANNON.Body({
       type: CANNON.Body.STATIC,
-      shape: new CANNON.Plane(),
+      shape: new CANNON.Box(new CANNON.Vec3(2, 0.05, 2)),
     });
-    this.ground.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
-    this.world.addBody(this.ground);
+    floor.position.set(0, -0.05, 0);
+    this.world.addBody(floor);
 
-    // Walls (playpen: 2m × 2m)
-    const wallMat = new CANNON.Material({ friction: 0.5, restitution: 0.3 });
-    for (const [px, pz, rx, rz] of [[1, 0, 0, 0], [-1, 0, 0, 0], [0, 1, 0, Math.PI / 2], [0, -1, 0, Math.PI / 2]] as [number, number, number, number][]) {
-      const wall = new CANNON.Body({ type: CANNON.Body.STATIC, shape: new CANNON.Plane(), material: wallMat });
-      wall.position.set(px, 0.5, pz);
-      wall.quaternion.setFromEuler(0, rz || (px > 0 ? -Math.PI / 2 : Math.PI / 2), 0);
-      this.world.addBody(wall);
+    // 4 walls (solid boxes)
+    const wallX = new CANNON.Box(new CANNON.Vec3(ROOM_SIZE, WALL_HEIGHT / 2, 0.05));
+    const wallZ = new CANNON.Box(new CANNON.Vec3(0.05, WALL_HEIGHT / 2, ROOM_SIZE));
+    for (const [x, z, shape] of [
+      [0, ROOM_SIZE + 0.05, wallX], [0, -ROOM_SIZE - 0.05, wallX],
+      [ROOM_SIZE + 0.05, 0, wallZ], [-ROOM_SIZE - 0.05, 0, wallZ],
+    ] as [number, number, CANNON.Box][]) {
+      const w = new CANNON.Body({ type: CANNON.Body.STATIC, shape });
+      w.position.set(x, WALL_HEIGHT / 2, z);
+      this.world.addBody(w);
     }
 
-    // Spawn objects on a table (y=0.5)
+    // Spawn objects
     this.available = [0, 1, 2, 3, 4];
     for (let i = 0; i < OBJECTS_3D.length; i++) {
       this.spawnObject(i);
     }
-    this.objects = OBJECTS_3D;
   }
 
   private spawnObject(idx: number) {
     const obj = OBJECTS_3D[idx];
-    let shape: CANNON.Shape;
-    if (obj.shape === 'sphere') {
-      shape = new CANNON.Sphere(obj.size[0]);
-    } else if (obj.shape === 'cylinder') {
-      // Approximate cylinder as box (cannon-es cylinder is complex)
-      shape = new CANNON.Box(new CANNON.Vec3(obj.size[0], obj.size[1] / 2, obj.size[2]));
-    } else {
-      shape = new CANNON.Box(new CANNON.Vec3(obj.size[0] / 2, obj.size[1] / 2, obj.size[2] / 2));
-    }
+    const shape = obj.shape === 'sphere'
+      ? new CANNON.Sphere(obj.radius)
+      : new CANNON.Box(new CANNON.Vec3(...(obj.halfExtents || [0.05, 0.05, 0.05])));
 
-    const body = new CANNON.Body({
-      mass: obj.mass,
-      shape,
-      position: new CANNON.Vec3(
-        (idx % 4 - 1.5) * 0.4,  // spread on table
-        0.5 + obj.size[1],       // on table surface
-        (Math.floor(idx / 4) - 0.5) * 0.4,
-      ),
-      material: new CANNON.Material({
-        friction: obj.friction,
-        restitution: obj.elasticity,
-      }),
-    });
+    const mat = new CANNON.Material({ friction: obj.friction, restitution: obj.elasticity });
+
+    // Place on floor in a grid pattern inside room
+    const col = idx % 3;
+    const row = Math.floor(idx / 3);
+    const x = (col - 1) * 0.25;
+    const z = (row - 1) * 0.25;
+    const y = obj.shape === 'sphere' ? obj.radius : (obj.halfExtents?.[1] ?? 0.05);
+
+    const body = new CANNON.Body({ mass: obj.mass, shape, material: mat, position: new CANNON.Vec3(x, y + 0.01, z) });
+    body.linearDamping = 0.3; // air resistance — objects slow down
+    body.angularDamping = 0.5;
     this.world.addBody(body);
     this.bodies[idx] = body;
   }
 
-  private getRelativePosition(idx: number): [number, number, number] {
-    const b = this.bodies[idx];
-    if (!b) return [0, 0, 0];
-    // Normalized: divide by table size (~2m)
-    return [b.position.x / 2, b.position.y / 2, b.position.z / 2];
-  }
-
-  private getVelocity(idx: number): [number, number, number] {
-    const b = this.bodies[idx];
-    if (!b) return [0, 0, 0];
-    return [
-      Math.min(1, Math.max(-1, b.velocity.x / 5)),
-      Math.min(1, Math.max(-1, b.velocity.y / 5)),
-      Math.min(1, Math.max(-1, b.velocity.z / 5)),
-    ];
-  }
-
-  private nearestDistance(idx: number): number {
-    const b = this.bodies[idx];
-    if (!b) return 1;
-    let minDist = 10;
-    for (let i = 0; i < this.bodies.length; i++) {
-      if (i === idx || !this.available.includes(i) || this.broken.has(i)) continue;
-      const other = this.bodies[i];
-      if (!other) continue;
-      const d = b.position.distanceTo(other.position);
-      if (d < minDist) minDist = d;
-    }
-    return Math.min(1, minDist / 2);
-  }
-
-  private clamp(v: number): number { return Math.max(-1, Math.min(1, v)); }
+  // ═══════════════════════════════════════════
+  // SENSORY
+  // ═══════════════════════════════════════════
 
   private buildChannels(idx: number, impactForce: number): number[] {
-    const obj = this.objects[idx];
-    const [px, py, pz] = this.getRelativePosition(idx);
-    const [vx, vy, vz] = this.getVelocity(idx);
-    const nearest = this.nearestDistance(idx);
-    const sound = impactForce * obj.sound_base;
-    const deformation = impactForce * (1 - obj.hardness) * 0.5;
-    const breakage = obj.fragility > 0.6 && impactForce > 0.5 ? impactForce * obj.fragility : 0;
+    const obj = OBJECTS_3D[idx];
+    const b = this.bodies[idx];
+    if (!b) return new Array(13).fill(0);
+
+    // Position relative to room center, normalized by room size
+    const px = b.position.x / ROOM_SIZE;
+    const py = b.position.y / WALL_HEIGHT;
+    const pz = b.position.z / ROOM_SIZE;
+
+    // Velocity normalized
+    const vx = b.velocity.x / 2;
+    const vy = b.velocity.y / 2;
+    const vz = b.velocity.z / 2;
+
+    // Nearest other object
+    let minDist = 1;
+    for (let i = 0; i < this.bodies.length; i++) {
+      if (i === idx || !this.available.includes(i) || this.broken.has(i) || !this.bodies[i]) continue;
+      const d = b.position.distanceTo(this.bodies[i].position);
+      if (d < minDist) minDist = d;
+    }
+
+    const sound = Math.min(1, impactForce * obj.sound_base * 3);
+    const deform = Math.min(1, impactForce * (1 - obj.hardness));
+    const breakage = (obj.fragility > 0.5 && impactForce > 0.4) ? Math.min(1, impactForce * obj.fragility) : 0;
 
     return [
-      this.clamp(px), this.clamp(py), this.clamp(pz),        // 0-2: position
-      this.clamp(vx), this.clamp(vy), this.clamp(vz),        // 3-5: velocity
-      this.clamp(impactForce),                                 // 6: collision force
-      this.clamp(nearest),                                     // 7: nearest object distance
-      this.clamp(obj.hardness),                                // 8: surface hardness
-      this.clamp(1 - obj.friction),                            // 9: smoothness
-      this.clamp(sound),                                       // 10: sound
-      this.clamp(deformation),                                 // 11: deformation
-      this.clamp(breakage),                                    // 12: breakage
+      clamp(px), clamp(py), clamp(pz),
+      clamp(vx), clamp(vy), clamp(vz),
+      clamp(impactForce, 0, 1),
+      clamp(minDist, 0, 1),
+      clamp(obj.hardness, 0, 1),
+      clamp(1 - obj.friction, 0, 1),
+      clamp(sound, 0, 1),
+      clamp(deform, 0, 1),
+      clamp(breakage, 0, 1),
     ];
   }
 
   // ═══════════════════════════════════════════
-  // ACTIONS (6 actions, now in 3D)
+  // ACTIONS — baby-strength forces
   // ═══════════════════════════════════════════
-
-  private applyAction(idx: number, action: number): number {
-    const body = this.bodies[idx];
-    if (!body) return 0;
-
-    let impactForce = 0;
-    const strength = 0.5; // gentle forces — baby hands
-
-    switch (action) {
-      case 0: // touch — minimal force, sense surface
-        body.applyImpulse(new CANNON.Vec3(0.1, 0, 0));
-        impactForce = 0.05;
-        break;
-      case 1: // push — horizontal force
-        const dir = Math.random() * Math.PI * 2;
-        body.applyImpulse(new CANNON.Vec3(
-          Math.cos(dir) * strength,
-          0.2,
-          Math.sin(dir) * strength,
-        ));
-        impactForce = 0.3;
-        break;
-      case 2: // drop — lift and release
-        body.position.y += 1.5;
-        body.velocity.set(0, 0, 0);
-        impactForce = 0.6; // will impact on landing
-        break;
-      case 3: // shake — oscillate
-        body.applyImpulse(new CANNON.Vec3(
-          (Math.random() - 0.5) * strength * 2,
-          strength,
-          (Math.random() - 0.5) * strength * 2,
-        ));
-        impactForce = 0.4;
-        break;
-      case 4: // look — no force, just observe
-        impactForce = 0;
-        break;
-      case 5: // squeeze — compress (apply opposing forces)
-        body.applyImpulse(new CANNON.Vec3(0, -0.5, 0));
-        impactForce = 0.3 * (1 - this.objects[idx].hardness);
-        break;
-    }
-
-    return impactForce;
-  }
-
-  // ═══════════════════════════════════════════
-  // PUBLIC API
-  // ═══════════════════════════════════════════
-
-  tick(): SensoryTransition3D[] {
-    this.tick_count++;
-    const transitions: SensoryTransition3D[] = [];
-
-    // Step physics (60Hz, 1 step)
-    this.world.step(1 / 60);
-
-    // Reset fallen objects (below y=-2)
-    for (let i = 0; i < this.bodies.length; i++) {
-      if (this.bodies[i] && this.bodies[i].position.y < -2) {
-        this.bodies[i].position.set((i % 4 - 1.5) * 0.4, 0.5, (Math.floor(i / 4) - 0.5) * 0.4);
-        this.bodies[i].velocity.set(0, 0, 0);
-      }
-    }
-
-    // Ambient: brain sees a random object (look)
-    if (this.available.length > 0 && Math.random() < 0.5) {
-      const idx = this.available[Math.floor(Math.random() * this.available.length)];
-      if (!this.broken.has(idx)) {
-        transitions.push({
-          action_id: 4,
-          object_idx: idx,
-          channels: this.buildChannels(idx, 0),
-          speech: SILENCE,
-          valence: 0,
-          debug_label: `ambient:${this.objects[idx].name}`,
-          positions: this.getAllPositions(),
-        });
-      }
-    }
-
-    // Mama speech
-    if (this.mama_present && Math.random() < 0.2) {
-      const idx = this.available[Math.floor(Math.random() * this.available.length)];
-      transitions.push({
-        action_id: -1,
-        object_idx: idx,
-        channels: new Array(13).fill(0),
-        speech: encodeSpeech(this.objects[idx].name),
-        valence: 0.1,
-        debug_label: `mama:${this.objects[idx].name}`,
-      });
-    }
-
-    return transitions;
-  }
 
   act(action_id: number, object_idx?: number): SensoryTransition3D {
     const avail = this.available.filter(i => !this.broken.has(i));
@@ -313,18 +214,56 @@ export class PhysicsWorld3D {
       ? object_idx : avail[Math.floor(Math.random() * avail.length)];
 
     const act = Math.max(0, Math.min(5, action_id));
+    const body = this.bodies[idx];
+    const obj = OBJECTS_3D[idx];
+    if (!body) return { action_id: act, object_idx: idx, channels: new Array(13).fill(0), speech: SILENCE, valence: 0 };
 
-    // Apply action and step physics
-    const impactForce = this.applyAction(idx, act);
-    for (let i = 0; i < 30; i++) this.world.step(1 / 60); // simulate 0.5s
+    let impactForce = 0;
+
+    switch (act) {
+      case 0: // touch — gentle poke, feel surface
+        body.applyImpulse(new CANNON.Vec3(0.02, 0, 0));
+        impactForce = 0.05;
+        break;
+      case 1: { // push — directional force along ground
+        const angle = Math.random() * Math.PI * 2;
+        const force = 0.3 / Math.max(0.1, obj.mass); // lighter = pushes further
+        body.applyImpulse(new CANNON.Vec3(Math.cos(angle) * force, 0.05, Math.sin(angle) * force));
+        impactForce = 0.2;
+        break;
+      }
+      case 2: // drop — lift 30cm and release
+        body.position.y = 0.3;
+        body.velocity.set(0, 0, 0);
+        // Simulate fall
+        for (let i = 0; i < 30; i++) this.world.step(1 / 60);
+        impactForce = 0.5 * obj.mass; // heavier = harder impact
+        break;
+      case 3: // shake — quick oscillation
+        body.applyImpulse(new CANNON.Vec3((Math.random() - 0.5) * 0.2, 0.15, (Math.random() - 0.5) * 0.2));
+        impactForce = 0.15;
+        break;
+      case 4: // look — no interaction
+        impactForce = 0;
+        break;
+      case 5: // squeeze — downward pressure
+        body.applyImpulse(new CANNON.Vec3(0, -0.1, 0));
+        impactForce = 0.25 * (1 - obj.hardness); // soft = more deformation
+        break;
+    }
+
+    // Simulate physics response (0.5s)
+    if (act !== 2) { // drop already simulated
+      for (let i = 0; i < 30; i++) this.world.step(1 / 60);
+    }
 
     const channels = this.buildChannels(idx, impactForce);
 
-    // Valence from physics
+    // Valence
     let valence = 0;
+    const speed = Math.sqrt(body.velocity.x ** 2 + body.velocity.z ** 2);
+    if (speed > 0.5) valence += 0.1; // movement is interesting
     if (channels[12] > 0.3) valence = -0.5; // breakage = bad
-    if (Math.abs(channels[3]) > 0.3 || Math.abs(channels[5]) > 0.3) valence += 0.1; // movement = interesting
-    if (channels[6] > 0.5) valence -= 0.1; // hard impact = slight pain
 
     // Track breakage
     const justBroke = channels[12] > 0.3 && !this.broken.has(idx);
@@ -335,46 +274,76 @@ export class PhysicsWorld3D {
       if (justBroke) {
         this.pendingFeedback.push({
           action_id: -1, object_idx: idx,
-          channels: new Array(13).fill(0),
-          speech: encodeSpeech('нельзя'),
-          valence: -0.4,
-          debug_label: 'mama:нельзя',
+          channels: new Array(13).fill(0), speech: encodeSpeech('нельзя'),
+          valence: -0.4, debug_label: 'mama:нельзя',
         });
-      } else if (valence > 0.15 && Math.random() < 0.3) {
+      } else if (valence > 0.05 && Math.random() < 0.25) {
         this.pendingFeedback.push({
           action_id: -1, object_idx: idx,
-          channels: new Array(13).fill(0),
-          speech: encodeSpeech('молодец'),
-          valence: 0.3,
-          debug_label: 'mama:молодец',
+          channels: new Array(13).fill(0), speech: encodeSpeech('молодец'),
+          valence: 0.3, debug_label: 'mama:молодец',
         });
       }
     }
 
     return {
-      action_id: act, object_idx: idx, channels,
-      speech: SILENCE,
-      valence: Math.max(-1, Math.min(1, valence)),
-      debug_label: `${['touch','push','drop','shake','look','squeeze'][act]}:${this.objects[idx].name}`,
+      action_id: act, object_idx: idx, channels, speech: SILENCE,
+      valence: clamp(valence),
+      debug_label: `${['touch','push','drop','shake','look','squeeze'][act]}:${obj.name}`,
       positions: this.getAllPositions(),
     };
   }
 
-  drainFeedback(): SensoryTransition3D[] {
-    const fb = this.pendingFeedback;
-    this.pendingFeedback = [];
-    return fb;
+  tick(): SensoryTransition3D[] {
+    this.tick_count++;
+    const transitions: SensoryTransition3D[] = [];
+
+    // Step physics (keep world alive between actions)
+    this.world.step(1 / 60);
+
+    // Ambient observation
+    if (this.available.length > 0 && Math.random() < 0.4) {
+      const idx = this.available.filter(i => !this.broken.has(i));
+      if (idx.length > 0) {
+        const i = idx[Math.floor(Math.random() * idx.length)];
+        transitions.push({
+          action_id: 4, object_idx: i,
+          channels: this.buildChannels(i, 0), speech: SILENCE, valence: 0,
+          debug_label: `ambient:${OBJECTS_3D[i].name}`,
+          positions: this.getAllPositions(),
+        });
+      }
+    }
+
+    // Mama speech
+    if (this.mama_present && Math.random() < 0.15) {
+      const avail = this.available.filter(i => !this.broken.has(i));
+      if (avail.length > 0) {
+        const i = avail[Math.floor(Math.random() * avail.length)];
+        transitions.push({
+          action_id: -1, object_idx: i,
+          channels: new Array(13).fill(0), speech: encodeSpeech(OBJECTS_3D[i].name),
+          valence: 0.1, debug_label: `mama:${OBJECTS_3D[i].name}`,
+        });
+      }
+    }
+
+    return transitions;
   }
 
-  getAllPositions(): { idx: number; x: number; y: number; z: number }[] {
-    return this.available
-      .filter(i => !this.broken.has(i) && this.bodies[i])
-      .map(i => ({
-        idx: i,
-        x: this.bodies[i].position.x,
-        y: this.bodies[i].position.y,
-        z: this.bodies[i].position.z,
-      }));
+  drainFeedback(): SensoryTransition3D[] {
+    const fb = this.pendingFeedback; this.pendingFeedback = []; return fb;
+  }
+
+  getAllPositions() {
+    return this.available.filter(i => !this.broken.has(i) && this.bodies[i]).map(i => ({
+      idx: i,
+      x: this.bodies[i].position.x,
+      y: this.bodies[i].position.y,
+      z: this.bodies[i].position.z,
+      name: OBJECTS_3D[i].name,
+      color: OBJECTS_3D[i].color,
+    }));
   }
 
   levelUp(): void {
