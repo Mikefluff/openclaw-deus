@@ -182,6 +182,7 @@ export class PhysicsWorld {
   private tick_count = 0;
   private available_objects: number[]; // indices into OBJECTS
   private mama_present = true;
+  pendingFeedback: SensoryTransition[] = [];
   private broken = new Set<number>(); // broken object indices
   // Object states: wet, flipped, warm (change from actions, affect future actions)
   private wet = new Set<number>();
@@ -318,6 +319,7 @@ export class PhysicsWorld {
     this.last_action = { action: act, object: idx, valence };
 
     // Track breakage
+    const justBroke = channels[11] > 0.5 && !this.broken.has(idx);
     if (channels[11] > 0.5) {
       this.broken.add(idx);
     }
@@ -325,6 +327,33 @@ export class PhysicsWorld {
     // Clamp channels
     for (let i = 0; i < channels.length; i++) channels[i] = clamp(channels[i], -1, 1);
     valence = clamp(valence, -1, 1);
+
+    // Mama feedback as separate transition (social learning)
+    let mamaFeedback: SensoryTransition | null = null;
+    if (this.mama_present) {
+      if (justBroke) {
+        // Mama says "нельзя" — negative feedback
+        mamaFeedback = {
+          action_id: -1, object_idx: idx,
+          channels: new Array(13).fill(0),
+          speech: encodeSpeech('нельзя'),
+          valence: -0.4,
+          debug_label: 'mama:нельзя',
+        };
+      } else if (valence > 0.2 && Math.random() < 0.3) {
+        // Mama says "молодец" — positive feedback for good actions
+        mamaFeedback = {
+          action_id: -1, object_idx: idx,
+          channels: new Array(13).fill(0),
+          speech: encodeSpeech('молодец'),
+          valence: 0.3,
+          debug_label: 'mama:молодец',
+        };
+      }
+    }
+
+    // Store mama feedback for daemon to pick up
+    if (mamaFeedback) this.pendingFeedback.push(mamaFeedback);
 
     return {
       action_id: act,
@@ -342,6 +371,12 @@ export class PhysicsWorld {
     if (this.level === 1) this.available_objects = [0, 1, 2, 3, 4, 5, 6, 7];
     if (this.level === 2) this.available_objects = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
     this.mama_present = Math.random() < (1 - this.level * 0.2);
+  }
+
+  drainFeedback(): SensoryTransition[] {
+    const fb = this.pendingFeedback;
+    this.pendingFeedback = [];
+    return fb;
   }
 
   getLevel(): number { return this.level; }

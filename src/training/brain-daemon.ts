@@ -141,7 +141,32 @@ async function main() {
             },
           );
           if (req.id) await db.query("UPDATE $id SET status = 'completed'", { id: req.id });
+
+          // Mama feedback from action (social learning)
+          for (const fb of world.drainFeedback()) {
+            seqCounter++;
+            await db.query(
+              `CREATE sensory_input CONTENT {
+                seq: $seq, action_id: $action_id, channels: $channels,
+                speech: $speech, valence: $valence, object_idx: $object_idx,
+                is_consequence: false
+              }`,
+              { seq: seqCounter, action_id: fb.action_id, channels: fb.channels, speech: fb.speech, valence: fb.valence, object_idx: fb.object_idx },
+            );
+          }
         }
+      }
+
+      // Auto level-up by maturity (every 500th tick)
+      if (cycle % 500 === 0 && cycle > 0) {
+        try {
+          const mat = await db.query('RETURN fn::compute_maturity()') as any;
+          const maturity = mat?.[0]?.maturity ?? 0;
+          if (maturity > 0.7 && world.getLevel() < 2) {
+            (world as any).levelUp();
+            console.log(`  LEVEL UP → ${world.getLevel()} (${world.getObjectCount()} objects, maturity=${maturity.toFixed(2)})`);
+          }
+        } catch {}
       }
 
       // Medium frequency (every 5th tick)
