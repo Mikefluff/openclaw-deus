@@ -16,6 +16,17 @@ const TOTAL_TICKS = parseInt(process.argv[2] || '5000', 10);
 
 async function main() {
   const db = new Surreal();
+
+  async function ensureConnected() {
+    try {
+      await db.query('RETURN true');
+    } catch {
+      await db.connect('ws://127.0.0.1:8000/rpc');
+      await db.signin({ username: 'root', password: 'root' });
+      await db.use({ namespace: 'deus', database: 'runtime' });
+    }
+  }
+
   await db.connect('ws://127.0.0.1:8000/rpc');
   await db.signin({ username: 'root', password: 'root' });
   await db.use({ namespace: 'deus', database: 'runtime' });
@@ -34,6 +45,9 @@ async function main() {
   console.log(`Training: ${TOTAL_TICKS} world ticks\n`);
 
   for (let tick = 0; tick < TOTAL_TICKS; tick++) {
+    // Reconnect if session dropped
+    if (tick % 100 === 0) await ensureConnected();
+
     // 1. World ambient events → brain via sensory_input table (batch insert)
     const ambient = world.tick();
     for (const t of ambient) {
@@ -48,8 +62,15 @@ async function main() {
       );
     }
 
-    // Brain tick: membrane drives the clock (ASYNC pump unreliable in SurrealDB 3.0.4)
-    await db.query('RETURN fn::brain_tick_auto()').catch(() => {});
+    // Brain tick: membrane drives the clock
+    try {
+      await db.query('RETURN fn::brain_tick_auto()');
+    } catch (e: any) {
+      if (e.message?.includes('Anonymous') || e.message?.includes('permission')) {
+        await ensureConnected();
+        try { await db.query('RETURN fn::brain_tick_auto()'); } catch {}
+      }
+    }
 
     // 3. Brain's action requests → execute in world → feed consequence
     const requests = await db.query(
