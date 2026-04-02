@@ -282,7 +282,7 @@ DEFINE FUNCTION OVERWRITE fn::process_speech($speech: array, $valence: float) {
   -- BINDING: find currently active sensorimotor traces (high weight+freshness)
   -- These are what the brain is "attending to" when mama speaks
   LET $speech_trace = (SELECT id FROM trace WHERE content = $speech_key AND archived = false LIMIT 1)[0];
-  IF $speech_trace IS NONE { RETURN { speech_trace: NONE }; };
+  IF $speech_trace IS NONE OR $speech_trace.id IS NONE { RETURN { speech_trace: $existing.trace_id ?? '', bindings: 0, speech_key: $speech_key }; };
 
   LET $active_motor = (SELECT trace, trace_id, weight, freshness FROM trace_state
     WHERE archived = false AND suppressed = false
