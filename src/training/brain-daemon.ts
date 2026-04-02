@@ -41,9 +41,110 @@ async function main() {
   let lastStatus = Date.now();
   const t0 = Date.now();
 
+  // Brain tick frequencies (matching brain_tick config)
+  let cycle = 0;
+
   while (running) {
     try {
-      await db.query('RETURN fn::brain_tick_auto()');
+      // Process sensory inputs
+      await db.query(`
+        LET $state = (SELECT * FROM kernel_state LIMIT 1)[0];
+        IF $state.running ?? false = true {
+          LET $cursor = $state.sensory_seq ?? 0;
+          LET $inputs = (SELECT * FROM sensory_input WHERE seq > $cursor LIMIT 20);
+          FOR $inp IN $inputs { fn::process_one_input($inp); };
+          IF array::len($inputs) > 0 {
+            LET $seqs = $inputs.map(|$i| $i.seq ?? 0);
+            UPDATE kernel_state SET sensory_seq = math::max($seqs) ?? $cursor;
+          };
+        };
+      `);
+
+      // Energy + sleep (critical)
+      await db.query(`
+        LET $cfg = (SELECT * FROM kernel_state LIMIT 1)[0].config ?? {};
+        UPDATE _cfg_cache SET cfg = $cfg;
+        UPDATE kernel_state SET
+          cycle = (cycle ?? 0) + 100,
+          energy = math::max([0.0, (energy ?? 1.0) - ($cfg.energy_drain_rate ?? 0.005) * 100 * (1.0 + (fatigue ?? 0.0))]),
+          fatigue = math::min([1.0, (fatigue ?? 0.0) + ($cfg.fatigue_rate ?? 0.001) * 100]);
+        LET $e = (SELECT energy FROM kernel_state LIMIT 1)[0].energy ?? 0;
+        IF $e < ($cfg.sleep_threshold ?? 0.15) {
+          fn::sleep_consolidation($cfg.nn_decay_rate ?? 0.001);
+          UPDATE kernel_state SET energy = math::min([1.5, energy + 0.8]), fatigue = 0.0;
+        };
+      `);
+
+      // Hormones + affect (every 5th tick)
+      if (cycle % 5 === 0) {
+        await db.query(`
+          fn::hormone_decay_tick();
+          fn::hormone_drive();
+          fn::affect_forward_output();
+          fn::apply_config_deltas();
+          UPDATE nn_node SET value = value * 0.9995 WHERE model = 'affect' AND layer = 'input' AND value > 0.01;
+          fn::ecan_collect_rent();
+        `);
+      }
+
+      // Affect backward (every 20th tick — heavy)
+      if (cycle % 20 === 0) {
+        await db.query(`
+          LET $cfg = (SELECT * FROM _cfg_cache LIMIT 1)[0].cfg ?? {};
+          fn::affect_backward_targeted($cfg.affect_lr ?? 0.05);
+        `);
+      }
+
+      // Agency (every 2nd tick)
+      if (cycle % 2 === 0) {
+        await db.query('fn::agency_tick($c)', { c: cycle });
+      }
+
+      // Medium frequency (every 5th tick)
+      if (cycle % 5 === 0) {
+        await db.query(`
+          LET $cfg = (SELECT * FROM _cfg_cache LIMIT 1)[0].cfg ?? {};
+          fn::active_inference($cfg.active_inference_threshold ?? 0.3, $cfg.active_inference_limit ?? 10);
+          fn::forget_traces($cfg.forget_weight_threshold ?? 0.02, $cfg.forget_freshness_threshold ?? 0.03);
+          fn::apply_meta_modulation();
+          fn::ecan_update_hebbian();
+        `);
+      }
+
+      // Freshness decay (every tick)
+      await db.query(`
+        UPDATE trace_state SET freshness = freshness * 0.9995
+          WHERE archived = false AND freshness > 0.01;
+      `);
+
+      // Low frequency (every 20th tick)
+      if (cycle % 20 === 0) {
+        await db.query(`
+          LET $cfg = (SELECT * FROM _cfg_cache LIMIT 1)[0].cfg ?? {};
+          fn::consolidate_episodic($cfg.consolidation_min_count ?? 3);
+          fn::consolidation_replay();
+          fn::edge_sprout();
+          fn::edge_death();
+          fn::match_all_patterns();
+          fn::ecan_create_hebbian();
+          fn::ecan_forget();
+          fn::predictor_replay($cfg.predictor_replay_batch ?? 10);
+        `);
+      }
+
+      // Deep (every 100th tick)
+      if (cycle % 100 === 0) {
+        await db.query(`
+          fn::build_world_model();
+          fn::introspect();
+          fn::introspect_self();
+          fn::extract_all_sections();
+          fn::extract_causal_patterns();
+          fn::pln_infer_chain();
+        `);
+      }
+
+      cycle++;
       tickCount++;
     } catch {}
 
