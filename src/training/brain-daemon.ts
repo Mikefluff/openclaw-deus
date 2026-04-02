@@ -110,18 +110,20 @@ async function main() {
         };
       `);
 
-      // Energy + sleep (critical)
+      // Energy + fatigue + sleep
       await db.query(`
         LET $cfg = (SELECT * FROM kernel_state LIMIT 1)[0].config ?? {};
         UPDATE _cfg_cache SET cfg = $cfg;
         UPDATE kernel_state SET
           cycle = (cycle ?? 0) + 100,
-          energy = math::max([0.0, (energy ?? 1.0) - ($cfg.energy_drain_rate ?? 0.005) * 100 * (1.0 + (fatigue ?? 0.0))]),
-          fatigue = math::min([1.0, (fatigue ?? 0.0) + ($cfg.fatigue_rate ?? 0.001) * 100]);
+          energy = math::max([0.0, (energy ?? 1.0) - ($cfg.energy_drain_rate ?? 0.002) * (1.0 + (fatigue ?? 0.0))]),
+          fatigue = math::min([1.0, (fatigue ?? 0.0) + ($cfg.fatigue_rate ?? 0.005)]);
         LET $e = (SELECT energy FROM kernel_state LIMIT 1)[0].energy ?? 0;
         IF $e < ($cfg.sleep_threshold ?? 0.15) {
           fn::sleep_consolidation($cfg.nn_decay_rate ?? 0.001);
-          UPDATE kernel_state SET energy = math::min([1.5, energy + 0.8]), fatigue = 0.0;
+          UPDATE kernel_state SET
+            energy = math::min([1.5, energy + ($cfg.sleep_energy_restore ?? 0.5)]),
+            fatigue = math::max([0.0, fatigue * 0.5]);
         };
       `);
 
