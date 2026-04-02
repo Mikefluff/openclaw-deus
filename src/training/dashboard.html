@@ -37,8 +37,9 @@ canvas { width: 100%; height: 100%; }
   <!-- Column 1: World -->
   <div style="display:flex;flex-direction:column;gap:8px;">
     <div class="panel" style="flex:0 0 auto;">
-      <h2>World</h2>
-      <div id="objects"></div>
+      <h2>World <span id="world-mode" style="color:#4fc3f7;font-size:10px;"></span></h2>
+      <canvas id="world-canvas" width="400" height="400" style="width:100%;background:#0d0d15;border-radius:4px;"></canvas>
+      <div id="objects" style="margin-top:6px;"></div>
     </div>
     <div class="panel" style="flex:1;">
       <h2>Activity Log</h2>
@@ -98,12 +99,94 @@ function makeBar(label, value, max, color) {
   return `<div class="bar"><div class="bar-fill" style="width:${pct}%;background:${color}"></div><span class="bar-label">${label}</span><span class="bar-val">${value.toFixed(2)}</span></div>`;
 }
 
+const OBJ_COLORS = ['#f44336','#2196f3','#795548','#e0e0e0','#ff9800','#4caf50','#ffffff','#b2ebf2','#8bc34a','#607d8b','#ff5722','#9e9e9e'];
+let lastPositions = [];
+
+function drawWorld(positions, nObj) {
+  const canvas = document.getElementById('world-canvas');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+
+  // Grid
+  ctx.strokeStyle = '#1a1a2a';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 10; i++) {
+    ctx.beginPath(); ctx.moveTo(i * W/10, 0); ctx.lineTo(i * W/10, H); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, i * H/10); ctx.lineTo(W, i * H/10); ctx.stroke();
+  }
+
+  // Playpen boundary
+  ctx.strokeStyle = '#333';
+  ctx.lineWidth = 2;
+  const cx = W/2, cy = H/2, scale = W/4; // 2m playpen → canvas
+  ctx.strokeRect(cx - scale, cy - scale, scale*2, scale*2);
+
+  if (positions && positions.length > 0) {
+    // 3D mode: draw objects at their x,z positions (top-down view)
+    for (const p of positions) {
+      const sx = cx + p.x * scale;
+      const sy = cy + p.z * scale;
+      const r = 12 + (p.y || 0) * 8; // size = height
+      const color = OBJ_COLORS[p.idx] || '#888';
+
+      // Shadow (height indicator)
+      if ((p.y || 0) > 0.2) {
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.beginPath();
+        ctx.ellipse(sx + 3, sy + 3, r * 0.8, r * 0.4, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Object circle
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Label
+      ctx.fillStyle = '#000';
+      ctx.font = '9px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(OBJ_ICONS[p.idx] || p.idx, sx, sy + 3);
+
+      // Name below
+      ctx.fillStyle = '#666';
+      ctx.fillText(OBJ_NAMES[p.idx] || '', sx, sy + r + 10);
+    }
+    lastPositions = positions;
+  } else if (nObj > 0) {
+    // 2D fallback: arrange in grid
+    for (let i = 0; i < nObj; i++) {
+      const col = i % 4;
+      const row = Math.floor(i / 4);
+      const sx = 60 + col * 80;
+      const sy = 80 + row * 80;
+      ctx.fillStyle = OBJ_COLORS[i] || '#888';
+      ctx.beginPath();
+      ctx.arc(sx, sy, 15, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#000';
+      ctx.font = '14px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(OBJ_ICONS[i], sx, sy + 5);
+      ctx.fillStyle = '#666';
+      ctx.font = '9px monospace';
+      ctx.fillText(OBJ_NAMES[i], sx, sy + 25);
+    }
+  }
+}
+
 function update(data) {
   // TPS + uptime
   document.getElementById('tps').textContent = data.ticks_per_sec || '0';
   document.getElementById('uptime').textContent = `${data.uptime_s || 0}s | cycle ${data.cycle || 0}`;
+  document.getElementById('world-mode').textContent = data.world_3d ? '3D' : '2D';
 
-  // Objects
+  // World canvas
+  drawWorld(data.object_positions, data.world_objects || 5);
+
+  // Objects icons row
   const nObj = data.world_objects || 5;
   let objHtml = '';
   for (let i = 0; i < nObj; i++) {
