@@ -17,26 +17,33 @@ const TOTAL_TICKS = parseInt(process.argv[2] || '5000', 10);
 async function main() {
   const db = new Surreal();
 
-  async function ensureConnected() {
+  async function connect() {
+    try { await db.close(); } catch {}
+    await db.connect('ws://127.0.0.1:8000/rpc');
+    await db.signin({ username: 'root', password: 'root' });
+    await db.use({ namespace: 'deus', database: 'runtime' });
+  }
+
+  async function safeQuery(sql: string, vars?: Record<string, unknown>) {
     try {
-      await db.query('RETURN true');
-    } catch {
-      await db.connect('ws://127.0.0.1:8000/rpc');
-      await db.signin({ username: 'root', password: 'root' });
-      await db.use({ namespace: 'deus', database: 'runtime' });
+      return await db.query(sql, vars);
+    } catch (e: any) {
+      if (e.message?.includes('Anonymous') || e.message?.includes('permission') || e.message?.includes('onnect')) {
+        console.warn('  reconnecting...');
+        await connect();
+        return await db.query(sql, vars);
+      }
+      throw e;
     }
   }
 
-  await db.connect('ws://127.0.0.1:8000/rpc');
-  await db.signin({ username: 'root', password: 'root' });
-  await db.use({ namespace: 'deus', database: 'runtime' });
+  await connect();
   console.log('Membrane connected');
 
   const world = new PhysicsWorld();
   console.log(`World: level ${world.getLevel()}, ${world.getObjectCount()} objects`);
 
-  // Start brain (autonomous ticking via ASYNC tick_pump)
-  await db.query('RETURN fn::start_brain()');
+  await safeQuery('RETURN fn::start_brain()');
 
   const t0 = Date.now();
   let actionCount = 0;
@@ -45,14 +52,11 @@ async function main() {
   console.log(`Training: ${TOTAL_TICKS} world ticks\n`);
 
   for (let tick = 0; tick < TOTAL_TICKS; tick++) {
-    // Reconnect if session dropped
-    if (tick % 100 === 0) await ensureConnected();
-
-    // 1. World ambient events → brain via sensory_input table (batch insert)
+    // 1. World ambient events → brain via sensory_input table
     const ambient = world.tick();
     for (const t of ambient) {
       seqCounter++;
-      await db.query(
+      await safeQuery(
         `CREATE sensory_input CONTENT {
           seq: $seq, action_id: $action_id, channels: $channels,
           speech: $speech, valence: $valence, object_idx: $object_idx,
@@ -63,17 +67,10 @@ async function main() {
     }
 
     // Brain tick: membrane drives the clock
-    try {
-      await db.query('RETURN fn::brain_tick_auto()');
-    } catch (e: any) {
-      if (e.message?.includes('Anonymous') || e.message?.includes('permission')) {
-        await ensureConnected();
-        try { await db.query('RETURN fn::brain_tick_auto()'); } catch {}
-      }
-    }
+    await safeQuery('RETURN fn::brain_tick_auto()').catch(() => {});
 
     // 3. Brain's action requests → execute in world → feed consequence
-    const requests = await db.query(
+    const requests = await safeQuery(
       'SELECT * FROM kernel_request WHERE type = \'action\' AND status = \'pending\' LIMIT 5',
     ) as any;
     const reqs = Array.isArray(requests[0]) ? requests[0] : [];
@@ -91,7 +88,7 @@ async function main() {
 
       // Feed consequence via sensory_input (brain picks up next tick)
       seqCounter++;
-      await db.query(
+      await safeQuery(
         `CREATE sensory_input CONTENT {
           seq: $seq, action_id: $action_id, channels: $channels,
           speech: $speech, valence: $valence, object_idx: $object_idx,
@@ -105,14 +102,14 @@ async function main() {
       );
 
       // Mark processed
-      if (req.id) await db.query('UPDATE $id SET status = \'completed\'', { id: req.id });
+      if (req.id) await safeQuery('UPDATE $id SET status = \'completed\'', { id: req.id });
     }
 
     // 4. Report
     if (tick % Math.max(1, Math.floor(TOTAL_TICKS / 20)) === 0) {
-      const status = await db.query('RETURN fn::run_parallel_status()') as any;
+      const status = await safeQuery('RETURN fn::run_parallel_status()') as any;
       const s = status[0] || {};
-      const traces = await db.query('SELECT count() AS c FROM trace WHERE archived = false GROUP ALL') as any;
+      const traces = await safeQuery('SELECT count() AS c FROM trace WHERE archived = false GROUP ALL') as any;
       const traceCount = traces[0]?.[0]?.c ?? traces[0]?.c ?? 0;
       const elapsed = (Date.now() - t0) / 1000;
       console.log(
@@ -131,14 +128,14 @@ async function main() {
   // ═══════════════════════════════════════════
 
   const elapsed = (Date.now() - t0) / 1000;
-  const traces = await db.query('SELECT count() AS c FROM trace WHERE archived = false GROUP ALL') as any;
-  const archived = await db.query('SELECT count() AS c FROM trace WHERE archived = true GROUP ALL') as any;
-  const edges = await db.query('SELECT count() AS c FROM activates GROUP ALL') as any;
-  const topTraces = await db.query('SELECT trace_id, content, weight, reactivation_count FROM trace_state WHERE archived = false LIMIT 10') as any;
-  const hormones = await db.query('SELECT node_id, value FROM nn_node WHERE model = \'affect\' AND layer = \'hidden\'') as any;
-  const accumulators = await db.query('SELECT node_id, value FROM nn_node WHERE model = \'affect\' AND layer = \'input\'') as any;
-  const nnStats = await db.query('SELECT math::mean(math::abs(weight)) AS w, math::mean(update_count) AS u FROM nn_edge GROUP ALL') as any;
-  const status = await db.query('RETURN fn::run_parallel_status()') as any;
+  const traces = await safeQuery('SELECT count() AS c FROM trace WHERE archived = false GROUP ALL') as any;
+  const archived = await safeQuery('SELECT count() AS c FROM trace WHERE archived = true GROUP ALL') as any;
+  const edges = await safeQuery('SELECT count() AS c FROM activates GROUP ALL') as any;
+  const topTraces = await safeQuery('SELECT trace_id, content, weight, reactivation_count FROM trace_state WHERE archived = false LIMIT 10') as any;
+  const hormones = await safeQuery('SELECT node_id, value FROM nn_node WHERE model = \'affect\' AND layer = \'hidden\'') as any;
+  const accumulators = await safeQuery('SELECT node_id, value FROM nn_node WHERE model = \'affect\' AND layer = \'input\'') as any;
+  const nnStats = await safeQuery('SELECT math::mean(math::abs(weight)) AS w, math::mean(update_count) AS u FROM nn_edge GROUP ALL') as any;
+  const status = await safeQuery('RETURN fn::run_parallel_status()') as any;
   const s = status[0] || {};
 
   console.log('\n=== TRAINING COMPLETE ===');
@@ -147,9 +144,9 @@ async function main() {
   console.log(`Actions: ${actionCount} | World: ${JSON.stringify(world.getDebugInfo())}`);
 
   // AtomSpace-inspired metrics
-  const metaMods = await db.query('SELECT count() AS c FROM modulates GROUP ALL') as any;
-  const metaGates = await db.query('SELECT count() AS c FROM gates GROUP ALL') as any;
-  const patternStats = await db.query('SELECT name, match_count FROM graph_pattern WHERE match_count > 0') as any;
+  const metaMods = await safeQuery('SELECT count() AS c FROM modulates GROUP ALL') as any;
+  const metaGates = await safeQuery('SELECT count() AS c FROM gates GROUP ALL') as any;
+  const patternStats = await safeQuery('SELECT name, match_count FROM graph_pattern WHERE match_count > 0') as any;
 
   console.log('\n--- TRACES ---');
   console.log(`Active: ${traces[0]?.[0]?.c ?? traces[0]?.c ?? '?'} | Archived: ${archived[0]?.[0]?.c ?? archived[0]?.c ?? 0} | Edges: ${edges[0]?.[0]?.c ?? edges[0]?.c ?? 0}`);
@@ -184,7 +181,7 @@ async function main() {
   console.log('\n--- LEARNING METRICS ---');
 
   // 1. Q-values: what did brain learn about actions?
-  const qvals = await db.query('SELECT key, value, update_count FROM action_value WHERE update_count > 0 LIMIT 10') as any;
+  const qvals = await safeQuery('SELECT key, value, update_count FROM action_value WHERE update_count > 0 LIMIT 10') as any;
   const qlist = Array.isArray(qvals[0]) ? qvals[0] : [];
   if (qlist.length > 0) {
     console.log(`  Q-values learned: ${qlist.length}`);
@@ -194,7 +191,7 @@ async function main() {
   }
 
   // 2. Reactivation distribution: highly reactivated = well-learned
-  const reactDist = await db.query('SELECT content, reactivation_count, weight FROM trace_state WHERE archived = false') as any;
+  const reactDist = await safeQuery('SELECT content, reactivation_count, weight FROM trace_state WHERE archived = false') as any;
   const reactList = Array.isArray(reactDist[0]) ? reactDist[0] : reactDist;
   if ((reactList as any[]).length > 0) {
     const reacts = (reactList as any[]).map((t: any) => t.reactivation_count ?? 0);
@@ -207,7 +204,7 @@ async function main() {
   }
 
   // 3. Speech binding: mama traces linked to action traces?
-  const speechTraces = await db.query('SELECT content, weight, reactivation_count FROM trace_state WHERE string::starts_with(content, \'-1:\') AND archived = false') as any;
+  const speechTraces = await safeQuery('SELECT content, weight, reactivation_count FROM trace_state WHERE string::starts_with(content, \'-1:\') AND archived = false') as any;
   const speechList = Array.isArray(speechTraces[0]) ? speechTraces[0] : speechTraces;
   console.log(`  Speech traces: ${(speechList as any[]).length} (mama named ${(speechList as any[]).length} objects)`);
   for (const st of (speechList as any[]).slice(0, 5)) {
@@ -223,11 +220,11 @@ async function main() {
   console.log(`  ${conv > nov ? 'CONVERGING (world becoming predictable)' : 'EXPLORING (still discovering)'}`);
 
   // 5. ECAN + Sheaves + Language + Predictor
-  const hebbCount = await db.query('SELECT count() AS c FROM hebbian GROUP ALL') as any;
-  const sectionCount = await db.query('SELECT count() AS c FROM trace_section WHERE connector_count > 0 GROUP ALL') as any;
-  const lexCount = await db.query('SELECT count() AS c FROM trace WHERE source_type = \'lexical\' GROUP ALL') as any;
-  const bindCount = await db.query('SELECT count() AS c FROM lexical_binding WHERE weight > 0.1 GROUP ALL') as any;
-  const transitions = await db.query('SELECT count() AS c FROM sensorimotor_transition GROUP ALL') as any;
+  const hebbCount = await safeQuery('SELECT count() AS c FROM hebbian GROUP ALL') as any;
+  const sectionCount = await safeQuery('SELECT count() AS c FROM trace_section WHERE connector_count > 0 GROUP ALL') as any;
+  const lexCount = await safeQuery('SELECT count() AS c FROM trace WHERE source_type = \'lexical\' GROUP ALL') as any;
+  const bindCount = await safeQuery('SELECT count() AS c FROM lexical_binding WHERE weight > 0.1 GROUP ALL') as any;
+  const transitions = await safeQuery('SELECT count() AS c FROM sensorimotor_transition GROUP ALL') as any;
 
   console.log(`\n--- ATOMSPACE FEATURES ---`);
   console.log(`  HebbianLinks: ${hebbCount[0]?.[0]?.c ?? 0}`);
@@ -235,7 +232,7 @@ async function main() {
   console.log(`  Lexical traces: ${lexCount[0]?.[0]?.c ?? 0} | Bindings: ${bindCount[0]?.[0]?.c ?? 0}`);
   console.log(`  Predictor transitions: ${transitions[0]?.[0]?.c ?? 0}`);
 
-  await db.query('UPDATE kernel_state SET running = false');
+  await safeQuery('UPDATE kernel_state SET running = false');
   await db.close();
   process.exit(0);
 }
