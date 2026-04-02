@@ -35,11 +35,13 @@ DEFINE FUNCTION OVERWRITE fn::brain_fast() {
     UPDATE kernel_state SET sensory_seq = math::max($seqs) ?? $cursor;
   };
 
-  -- Vitals
+  -- Vitals (fast pump OWNS kernel_state — only writer)
+  LET $new_energy = math::max([0.0, ($state.energy ?? 1.0) - ($cfg.energy_drain_rate ?? 0.002) * (1.0 + ($state.fatigue ?? 0.0))]);
+  LET $slept = $new_energy < ($cfg.sleep_threshold ?? 0.15);
   UPDATE kernel_state SET
     cycle = ($state.cycle ?? 0) + 100,
-    energy = math::max([0.0, ($state.energy ?? 1.0) - ($cfg.energy_drain_rate ?? 0.002) * (1.0 + ($state.fatigue ?? 0.0))]),
-    fatigue = math::min([1.0, ($state.fatigue ?? 0.0) + ($cfg.fatigue_rate ?? 0.005)]);
+    energy = IF $slept THEN math::min([1.5, $new_energy + ($cfg.sleep_energy_restore ?? 0.5)]) ELSE $new_energy END,
+    fatigue = IF $slept THEN math::max([0.0, ($state.fatigue ?? 0.0) * 0.5]) ELSE math::min([1.0, ($state.fatigue ?? 0.0) + ($cfg.fatigue_rate ?? 0.005)]) END;
 
   -- Attention
   fn::sti_rent();
@@ -52,11 +54,11 @@ DEFINE FUNCTION OVERWRITE fn::brain_fast() {
 };
 
 -- fn::brain_medium — hormones, learning, diffusion. Slower pump.
+-- DOES NOT write kernel_state (fast pump owns it).
 DEFINE FUNCTION OVERWRITE fn::brain_medium() {
   LET $state = (SELECT * FROM kernel_state LIMIT 1)[0];
   IF ($state.running ?? false) = false { RETURN false; };
   LET $cfg = $state.config ?? {};
-  UPDATE _cfg_cache SET cfg = $cfg;
 
   fn::hormone_decay_tick();
   fn::hormone_drive();
@@ -74,12 +76,11 @@ DEFINE FUNCTION OVERWRITE fn::brain_medium() {
   fn::forget_traces($cfg.forget_weight_threshold ?? 0.02, $cfg.forget_freshness_threshold ?? 0.03);
   fn::ecan_update_hebbian();
 
-  -- Sleep check
-  IF ($state.energy ?? 1) < ($cfg.sleep_threshold ?? 0.15) {
+  -- Sleep consolidation (only the learning part, NOT energy restore)
+  -- Energy restore happens in brain_fast which owns kernel_state
+  LET $e = (SELECT energy FROM kernel_state LIMIT 1)[0].energy ?? 0;
+  IF $e < ($cfg.sleep_threshold ?? 0.15) {
     fn::sleep_consolidation($cfg.nn_decay_rate ?? 0.001);
-    UPDATE kernel_state SET
-      energy = math::min([1.5, energy + ($cfg.sleep_energy_restore ?? 0.5)]),
-      fatigue = math::max([0.0, fatigue * 0.5]);
   };
 
   RETURN true;
