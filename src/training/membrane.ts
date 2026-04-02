@@ -21,44 +21,17 @@ async function main() {
   await db.use({ namespace: 'deus', database: 'runtime' });
   console.log('Membrane connected');
 
-  // Ensure tables exist (no OVERWRITE — don't drop existing schema)
-  await db.query('DEFINE TABLE IF NOT EXISTS kernel_request SCHEMALESS');
-  await db.query('DEFINE TABLE IF NOT EXISTS brain_action SCHEMALESS');
-
-  // Kill conflicting events
-  await db.query('UPDATE kernel_state SET running = false');
-  await new Promise(r => setTimeout(r, 500));
-  for (const ev of [
-    'kernel_heartbeat ON kernel_state', 'critical_loop ON sched_critical',
-    'high_loop ON sched_high', 'medium_loop ON sched_medium',
-    'low_loop ON sched_low', 'kernel_wake ON kernel_event',
-    'cognitive_spread ON trace', 'cognitive_archive ON trace',
-    'cognitive_hebbian ON activates', 'cognitive_backprop ON commit_log',
-    'nn_hebbian ON nn_edge',
-  ]) {
-    try { await db.query('REMOVE EVENT IF EXISTS ' + ev); } catch {}
-  }
-  await new Promise(r => setTimeout(r, 500));
-
   const world = new PhysicsWorld();
   console.log(`World: level ${world.getLevel()}, ${world.getObjectCount()} objects`);
 
-  await db.query('UPDATE kernel_state SET cycle = 0, energy = 1.0, fatigue = 0.0, running = true');
+  // Start brain (autonomous ticking via ASYNC tick_pump)
+  await db.query('RETURN fn::start_brain()');
 
   const t0 = Date.now();
   let actionCount = 0;
+  let seqCounter = 0;
 
   console.log(`Training: ${TOTAL_TICKS} world ticks\n`);
-
-  async function feedTransition(t: SensoryTransition) {
-    await db.query(
-      'RETURN fn::process_sensory($action_id, $channels, $speech, $valence, $object_idx)',
-      { action_id: t.action_id, channels: t.channels, speech: t.speech, valence: t.valence, object_idx: t.object_idx },
-    );
-  }
-
-  // Sensory input sequence counter
-  let seqCounter = 0;
 
   for (let tick = 0; tick < TOTAL_TICKS; tick++) {
     // 1. World ambient events → brain via sensory_input table (batch insert)
@@ -75,39 +48,8 @@ async function main() {
       );
     }
 
-    // 2. Brain: process sensory inputs (separate transaction)
-    try {
-      await db.query(`
-        LET $state = (SELECT * FROM kernel_state LIMIT 1)[0];
-        LET $cursor = $state.sensory_seq ?? 0;
-        LET $inputs = (SELECT * FROM sensory_input WHERE seq > $cursor LIMIT 10);
-        IF array::len($inputs) > 0 {
-          FOR $inp IN $inputs {
-            LET $action = $inp.action_id ?? 0;
-            IF $action < 0 {
-              fn::process_speech($inp.speech ?? [], $inp.valence ?? 0);
-            } ELSE {
-              fn::process_sensory($action, $inp.channels ?? [], $inp.speech ?? [],
-                $inp.valence ?? 0, $inp.object_idx ?? 0);
-              IF $inp.is_consequence = true {
-                LET $tkey = type::string($action) + ':' + type::string($inp.object_idx ?? 0);
-                LET $tr = (SELECT trace_id FROM trace_state WHERE content = $tkey AND archived = false LIMIT 1)[0];
-                IF $tr IS NOT NONE AND $tr.trace_id IS NOT NONE {
-                  fn::cognitive_cycle($tr.trace_id, $action, $tkey, $inp.valence ?? 0);
-                };
-              };
-            };
-          };
-          LET $seqs = $inputs.map(|$i| $i.seq ?? 0);
-          UPDATE kernel_state SET sensory_seq = math::max($seqs) ?? $cursor;
-        };
-      `);
-    } catch {}
-
-    // 3. Brain: tick (separate transaction — no conflict with sensory processing)
-    try {
-      await db.query('RETURN fn::brain_tick(100)');
-    } catch {}
+    // Brain tick: membrane drives the clock (ASYNC pump unreliable in SurrealDB 3.0.4)
+    await db.query('RETURN fn::brain_tick_auto()').catch(() => {});
 
     // 3. Brain's action requests → execute in world → feed consequence
     const requests = await db.query(
