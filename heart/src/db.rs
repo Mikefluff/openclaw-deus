@@ -1,17 +1,10 @@
-//! DB — SurrealDB interface for persistent memory.
-//!
-//! Brain runtime is in Rust. This module handles:
-//! - Loading initial state from DB
-//! - Syncing dirty state back to DB
-//! - Future: reading rules, writing traces/edges
+//! SurrealDB interface — persistent memory only.
 
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use surrealdb::engine::remote::ws::{Client, Ws};
 use surrealdb::opt::auth::Root;
 use surrealdb::Surreal;
-
-use crate::brain::BrainState;
+use crate::brain::{BrainSnapshot, InitialState, BrainConfig};
 
 pub type Db = Surreal<Client>;
 
@@ -19,46 +12,23 @@ pub async fn connect(url: &str) -> Db {
     loop {
         match Surreal::new::<Ws>(url).await {
             Ok(db) => {
-                match db
-                    .signin(Root {
-                        username: "root".to_string(),
-                        password: "root".to_string(),
-                    })
-                    .await
-                {
+                match db.signin(Root { username: "root".to_string(), password: "root".to_string() }).await {
                     Ok(_) => {}
-                    Err(e) => {
-                        tracing::warn!("signin: {e}");
-                        tokio::time::sleep(Duration::from_secs(2)).await;
-                        continue;
-                    }
+                    Err(e) => { tracing::warn!("signin: {e}"); tokio::time::sleep(Duration::from_secs(2)).await; continue; }
                 }
                 match db.use_ns("deus").use_db("runtime").await {
                     Ok(_) => {}
-                    Err(e) => {
-                        tracing::warn!("use ns/db: {e}");
-                        tokio::time::sleep(Duration::from_secs(2)).await;
-                        continue;
-                    }
+                    Err(e) => { tracing::warn!("use ns/db: {e}"); tokio::time::sleep(Duration::from_secs(2)).await; continue; }
                 }
+                tracing::info!("SurrealDB connected at {url}");
                 return db;
             }
-            Err(e) => {
-                tracing::warn!("connect: {e}, retry 2s");
-                tokio::time::sleep(Duration::from_secs(2)).await;
-            }
+            Err(e) => { tracing::warn!("connect: {e}, retry 2s"); tokio::time::sleep(Duration::from_secs(2)).await; }
         }
     }
 }
 
-pub struct KernelState {
-    pub cycle: u64,
-    pub energy: f64,
-    pub fatigue: f64,
-    pub config: Option<serde_json::Value>,
-}
-
-pub async fn load_state(db: &Db) -> Option<KernelState> {
+pub async fn load_state(db: &Db) -> InitialState {
     let result: Result<Vec<serde_json::Value>, _> = db
         .query("SELECT cycle, energy, fatigue, config FROM kernel_state LIMIT 1")
         .await
@@ -66,119 +36,53 @@ pub async fn load_state(db: &Db) -> Option<KernelState> {
 
     match result {
         Ok(rows) => {
-            let row = rows.into_iter().next()?;
-            Some(KernelState {
-                cycle: row.get("cycle")?.as_u64().unwrap_or(0),
-                energy: row.get("energy")?.as_f64().unwrap_or(1.0),
-                fatigue: row.get("fatigue")?.as_f64().unwrap_or(0.0),
-                config: row.get("config").cloned(),
-            })
+            if let Some(row) = rows.into_iter().next() {
+                let cfg_val = row.get("config").cloned();
+                let mut config = BrainConfig::default();
+                if let Some(c) = cfg_val.as_ref().and_then(|v| v.as_object()) {
+                    if let Some(v) = c.get("energy_drain_rate").and_then(|v| v.as_f64()) { config.energy_drain = v / 100.0; }
+                    if let Some(v) = c.get("fatigue_rate").and_then(|v| v.as_f64()) { config.fatigue_rate = v / 100.0; }
+                    if let Some(v) = c.get("sleep_threshold").and_then(|v| v.as_f64()) { config.sleep_threshold = v; }
+                    if let Some(v) = c.get("sleep_energy_restore").and_then(|v| v.as_f64()) { config.sleep_restore = v; }
+                    if let Some(v) = c.get("accumulator_decay").and_then(|v| v.as_f64()) { config.accumulator_decay = v; }
+                    if let Some(v) = c.get("accumulator_cap").and_then(|v| v.as_f64()) { config.accumulator_cap = v; }
+                }
+                InitialState {
+                    cycle: row.get("cycle").and_then(|v| v.as_u64()).unwrap_or(0),
+                    energy: row.get("energy").and_then(|v| v.as_f64()).unwrap_or(1.0),
+                    fatigue: row.get("fatigue").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                    config,
+                }
+            } else {
+                InitialState::default()
+            }
         }
-        Err(e) => {
-            tracing::warn!("load_state: {e}");
-            None
-        }
+        Err(e) => { tracing::warn!("load_state: {e}"); InitialState::default() }
     }
 }
 
-pub async fn load_counts(db: &Db) -> Option<(u32, u32)> {
-    let traces: u32 = db
-        .query("SELECT count() AS c FROM trace_state WHERE archived = false GROUP ALL")
-        .await
-        .and_then(|mut r| r.take::<Vec<serde_json::Value>>(0))
-        .ok()
-        .and_then(|v| v.first().cloned())
-        .and_then(|v| v.get("c")?.as_u64())
-        .map(|c| c as u32)
-        .unwrap_or(0);
+pub async fn sync_snapshot(db: &Db, s: &BrainSnapshot) {
+    let _ = db.query("UPDATE kernel_state SET cycle = $c, energy = $e, fatigue = $f, running = true")
+        .bind(("c", s.cycle as i64))
+        .bind(("e", s.energy))
+        .bind(("f", s.fatigue))
+        .await;
 
-    let edges: u32 = db
-        .query("SELECT count() AS c FROM activates WHERE (archived IS NONE OR archived = false) GROUP ALL")
-        .await
-        .and_then(|mut r| r.take::<Vec<serde_json::Value>>(0))
-        .ok()
-        .and_then(|v| v.first().cloned())
-        .and_then(|v| v.get("c")?.as_u64())
-        .map(|c| c as u32)
-        .unwrap_or(0);
-
-    Some((traces, edges))
-}
-
-/// Sync dirty brain state to SurrealDB.
-pub async fn sync_to_db(db: &Db, state: &Arc<Mutex<BrainState>>) {
-    let (cycle, energy, fatigue, hormones, accumulators, dirty_v, dirty_h, dirty_a) = {
-        let s = state.lock().unwrap();
-        (
-            s.cycle, s.energy, s.fatigue,
-            s.hormones.clone(), s.accumulators.clone(),
-            s.dirty_vitals, s.dirty_hormones, s.dirty_accumulators,
-        )
-    };
-
-    if dirty_v {
-        let _ = db
-            .query("UPDATE kernel_state SET cycle = $c, energy = $e, fatigue = $f, running = true")
-            .bind(("c", cycle as i64))
-            .bind(("e", energy))
-            .bind(("f", fatigue))
+    // Sync hormones
+    let h_names = ["hormone:dopamine", "hormone:norepinephrine", "hormone:cortisol", "hormone:serotonin"];
+    for (i, name) in h_names.iter().enumerate() {
+        let _ = db.query("UPDATE nn_node SET `value` = $v WHERE node_id = $n")
+            .bind(("v", s.hormones[i]))
+            .bind(("n", *name))
             .await;
-
-        state.lock().unwrap().dirty_vitals = false;
     }
 
-    if dirty_h {
-        let _ = db
-            .query("UPDATE nn_node SET `value` = $v WHERE node_id = 'hormone:dopamine'")
-            .bind(("v", hormones.dopamine))
+    // Sync accumulators
+    let a_names = ["acc:pred_error", "acc:tension", "acc:pain", "acc:convergence", "acc:reward", "acc:novelty", "acc:stability"];
+    for (i, name) in a_names.iter().enumerate() {
+        let _ = db.query("UPDATE nn_node SET `value` = $v WHERE node_id = $n")
+            .bind(("v", s.accumulators[i]))
+            .bind(("n", *name))
             .await;
-        let _ = db
-            .query("UPDATE nn_node SET `value` = $v WHERE node_id = 'hormone:norepinephrine'")
-            .bind(("v", hormones.norepinephrine))
-            .await;
-        let _ = db
-            .query("UPDATE nn_node SET `value` = $v WHERE node_id = 'hormone:cortisol'")
-            .bind(("v", hormones.cortisol))
-            .await;
-        let _ = db
-            .query("UPDATE nn_node SET `value` = $v WHERE node_id = 'hormone:serotonin'")
-            .bind(("v", hormones.serotonin))
-            .await;
-
-        state.lock().unwrap().dirty_hormones = false;
-    }
-
-    if dirty_a {
-        let a = &accumulators;
-        let _ = db
-            .query("UPDATE nn_node SET `value` = $v WHERE node_id = 'acc:pred_error'")
-            .bind(("v", a.pred_error))
-            .await;
-        let _ = db
-            .query("UPDATE nn_node SET `value` = $v WHERE node_id = 'acc:convergence'")
-            .bind(("v", a.convergence))
-            .await;
-        let _ = db
-            .query("UPDATE nn_node SET `value` = $v WHERE node_id = 'acc:reward'")
-            .bind(("v", a.reward))
-            .await;
-        let _ = db
-            .query("UPDATE nn_node SET `value` = $v WHERE node_id = 'acc:novelty'")
-            .bind(("v", a.novelty))
-            .await;
-        let _ = db
-            .query("UPDATE nn_node SET `value` = $v WHERE node_id = 'acc:pain'")
-            .bind(("v", a.pain))
-            .await;
-        let _ = db
-            .query("UPDATE nn_node SET `value` = $v WHERE node_id = 'acc:stability'")
-            .bind(("v", a.stability))
-            .await;
-        let _ = db
-            .query("UPDATE nn_node SET `value` = $v WHERE node_id = 'acc:tension'")
-            .bind(("v", a.tension))
-            .await;
-
-        state.lock().unwrap().dirty_accumulators = false;
     }
 }

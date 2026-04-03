@@ -1,14 +1,37 @@
 [package]
 name = "heart"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
-description = "DEUS brainstem — cognitive runtime in Rust, SurrealDB for memory"
+description = "DEUS — cognitive runtime + physics world + sensory interface, all in Rust"
 
 [dependencies]
-surrealdb = { version = "3", features = ["protocol-ws"] }
+# Async I/O runtime
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "signal", "sync"] }
-tracing = "0.1"
-tracing-subscriber = "0.3"
+
+# DB
+surrealdb = { version = "3", features = ["protocol-ws"] }
+
+# Physics
+rapier3d = "0.22"
+nalgebra = "0.33"
+
+# HTTP dashboard
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }
+
+# Inter-thread comms
+crossbeam = "0.8"
+spin_sleep = "1"
+
+# Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+thiserror = "2"
+async-trait = "0.1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Misc
 rand = "0.8"
