@@ -9,7 +9,7 @@ description = "DEUS — cognitive runtime + physics world + sensory interface, a
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "signal", "sync"] }
 
 # DB
-surrealdb = { version = "3", features = ["protocol-ws"] }
+surrealdb = { version = "3", features = ["protocol-ws", "kv-mem"] }
 
 # Physics
 rapier3d = "0.22"

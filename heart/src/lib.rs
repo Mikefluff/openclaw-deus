@@ -7,5 +7,6 @@ pub mod memory;
 pub mod neuro;
 pub mod agency;
 pub mod sensory;
+pub mod world;
 pub mod io;
 pub mod scheduler;

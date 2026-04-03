@@ -33,12 +33,21 @@ async fn main() {
         .with_timer(tracing_subscriber::fmt::time::uptime())
         .init();
 
-    let url = std::env::args().nth(1).unwrap_or_else(|| "127.0.0.1:8000".into());
+    let embedded = std::env::args().any(|a| a == "--embedded" || a == "--mem");
+    let url = std::env::args().find(|a| !a.starts_with('-') && a != "heart")
+        .unwrap_or_else(|| "127.0.0.1:8000".into());
+
     tracing::info!("DEUS Heart v0.3 — clean architecture");
 
-    // Connect + load
-    let db = surreal::connect(&url).await.expect("DB connect");
-    let persistence = surreal::SurrealPersistence::new(db);
+    // Connect: embedded (no Docker) or remote
+    let persistence: std::sync::Arc<dyn Persistence + Send + Sync> = if embedded {
+        let db = surreal::connect_embedded().await.expect("embedded DB");
+        std::sync::Arc::new(surreal::SurrealPersistence::new(db))
+    } else {
+        let db = surreal::connect_remote(&url).await.expect("remote DB");
+        std::sync::Arc::new(surreal::SurrealPersistence::new(db))
+    };
+
     let config = persistence.load_config().await.unwrap_or_default();
     let init = persistence.load_initial_state().await.unwrap_or_default();
     tracing::info!("loaded: cycle={} energy={:.2}", init.cycle, init.energy);
@@ -218,13 +227,33 @@ async fn main() {
     let world_handle = std::thread::Builder::new()
         .name("world".into())
         .spawn(move || {
-            let interval = Duration::from_millis(16);
+            use heart::world::physics::PhysicsWorld;
+            use heart::sensory::traits::SensorySource;
+
+            let mut world = PhysicsWorld::new();
+            let interval = Duration::from_millis(16); // 60Hz
+            tracing::info!("world: rapier3d, {} objects", world.snapshot().objects.len());
+
             loop {
+                let start = std::time::Instant::now();
                 if *world_shutdown.borrow() { break; }
-                // TODO: rapier3d world tick + mama speech
-                // For now: drain motor commands silently
-                while motor_rx.try_recv().is_ok() {}
-                std::thread::sleep(interval);
+
+                // World tick → ambient sensory
+                for frame in world.tick() {
+                    let _ = sensory_tx.try_send(frame);
+                }
+
+                // Brain's motor commands → execute in world → consequence
+                while let Ok(cmd) = motor_rx.try_recv() {
+                    let consequence = world.act(&cmd);
+                    let _ = sensory_tx.try_send(consequence);
+                    for fb in world.drain_feedback() {
+                        let _ = sensory_tx.try_send(fb);
+                    }
+                }
+
+                let elapsed = start.elapsed();
+                if elapsed < interval { std::thread::sleep(interval - elapsed); }
             }
             tracing::info!("world stopped");
         })
@@ -234,7 +263,7 @@ async fn main() {
     // TOKIO: DB sync + Dashboard
     // ═══════════════════════════════════════════
     let sync_rx = state_rx.clone();
-    let sync_persist = std::sync::Arc::new(persistence);
+    let sync_persist = persistence.clone();
     tokio::spawn({
         let p = sync_persist.clone();
         async move {
@@ -273,7 +302,7 @@ async fn main() {
 
     // Final sync
     let snap = state_rx.borrow().clone();
-    if let Err(e) = sync_persist.sync_snapshot(&snap).await {
+    if let Err(e) = persistence.sync_snapshot(&snap).await {
         tracing::warn!("final sync: {e}");
     }
 

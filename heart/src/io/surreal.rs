@@ -1,7 +1,7 @@
-//! SurrealDB persistence implementation.
+//! SurrealDB persistence — remote (WebSocket) or embedded (in-memory).
 
 use std::time::Duration;
-use surrealdb::engine::remote::ws::{Client, Ws};
+use surrealdb::engine::remote::ws::{Client as WsClient, Ws};
 use surrealdb::opt::auth::Root;
 use surrealdb::Surreal;
 
@@ -10,9 +10,8 @@ use crate::core::config::HeartConfig;
 use crate::error::PersistenceError;
 use super::persistence::{Persistence, InitialDbState};
 
-pub type Db = Surreal<Client>;
-
-pub async fn connect(url: &str) -> Result<Db, PersistenceError> {
+/// Connect to remote SurrealDB via WebSocket.
+pub async fn connect_remote(url: &str) -> Result<Surreal<WsClient>, PersistenceError> {
     loop {
         match Surreal::new::<Ws>(url).await {
             Ok(db) => {
@@ -20,6 +19,7 @@ pub async fn connect(url: &str) -> Result<Db, PersistenceError> {
                     .await.map_err(|e| PersistenceError::Connection(e.to_string()))?;
                 db.use_ns("deus").use_db("runtime")
                     .await.map_err(|e| PersistenceError::Connection(e.to_string()))?;
+                tracing::info!("SurrealDB connected (remote: {url})");
                 return Ok(db);
             }
             Err(e) => {
@@ -30,18 +30,29 @@ pub async fn connect(url: &str) -> Result<Db, PersistenceError> {
     }
 }
 
-pub struct SurrealPersistence {
-    db: Db,
+/// Start embedded in-memory SurrealDB (no Docker needed).
+pub async fn connect_embedded() -> Result<Surreal<surrealdb::engine::any::Any>, PersistenceError> {
+    let db = surrealdb::engine::any::connect("mem://")
+        .await
+        .map_err(|e| PersistenceError::Connection(e.to_string()))?;
+    db.use_ns("deus").use_db("runtime")
+        .await.map_err(|e| PersistenceError::Connection(e.to_string()))?;
+    tracing::info!("SurrealDB connected (embedded mem://)");
+    Ok(db)
 }
 
-impl SurrealPersistence {
-    pub fn new(db: Db) -> Self { Self { db } }
+/// Generic persistence over any SurrealDB connection type.
+pub struct SurrealPersistence<C: surrealdb::Connection> {
+    db: Surreal<C>,
+}
+
+impl<C: surrealdb::Connection> SurrealPersistence<C> {
+    pub fn new(db: Surreal<C>) -> Self { Self { db } }
 }
 
 #[async_trait::async_trait]
-impl Persistence for SurrealPersistence {
+impl<C: surrealdb::Connection> Persistence for SurrealPersistence<C> {
     async fn load_config(&self) -> Result<HeartConfig, PersistenceError> {
-        // For now return defaults — config loading from DB is TODO
         Ok(HeartConfig::default())
     }
 
@@ -69,25 +80,11 @@ impl Persistence for SurrealPersistence {
 
     async fn sync_snapshot(&self, s: &Snapshot) -> Result<(), PersistenceError> {
         let _ = self.db
-            .query("UPDATE kernel_state SET cycle = $c, energy = $e, fatigue = $f, running = true")
+            .query("UPSERT kernel_state:main SET cycle = $c, energy = $e, fatigue = $f, running = true")
             .bind(("c", s.cycle as i64))
             .bind(("e", s.vitals.energy))
             .bind(("f", s.vitals.fatigue))
             .await;
-
-        let h = s.hormones.combined();
-        let names = ["hormone:dopamine", "hormone:norepinephrine", "hormone:cortisol", "hormone:serotonin"];
-        for (i, name) in names.iter().enumerate() {
-            let _ = self.db.query("UPDATE nn_node SET `value` = $v WHERE node_id = $n")
-                .bind(("v", h[i])).bind(("n", *name)).await;
-        }
-
-        let a_names = ["acc:pred_error","acc:tension","acc:pain","acc:convergence","acc:reward","acc:novelty","acc:stability"];
-        for (i, name) in a_names.iter().enumerate() {
-            let _ = self.db.query("UPDATE nn_node SET `value` = $v WHERE node_id = $n")
-                .bind(("v", s.accumulators.values[i])).bind(("n", *name)).await;
-        }
-
         Ok(())
     }
 }
