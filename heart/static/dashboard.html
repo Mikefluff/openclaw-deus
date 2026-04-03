@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>DEUS Brain</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a0f;color:#e0e0e0;font-family:monospace;font-size:13px;padding:16px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.card{background:#12121a;border:1px solid #2a2a3a;border-radius:6px;padding:12px}
+h2{font-size:11px;color:#666;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px}
+.big{font-size:28px;color:#4fc3f7}
+.bar{height:14px;background:#1a1a2a;border-radius:3px;margin:3px 0;position:relative}
+.bar-fill{height:100%;border-radius:3px;transition:width .5s}
+.bar span{position:absolute;top:0;line-height:14px;font-size:10px}
+.bar .l{left:4px;color:#ccc}.bar .r{right:4px;color:#888}
+.row{display:flex;justify-content:space-between;padding:2px 0}
+.val{color:#4fc3f7}
+</style></head><body>
+<h1 style="color:#4fc3f7;font-size:16px;margin-bottom:12px">DEUS Brain — Rust Runtime</h1>
+<div class="grid">
+<div class="card"><h2>Performance</h2><div class="big" id="tps">0</div><div style="color:#666">ticks/sec</div><div class="row"><span>Cycle</span><span class="val" id="cycle">0</span></div><div class="row"><span>Actions</span><span class="val" id="actions">0</span></div></div>
+<div class="card"><h2>Vitals</h2><div id="vitals"></div></div>
+<div class="card"><h2>Hormones</h2><div id="hormones"></div></div>
+<div class="card"><h2>Accumulators</h2><div id="accs"></div></div>
+</div>
+<script>
+const H=['dopamine','norepinephrine','cortisol','serotonin'];
+const HC=['#ff5722','#2196f3','#f44336','#4caf50'];
+const A=['pred_error','tension','pain','convergence','reward','novelty','stability'];
+const AC=['#ff9800','#ff5722','#f44336','#4caf50','#ffeb3b','#9c27b0','#2196f3'];
+function bar(l,v,max,c){const p=Math.min(100,v/max*100);return`<div class="bar"><div class="bar-fill" style="width:${p}%;background:${c}"></div><span class="l">${l}</span><span class="r">${v.toFixed(3)}</span></div>`}
+async function poll(){try{const r=await fetch('/api/status');const d=await r.json();
+document.getElementById('tps').textContent=d.tps||0;
+document.getElementById('cycle').textContent=d.cycle||0;
+document.getElementById('actions').textContent=d.actions_taken||0;
+document.getElementById('vitals').innerHTML=bar('energy',d.energy||0,1.5,'#4caf50')+bar('fatigue',d.fatigue||0,1,'#ff9800');
+let hh='';(d.hormones||[]).forEach((v,i)=>hh+=bar(H[i],v,1.5,HC[i]));document.getElementById('hormones').innerHTML=hh;
+let aa='';(d.accumulators||[]).forEach((v,i)=>aa+=bar(A[i],v,5,AC[i]));document.getElementById('accs').innerHTML=aa;
+}catch{}setTimeout(poll,2000)}poll();
+</script></body></html>
