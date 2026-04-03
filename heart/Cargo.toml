@@ -1,12 +1,14 @@
 [package]
 name = "heart"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "Pacemaker for DEUS cognitive kernel — beats forever, zero brain logic"
+description = "DEUS brainstem — cognitive runtime in Rust, SurrealDB for memory"
 
 [dependencies]
 surrealdb = { version = "3", features = ["protocol-ws"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "signal"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "signal", "sync"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+rand = "0.8"

@@ -1,50 +1,17 @@
-//! Heart — pacemaker for DEUS cognitive kernel.
+//! DEUS Brainstem — cognitive runtime in Rust.
 //!
-//! Pumps only when brain needs it. Checks if chain is alive
-//! before kicking. If chain running — does nothing.
-//! If chain dead — re-kicks.
+//! In-memory: hormones, accumulators, STI, energy, fatigue.
+//! SurrealDB: traces, edges, bindings, rules (persistent memory).
+//! Tick loop runs at native speed. DB ops are async background.
+//!
+//! Usage: heart [ws://127.0.0.1:8000]
 
-use std::time::Duration;
-use surrealdb::engine::remote::ws::{Client, Ws};
-use surrealdb::opt::auth::Root;
-use surrealdb::Surreal;
+mod brain;
+mod cache;
+mod db;
 
-async fn connect(url: &str) -> Surreal<Client> {
-    loop {
-        match Surreal::new::<Ws>(url).await {
-            Ok(db) => {
-                match db
-                    .signin(Root {
-                        username: "root".to_string(),
-                        password: "root".to_string(),
-                    })
-                    .await
-                {
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::warn!("signin: {e}");
-                        tokio::time::sleep(Duration::from_secs(2)).await;
-                        continue;
-                    }
-                }
-                match db.use_ns("deus").use_db("runtime").await {
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::warn!("use ns/db: {e}");
-                        tokio::time::sleep(Duration::from_secs(2)).await;
-                        continue;
-                    }
-                }
-                tracing::info!("connected to {url}");
-                return db;
-            }
-            Err(e) => {
-                tracing::warn!("connect: {e}, retry 2s");
-                tokio::time::sleep(Duration::from_secs(2)).await;
-            }
-        }
-    }
-}
+use std::time::{Duration, Instant};
+use tokio::sync::watch;
 
 #[tokio::main]
 async fn main() {
@@ -57,48 +24,86 @@ async fn main() {
         .nth(1)
         .unwrap_or_else(|| "127.0.0.1:8000".into());
 
-    tracing::info!("heart v0.2 — smart pacemaker");
+    tracing::info!("DEUS brainstem v0.2");
+    tracing::info!("connecting to SurrealDB at {url}");
 
-    let mut last_cycle: i64 = 0;
+    let db = db::connect(&url).await;
+    tracing::info!("connected");
+
+    // Load initial state from DB
+    let mut brain = brain::Brain::new();
+    brain.load_from_db(&db).await;
+    tracing::info!("brain loaded: {} traces cached", brain.trace_count());
+
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    // Spawn DB sync task (writes accumulated changes to SurrealDB)
+    let db_clone = db.clone();
+    let mut shutdown_rx_db = shutdown_rx.clone();
+    let brain_state = brain.shared_state();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(500));
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    db::sync_to_db(&db_clone, &brain_state).await;
+                }
+                _ = shutdown_rx_db.changed() => break,
+            }
+        }
+    });
+
+    // Spawn status reporter
+    let brain_state2 = brain.shared_state();
+    let mut shutdown_rx_status = shutdown_rx.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    let s = brain_state2.lock().unwrap();
+                    tracing::info!(
+                        "cycle={} energy={:.3} fatigue={:.3} DA={:.3} NE={:.3} cort={:.3} sero={:.3} traces={} edges={} tps={}",
+                        s.cycle, s.energy, s.fatigue,
+                        s.hormones.dopamine, s.hormones.norepinephrine,
+                        s.hormones.cortisol, s.hormones.serotonin,
+                        s.trace_count, s.edge_count, s.ticks_per_sec,
+                    );
+                }
+                _ = shutdown_rx_status.changed() => break,
+            }
+        }
+    });
+
+    // Main tick loop — runs at native speed
+    tracing::info!("brain started. Ctrl+C to stop.");
+    let mut tick_count: u64 = 0;
+    let mut last_report = Instant::now();
 
     loop {
-        let db = connect(&url).await;
+        brain.tick();
+        tick_count += 1;
 
-        loop {
-            tokio::time::sleep(Duration::from_secs(3)).await;
+        // Compute tps every second
+        if last_report.elapsed() >= Duration::from_secs(1) {
+            let tps = tick_count as f64 / last_report.elapsed().as_secs_f64();
+            brain.set_tps(tps as u64);
+            tick_count = 0;
+            last_report = Instant::now();
+        }
 
-            // Read current cycle
-            let cycle: i64 = match db
-                .query("SELECT cycle FROM kernel_state LIMIT 1")
-                .await
-            {
-                Ok(mut res) => {
-                    let rows: Vec<serde_json::Value> =
-                        res.take(0).unwrap_or_default();
-                    rows.first()
-                        .and_then(|r| r.get("cycle"))
-                        .and_then(|c| c.as_i64())
-                        .unwrap_or(0)
-                }
-                Err(e) => {
-                    tracing::warn!("read failed: {e}, reconnecting");
-                    break;
-                }
-            };
+        // Check shutdown
+        if *shutdown_rx.borrow() {
+            break;
+        }
 
-            if cycle == last_cycle {
-                // Brain stalled — chain exhausted or not started. Kick.
-                tracing::info!("brain stalled at cycle={cycle}, kicking");
-                if let Err(e) = db
-                    .query("DELETE _clk_a; CREATE _clk_a SET t = time::now()")
-                    .await
-                {
-                    tracing::warn!("kick failed: {e}, reconnecting");
-                    break;
-                }
-            }
-
-            last_cycle = cycle;
+        // Yield to tokio runtime periodically
+        if tick_count % 100 == 0 {
+            tokio::task::yield_now().await;
         }
     }
+
+    tracing::info!("brain stopping...");
+    db::sync_to_db(&db, &brain.shared_state()).await;
+    tracing::info!("final state synced to DB. goodbye.");
 }
