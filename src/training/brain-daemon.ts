@@ -103,8 +103,8 @@ async function main() {
     } catch {}
   }, 100);
 
-  // No re-kick needed. MAXDEPTH 65535 = ~9 hours autonomous.
-  // fn::start_brain() did the single kick.
+  // Heart binary (Rust) handles clock re-kicks.
+  // Membrane does NOT kick the brain. Membrane only does world I/O.
 
   // ═══════════════════════════════════════════
   // STATUS (10s)

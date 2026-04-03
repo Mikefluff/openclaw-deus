@@ -1,0 +1,12 @@
+[package]
+name = "heart"
+version = "0.1.0"
+edition = "2021"
+description = "Pacemaker for DEUS cognitive kernel — beats forever, zero brain logic"
+
+[dependencies]
+surrealdb = { version = "3", features = ["protocol-ws"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "signal"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+serde_json = "1"
